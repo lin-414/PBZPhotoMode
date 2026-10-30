@@ -2,7 +2,7 @@
 // 约定（与 UE 一致）：
 //   yaw   0 = 朝 +X（前），正方向向右转；right = (-sin yaw, cos yaw, 0)
 //   pitch 正 = 抬头；forward = (cos p cos y, cos p sin y, sin p)
-//   鼠标向右 -> yaw 增大；鼠标向下 -> pitch 减小（与 Lua 版一致）
+//   鼠标向右 -> yaw 增大；鼠标向下 -> pitch 减小（保持默认手感）
 #pragma once
 
 #include <algorithm>

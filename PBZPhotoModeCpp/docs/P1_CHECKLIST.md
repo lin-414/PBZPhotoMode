@@ -14,7 +14,7 @@
 
 ## B. ue4ss_port.cpp 的 12 个辅助函数
 
-按文件内出现顺序，逐个对照 UE4SS 源码里的等价实现（Lua 绑定层 `LuaType/UObject/*.cpp` 是最好的参照，
+按文件内出现顺序，逐个对照 UE4SS 源码里的等价实现（优先看 UObject 绑定层源码，
 它们展示了“按名字找对象 / 读属性 / 调函数”的官方写法）。
 
 | 函数 | 要做的事 | 候选 API（按可用性优先级） |
@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | `read_pov` | `APlayerCameraManager::GetCameraLocation/GetCameraRotation/GetFOVAngle` | FOV 在 UE5 是 `float`，返回结构体里占 8 字节时要注意对齐 |
 | `spawn_camera` | `UWorld::SpawnActor`（或 `StaticConstructObject_Internal` + `FinishSpawning`） | **当前是占位实现**，必须替换 |
-| `attach_view` | `APlayerController::SetViewTargetWithBlend(AActor*, float, EViewTargetBlendFunction, float, bool)` | 5 个参数，Lua 版踩过 4 参的坑 |
+| `attach_view` | `APlayerController::SetViewTargetWithBlend(AActor*, float, EViewTargetBlendFunction, float, bool)` | 5 个参数，早期原型踩过 4 参的坑 |
 | `restore_view` | `SetViewTarget(nullptr)` | 语义 = 回到自己的 Pawn |
 | `apply_pose` | `AActor::SetActorLocationAndRotation(FVector, FRotator, bool, bool)` | bool 后要补 4 字节对齐 |
 | `apply_fov` | `UCameraComponent::SetFieldOfView(float)` | 相机组件属性名 `CameraComponent` |
@@ -51,8 +51,8 @@
 | 位置 | 要做的事 | 说明 |
 | --- | --- | --- |
 | `mod_directory()` | 拿 mods 目录 | `UE4SSProgram` 的 mods 目录接口 |
-| `bind_input()` | 把按键/鼠标喂进 `InputLogic` | 需要 keydown+keyup（Lua 的 RegisterKeyBind 只有 keydown）；鼠标位移与滚轮走 `InputAxis` 或 Win32 输入 |
-| `bind_hooks()` | 引擎 Tick 与 `PlayerController:InputKey/InputAxis` | 参照 Lua 版已验证的路子：`InputKey` 里有 `FKey`，`InputAxis` 里有 `Delta` |
+| `bind_input()` | 把按键/鼠标喂进 `InputLogic` | 需要 keydown+keyup（脚本层的 RegisterKeyBind 只有 keydown）；鼠标位移与滚轮走 `InputAxis` 或 Win32 输入 |
+| `bind_hooks()` | 引擎 Tick 与 `PlayerController:InputKey/InputAxis` | 参照已验证的输入方案：`InputKey` 里有 `FKey`，`InputAxis` 里有 `Delta` |
 | `on_update()` | 切游戏线程 | 读写 UObject 必须在游戏线程；用 UE4SS 的 game-thread task 接口包一层 |
 | `render()` | ImGui 绘制 | 已经用 `ImGui::` 写好，确认 UE4SS 侧的 `ImGui` 头与版本 |
 
@@ -86,7 +86,7 @@
 | `spawn_camera` | `UWorld::SpawnActor(UClass*, FVector const*, FRotator const*)`，UClass = `/Script/Engine.CameraActor` |
 | `attach_view` | `PlayerController` 的 `SetViewTargetWithBlend`（NewViewTarget / BlendTime，按名写参，不猜 4/5 参） |
 | `apply_pose` | `AActor::K2_SetActorLocationAndRotation(FVector, FRotator, bool, FHitResult&, bool)` |
-| `apply_fov` | 直接写相机组件属性 `FieldOfView`（float/double 自适应）—— Lua 版就是卡在这一步 |
+| `apply_fov` | 直接写相机组件属性 `FieldOfView`（float/double 自适应）—— 早期原型就是卡在这一步 |
 | `destroy_camera` | `AActor::K2_DestroyActor()` |
 | `set_ignore_move_input` | `PlayerController::SetIgnoreMoveInput`（**只屏蔽移动**） |
 | `set_hud_visible` | `PlayerController.MyHUD` → `SetActorHiddenInGame` |

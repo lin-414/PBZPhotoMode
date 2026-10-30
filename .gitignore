@@ -22,10 +22,9 @@ crash_*.dmp
 PBZPhotoModeCpp/_exports_shipped.txt
 PBZPhotoModeCpp/_imports.txt
 
-# ---- 本地环境 / 参考资料（不纳入版本库）----
+# ---- 本地环境 / 参考资料 / 旧版备份（不纳入版本库）----
 _ref/
-_luaenv/
-_check_lua.py
+_legacy/
 
 # ---- Python ----
 __pycache__/

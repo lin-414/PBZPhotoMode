@@ -15,7 +15,7 @@ enum class MouseVerticalMode { Translate, Look };
 enum class FreezeMode { Dilation, Pause };
 
 struct Config {
-    // ---- [keys] 快捷键名，写法和 Lua 版一致：F2 / T / F / ADD / SUBTRACT / OEM_PLUS ----
+    // ---- [keys] 快捷键名，写法与默认键名一致：F2 / T / F / ADD / SUBTRACT / OEM_PLUS ----
     std::string key_toggle{"F2"};
     std::string key_menu{"T"};
     std::string key_freeze{"F"};

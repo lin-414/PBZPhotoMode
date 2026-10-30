@@ -11,7 +11,7 @@ namespace pbzpm {
 
 enum class MouseButton { Left, Right };
 
-// 配置里的键名解析结果。任一键解析失败会退回 Lua 版默认键并记 warning。
+// 配置里的键名解析结果。任一键解析失败会退回默认键并记 warning。
 struct KeyMap {
     int toggle{0x71};    // F2
     int menu{'T'};

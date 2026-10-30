@@ -1415,7 +1415,7 @@ std::string Ue4ssPort::build_print_menu_text(const std::string& text) {
     return out;
 }
 
-// 兜底路径：引擎的 on-screen debug message。Lua 版已证明本作可用，
+// 兜底路径：引擎的 on-screen debug message。早期原型已证明本作可用，
 // 关键是 duration 参数必须写对（见 overlay_via_print_string）。
 bool Ue4ssPort::overlay_via_print_string(const std::string& text, double duration) {
     ensure_screen_messages_enabled();
@@ -1544,7 +1544,7 @@ bool Ue4ssPort::show_overlay(const std::string& text) {
         return true;
     }
 
-    // 兜底：KismetSystemLibrary::PrintString。Lua 版 1.0.4 已经证明这条路在本作可用；
+    // 兜底：KismetSystemLibrary::PrintString。早期原型已经证明这条路在本作可用；
     // 关键是 duration 不能是 0，并且每 0.35 秒用同一个 FName Key 重推一次。
     const double now = steady_seconds();
     if (now - last_print_push_ < 0.35) return print_path_working_;

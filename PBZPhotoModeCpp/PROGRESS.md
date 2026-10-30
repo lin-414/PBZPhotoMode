@@ -4,11 +4,10 @@
 
 ## 一句话状态
 
-Lua 版（v1.0.4）可用、已交付；**C++ 版 v1.0.2（菜单改 HUD Canvas 绘制 + 输入诊断）已打包**：
-`build-dll/PBZPhotoModeCpp.dll`（535 KB，导出 `start_mod`/`uninstall_mod`，导入的 71 个 UE4SS
-符号在你游戏里那份 `UE4SS.dll` 的导出表里全部存在）→
-`dist/PBZPhotoModeCpp_v1.0.2-cpp.zip`。核心层 236 项测试全绿。
-**还差最后一步：实机验证**（我这边没有游戏，只能保证编译/ABI/逻辑层正确）。
+**C++ 版 v1.0.11 已编译、已打包，核心功能实机验证通过**：
+`build-dll/PBZPhotoModeCpp.dll`（约 595 KB，导出 `start_mod`/`uninstall_mod`，导入的 71 个 UE4SS
+符号在游戏内 `UE4SS.dll` 的导出表里全部存在）→
+`dist/PBZPhotoModeCpp_1.0.11-cpp.zip`。核心层 **252 项测试全绿**；F 键冻结已实机验证。
 
 ## 已完成
 
@@ -17,8 +16,7 @@ Lua 版（v1.0.4）可用、已交付；**C++ 版 v1.0.2（菜单改 HUD Canvas 
 | GitHub ↔ Epic 绑定 | 你已绑定，`UEPseudo` 拉取成功 |
 | UE4SS 子模块 | `deps/first/Unreal`(UEPseudo) + `deps/first/patternsleuth` 均已检出 |
 | Rust 工具链 | `rustc/cargo 1.99.1`，在 `%USERPROFILE%\.cargo\bin`（不在默认 PATH，`build_dll.bat` 会自动加） |
-| Lua 版 | v1.0.4，zip 在 `../PBZPhotoMode_v1.0.4.zip`，两次真机日志的问题都修过了 |
-| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **217 项断言全绿** |
+| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **252 项断言全绿** |
 | C++ 引擎层 | 已按 UEPseudo 真实 API 重写并在 MSVC 19.44 + Ninja 下**编译通过** |
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
@@ -55,7 +53,7 @@ Lua 版（v1.0.4）可用、已交付；**C++ 版 v1.0.2（菜单改 HUD Canvas 
    `<游戏>\platform\steam\ue4ss\Mods\`，启动游戏，搜 `UE4SS.log` 里的 `[PBZPhotoMode]`。
    预期日志：`加载完成` → 按 F2 后 `进入摄影模式`。
 2. 如果 `SetViewTargetWithBlend` / 相机创建报错，日志会写 `进入摄影模式失败：<原因>`，
-   把那段贴回来（C++ 版的报错点比 Lua 版精确得多）。
+   把那段贴回来（C++ 版的报错点更精确）。
 3. 可选增强：`src/core/` 里已有 `ScreenshotService` 的命令接口，接游戏自身的截图控制台命令。
 
 ## 关键环境事实（明天不用重查）
@@ -122,7 +120,7 @@ obj->ProcessEvent(fn, &params);          // UObject::ProcessEvent(UFunction*, vo
 RC::Unreal::Hook::RegisterEngineTickPreCallback(
     [](UEngine* Context, float DeltaSeconds) { /* ... */ });
 
-// 挂 UFUNCTION（等于 Lua 的 RegisterHook）
+// 挂 UFUNCTION（等价于脚本层的 RegisterHook）
 auto ids = UObjectGlobals::RegisterHook(
     STR("/Script/Engine.PlayerController:InputKey"),   // 字符串重载
     preCallback, postCallback, customData);            // UnrealScriptFunctionCallable
@@ -174,7 +172,7 @@ cmake --build build
    - `src/engine/ue4ss_port.cpp` + `src/engine/ue4ss_port.h`
    - `src/mod_app.cpp` + `src/mod_app.h`
    - `dllmain.cpp`（include 与 `RC::CppUserModBase` 前缀）
-3. 输入方案（沿用 Lua 版已验证的路子）：
+3. 输入方案（沿用已验证的思路）：
    - 开关类（F2/T/F/F9/FOV）→ `register_keydown_event` 足够
    - 按住类（Alt/WASD/QE/左右键/鼠标位移/滚轮）→ hook `PlayerController:InputKey` + `InputAxis`，
      反射读 `FInputKeyParams` 里的 Key/Event/Delta，`FKey` 是含 `KeyName`(FName) 的结构体
@@ -189,7 +187,7 @@ cmake --build build
 
 - 核心层测试不要动坏：`tools\build_tests.bat` 必须保持 217 项全绿。
 - 相机/时间/输入的所有顺序与回滚语义都已经锁在测试里，改引擎层不需要碰 `src/core/`。
-- Lua 版随时可回退，进游戏验证 C++ 版时记得先在 `mods.txt` 里把 Lua 版关掉，避免两边抢 F2。
+- 进游戏验证前先确认 `mods.txt` 里没有其他摄影 Mod 占用 F2。
 
 ## 1.0.3-cpp（诊断版）
 
@@ -262,7 +260,7 @@ cmake --build build
 - `src/engine/ue4ss_port.cpp`：新增 `set_actor_rotation()`，按反射属性写 `NewRotation.Pitch/Yaw/Roll`（自动识别 FDoubleProperty），`apply_pose` 改用它；
   失败日志会打印目标 loc/rot，便于下次直接定位。
 - `show_overlay()` 改为：HUD Canvas 只有在 `overlay_hook_hits_ > 0` 时才作为主路径；否则每 0.35 秒用 `PrintString` 重推菜单（`duration=1.0`，同一个 FName Key），并一次性把 `UEngine.bEnableOnScreenDebugMessages/Display` 置 true（Shipping 配置可能关掉屏幕消息）。
-  PrintString 文本按视口尺寸补空行/空格推到右下角（`build_print_menu_text`），和 Lua 版观感一致。
+  PrintString 文本按视口尺寸补空行/空格推到右下角（`build_print_menu_text`），保持原有观感。
 - `hide_overlay()` 用同一个 Key 推空消息，T 隐藏/退出时立即擦掉。
 - 版本 `1.0.8-cpp`；核心层测试保持 236 项全绿。产物 595,456 B；包 `dist/PBZPhotoModeCpp_v1.0.8-cpp.zip`；已覆盖游戏目录 `ue4ss\Mods\PBZPhotoModeCpp\dlls\PBZPhotoModeCpp.dll`。
 
