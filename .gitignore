@@ -1,0 +1,40 @@
+# ---- 构建产物 ----
+build/
+build-*/
+**/build/
+**/build-dll/
+*.obj
+*.pdb
+*.lib
+*.exp
+*.dll
+*.exe
+
+# ---- 发布包与压缩包 ----
+dist/
+*.zip
+
+# ---- 日志与崩溃转储 ----
+*.log
+crash_*.dmp
+
+# ---- 生成的分析文件 ----
+PBZPhotoModeCpp/_exports_shipped.txt
+PBZPhotoModeCpp/_imports.txt
+
+# ---- 本地环境 / 参考资料（不纳入版本库）----
+_ref/
+_luaenv/
+_check_lua.py
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- 编辑器 / 系统 ----
+.vs/
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
+nul

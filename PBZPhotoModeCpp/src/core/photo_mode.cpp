@@ -1,0 +1,311 @@
+#include "core/photo_mode.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+
+#include "core/version.h"
+
+namespace pbzpm {
+namespace {
+
+constexpr double kPitchSpeedDegPerSec = 30.0;
+constexpr double kMaxFrameDt = 0.25;
+
+}  // namespace
+
+PhotoMode::PhotoMode(EnginePort& engine, Config cfg) : engine_(engine), cfg_(cfg) {}
+
+void PhotoMode::log(LogLevel level, const std::string& message) {
+    engine_.log(level, std::string("[PhotoMode] ") + message);
+}
+
+bool PhotoMode::enter() {
+    if (active_) {
+        log(LogLevel::Warn, "已经在摄影模式中，忽略重复进入");
+        return true;
+    }
+    last_error_.clear();
+    pov_fallback_used_ = false;
+
+    if (!engine_.world_valid()) {
+        last_error_ = "世界未加载（UWorld 不可用）";
+        log(LogLevel::Error, last_error_);
+        return false;
+    }
+
+    CameraPose pov{};
+    if (engine_.read_pov(pov)) {
+        pose_ = pov;
+    } else {
+        pov_fallback_used_ = true;
+        pose_ = CameraPose{};
+        pose_.fov = cfg_.fov_default;
+        log(LogLevel::Warn, "读不到当前视角，使用默认位姿与默认 FOV");
+    }
+    fov_ = std::clamp(pose_.fov > 1.0 ? pose_.fov : cfg_.fov_default, cfg_.fov_min, cfg_.fov_max);
+    pose_.fov = fov_;
+    reset_pose_ = pose_;
+    reset_fov_ = fov_;
+    has_reset_pose_ = true;
+
+    if (!engine_.spawn_camera(pose_)) {
+        last_error_ = "创建 CameraActor 失败";
+        log(LogLevel::Error, last_error_);
+        return false;
+    }
+    spawned_ = true;
+
+    if (!engine_.attach_view()) {
+        last_error_ = "设置 ViewTarget 失败";
+        log(LogLevel::Error, last_error_);
+        engine_.destroy_camera();
+        spawned_ = false;
+        return false;
+    }
+    view_attached_ = true;
+
+    // 以下步骤失败都不致命：记 warning，继续进模式
+    if (cfg_.block_game_input) {
+        ignore_move_set_ = engine_.set_ignore_move_input(true);
+        if (!ignore_move_set_) log(LogLevel::Warn, "屏蔽角色移动输入失败，游玩输入可能仍在生效");
+
+        // 光挡移动轴不够：左右键攻击/交互走的是动作绑定，必须让整个输入栈在 PC 处中断
+        game_input_blocked_ = engine_.set_game_input_blocked(true);
+        if (!game_input_blocked_) {
+            log(LogLevel::Warn, "屏蔽游戏键鼠输入失败，鼠标左右键可能仍会触发游戏动作");
+        } else {
+            log(LogLevel::Info, "已屏蔽游戏键鼠输入（角色不会跟着 WASD 走）");
+        }
+    }
+    if (cfg_.hide_player) {
+        player_hidden_ = engine_.set_player_hidden(true);
+        if (!player_hidden_) log(LogLevel::Warn, "隐藏角色失败");
+    }
+    if (cfg_.hide_game_hud) {
+        hud_hidden_ = engine_.set_hud_visible(false);
+        if (!hud_hidden_) log(LogLevel::Warn, "隐藏 HUD 失败");
+    }
+
+    postfx_saved_ = engine_.save_postfx();
+    if (!postfx_saved_) log(LogLevel::Warn, "PostProcess 快照失败，退出时不会还原画质设置");
+
+    prev_dilation_ = engine_.get_time_dilation();
+    if (!(prev_dilation_ > 0.0) || prev_dilation_ > 10.0) prev_dilation_ = 1.0;  // 异常值兜底
+
+    engine_.apply_fov(fov_);
+    engine_.apply_pose(pose_);
+
+    active_ = true;
+    frozen_ = false;
+    menu_visible_ = true;
+    pose_dirty_ = false;
+    reassert_accum_ = 0.0;
+
+    char buf[160]{};
+    std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
+    log(LogLevel::Info, buf);
+    return true;
+}
+
+void PhotoMode::leave(const char* reason) {
+    if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
+        !hud_hidden_ && !postfx_saved_) {
+        return;  // 幂等：没进过模式就没有可还原的东西
+    }
+
+    if (frozen_) {
+        if (cfg_.freeze_mode == FreezeMode::Pause) {
+            engine_.set_paused(false);
+        } else {
+            engine_.set_time_dilation(prev_dilation_);
+        }
+        frozen_ = false;
+    }
+    if (postfx_saved_) {
+        engine_.restore_postfx();
+        postfx_saved_ = false;
+    }
+    if (hud_hidden_) {
+        engine_.set_hud_visible(true);
+        hud_hidden_ = false;
+    }
+    if (player_hidden_) {
+        engine_.set_player_hidden(false);
+        player_hidden_ = false;
+    }
+    if (game_input_blocked_) {
+        engine_.set_game_input_blocked(false);
+        game_input_blocked_ = false;
+    }
+    if (ignore_move_set_) {
+        engine_.set_ignore_move_input(false);
+        ignore_move_set_ = false;
+    }
+    if (view_attached_) {
+        engine_.restore_view();
+        view_attached_ = false;
+    }
+    if (spawned_) {
+        engine_.destroy_camera();
+        spawned_ = false;
+    }
+
+    active_ = false;
+    menu_visible_ = false;
+    pose_dirty_ = false;
+
+    log(LogLevel::Info, std::string("退出摄影模式（") + (reason ? reason : "user") + "）");
+}
+
+bool PhotoMode::set_fov(double fov) {
+    const double clamped = std::clamp(fov, cfg_.fov_min, cfg_.fov_max);
+    if (std::abs(clamped - fov_) < 1e-6) {
+        return false;
+    }
+    fov_ = clamped;
+    pose_.fov = clamped;
+    if (active_) {
+        if (!engine_.apply_fov(clamped)) {
+            log(LogLevel::Warn, "应用 FOV 失败");
+        }
+    }
+    return true;
+}
+
+void PhotoMode::toggle_freeze() {
+    if (!active_) return;
+
+    if (cfg_.freeze_mode == FreezeMode::Pause) {
+        const bool want = !frozen_;
+        if (engine_.set_paused(want)) {
+            frozen_ = want;
+        } else {
+            log(LogLevel::Warn, "暂停/恢复失败");
+        }
+    } else {
+        if (!frozen_) {
+            const double prev = engine_.get_time_dilation();
+            if (prev > 0.0 && prev <= 10.0) prev_dilation_ = prev;
+            if (engine_.set_time_dilation(cfg_.freeze_dilation)) {
+                frozen_ = true;
+            } else {
+                log(LogLevel::Warn, "冻结时间失败");
+            }
+        } else {
+            if (engine_.set_time_dilation(prev_dilation_)) {
+                frozen_ = false;
+            } else {
+                log(LogLevel::Warn, "恢复时间失败");
+            }
+        }
+    }
+    log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
+}
+
+bool PhotoMode::apply_pose_if_dirty() {
+    if (!pose_dirty_) return true;
+    pose_.fov = fov_;
+    if (!engine_.apply_pose(pose_)) {
+        return false;
+    }
+    pose_dirty_ = false;
+    return true;
+}
+
+void PhotoMode::tick(const Intent& intent, double dt) {
+    if (!active_) return;
+
+    if (!(dt >= 0.0)) dt = 0.0;
+    if (dt > kMaxFrameDt) dt = kMaxFrameDt;  // 掉帧/切窗口回来时别让相机瞬移
+
+    if (!engine_.world_valid()) {
+        leave("世界失效");
+        return;
+    }
+
+    if (intent.toggle_freeze) toggle_freeze();
+
+    if (intent.reset_view && has_reset_pose_) {
+        pose_ = reset_pose_;
+        fov_ = reset_fov_;
+        pose_.fov = fov_;
+        pose_dirty_ = true;
+        if (!engine_.apply_fov(fov_)) {
+            log(LogLevel::Warn, "重置相机视角时应用 FOV 失败");
+        }
+        log(LogLevel::Info, "相机视角已重置（位置/朝向/FOV）");
+    }
+
+    if (intent.shutter) {
+        if (!engine_.run_command(cfg_.screenshot_command)) {
+            log(LogLevel::Warn, "截图命令执行失败：" + cfg_.screenshot_command);
+        }
+    }
+
+    const double sens = cfg_.look_sensitivity;
+    if (intent.look_dx != 0.0) {
+        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.look_dx * sens);
+        pose_dirty_ = true;
+    }
+    if (intent.look_dy != 0.0) {
+        const double dy = cfg_.invert_y ? -intent.look_dy : intent.look_dy;
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - dy * sens, cfg_.pitch_limit);
+        pose_dirty_ = true;
+    }
+
+    // look 模式下左右键改俯仰（持续按住持续转）
+    if (intent.pitch_up_click) {
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch + kPitchSpeedDegPerSec * dt, cfg_.pitch_limit);
+        pose_dirty_ = true;
+    }
+    if (intent.pitch_down_click) {
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - kPitchSpeedDegPerSec * dt, cfg_.pitch_limit);
+        pose_dirty_ = true;
+    }
+
+    if (intent.wheel != 0.0) {
+        // Intent.wheel 正值 = 滚轮向上：向上应是缩小 FOV（拉近），向下放大 FOV。
+        set_fov(fov_ - intent.wheel * cfg_.fov_step);
+    }
+
+    const double mult = (intent.boost ? cfg_.boost_mult : 1.0) * (intent.slow ? cfg_.slow_mult : 1.0);
+    const double step = cfg_.move_speed * mult * dt;
+
+    const double fwd_in = intent.move_forward;
+    const double right_in = intent.move_right;
+    if (fwd_in != 0.0 || right_in != 0.0) {
+        const Vec3 fwd = forward_from_angles(pose_.rot.pitch, pose_.rot.yaw);
+        const Vec3 right = right_from_yaw(pose_.rot.yaw);
+        double dx = fwd.x * fwd_in + right.x * right_in;
+        double dy = fwd.y * fwd_in + right.y * right_in;
+        double dz = fwd.z * fwd_in;
+        const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
+        if (len > 1e-9) {
+            pose_.loc.x += dx / len * step;
+            pose_.loc.y += dy / len * step;
+            pose_.loc.z += dz / len * step;
+            pose_dirty_ = true;
+        }
+    }
+
+    if (intent.move_up != 0.0) {
+        pose_.loc.z += intent.move_up * cfg_.vertical_speed * mult * dt;
+        pose_dirty_ = true;
+    }
+
+    if (!apply_pose_if_dirty()) {
+        log(LogLevel::Warn, "应用相机位姿失败");
+    }
+
+    // 每 1 秒重新确认一次 ViewTarget：防止游戏里某些流程（过场、重生）把视角抢回去
+    reassert_accum_ += dt;
+    if (reassert_accum_ >= 1.0) {
+        reassert_accum_ = 0.0;
+        if (!engine_.attach_view()) {
+            leave("ViewTarget 失效");
+        }
+    }
+}
+
+}  // namespace pbzpm

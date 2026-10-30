@@ -1,0 +1,14 @@
+# 统一换行：批处理必须 CRLF，源码与文档用 LF
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.lua text eol=lf
+*.cpp text eol=lf
+*.h text eol=lf
+*.md text eol=lf
+*.ini text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
