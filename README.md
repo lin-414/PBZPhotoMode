@@ -37,7 +37,7 @@ C++ 版是当前主维护版本；Lua 版保留为免编译的备用方案。两
 
 ### C++ 版
 
-从 [Releases](../../releases) 下载 `PBZPhotoModeCpp_1.0.11-cpp.zip`，解压到游戏根目录，形成：
+从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.11-cpp.zip`，解压到游戏根目录，形成：
 
 ```
 <游戏目录>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp\
