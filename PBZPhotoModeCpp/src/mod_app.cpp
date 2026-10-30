@@ -117,8 +117,16 @@ void PhotoModeMod::on_unreal_init() {
 
     bind_engine_tick();
     last_tick_time_ = monotonic_seconds();
-    port_->log(LogLevel::Info, std::string("加载完成 v") + PBZPM_VERSION +
-                                   "，按 " + vk_to_name(keys_.toggle) + " 进入摄影模式");
+    std::string load_message =
+        std::string("加载完成 v") + PBZPM_VERSION + "，按 " + vk_to_name(keys_.toggle);
+    if (cfg_.pad_enabled) {
+        load_message += " 或手柄 " + pad_combo_name(keys_.pad_toggle);
+        load_message += input_source_->pad_api_ready()
+                            ? "（XInput 已加载：" + input_source_->pad_api_module() + "）"
+                            : "（XInput 加载失败，手柄功能不可用！）";
+    }
+    load_message += " 进入摄影模式";
+    port_->log(LogLevel::Info, load_message);
 }
 
 void PhotoModeMod::on_ui_init() {
@@ -145,8 +153,13 @@ void PhotoModeMod::render_tab_impl() {
     std::lock_guard<std::mutex> lock(mutex_);
 
     ImGui::TextUnformatted(mode_->active() ? "摄影模式：运行中" : "摄影模式：未启用");
-    ImGui::Text("快捷键 %s 进入 / 退出；%s 冻结时间", vk_to_name(keys_.toggle).c_str(),
-                vk_to_name(keys_.freeze).c_str());
+    if (cfg_.pad_enabled) {
+        ImGui::Text("快捷键 %s 或手柄 %s 进入 / 退出；%s 冻结时间", vk_to_name(keys_.toggle).c_str(),
+                    pad_combo_name(keys_.pad_toggle).c_str(), vk_to_name(keys_.freeze).c_str());
+    } else {
+        ImGui::Text("快捷键 %s 进入 / 退出；%s 冻结时间", vk_to_name(keys_.toggle).c_str(),
+                    vk_to_name(keys_.freeze).c_str());
+    }
     ImGui::Separator();
 
     UiCommands commands{};
@@ -274,14 +287,14 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
     if (diag_accum_ < 1.0) return;
     diag_accum_ = 0.0;
 
-    char buf[280]{};
+    char buf[320]{};
     std::snprintf(buf, sizeof(buf),
                   "输入诊断 alt=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
-                  "HUD回调=%u",
+                  "HUD回调=%u 手柄槽位=%d",
                   input_.alt_down() ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
                   input_source_->ll_ready() ? 1 : 0, input_source_->ll_wheel_events(),
                   input_source_->raw_ready() ? 1 : 0, input_source_->mouse_event_count(),
-                  port_->overlay_hook_hits());
+                  port_->overlay_hook_hits(), input_source_->pad_slot());
     engine_peak_dx_ = 0.0;
     engine_peak_dy_ = 0.0;
     port_->log(LogLevel::Info, std::string(buf) + " | " + port_->camera_state_summary());
@@ -297,10 +310,36 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     (void)delta_seconds;
 
     if (input_source_ != nullptr) {
-        input_source_->poll(input_);
+        input_source_->poll(input_, cfg_.pad_enabled);
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
+
+    // 手柄插拔日志：只在状态变化时打一行，方便确认手柄模式是否可用
+    if (input_source_ != nullptr && cfg_.pad_enabled) {
+        const bool connected = input_source_->pad_connected();
+        if (connected != pad_logged_connected_) {
+            pad_logged_connected_ = connected;
+            if (connected) {
+                port_->log(LogLevel::Info, std::string("手柄已连接（XInput 槽位 ") +
+                                                   std::to_string(input_source_->pad_slot()) + "）：手柄 " +
+                                                   pad_combo_name(keys_.pad_toggle) + " 进入摄影模式");
+            } else {
+                port_->log(LogLevel::Info, "手柄已断开");
+            }
+        } else if (!pad_scan_logged_) {
+            // 启动 10 秒后报一次扫描状态：出现这行说明 XInput 轮询管线活着；
+            // 没有这行 = 引擎 Tick 都没跑（那是另一个层面的问题）
+            pad_scan_log_timer_ += dt;
+            if (pad_scan_log_timer_ >= 10.0) {
+                pad_scan_logged_ = true;
+                port_->log(LogLevel::Info, input_source_->pad_connected()
+                    ? std::string("手柄扫描正常：已连接（槽位 ") + std::to_string(input_source_->pad_slot()) + "）"
+                    : "手柄扫描正常：暂未发现手柄，持续扫描中（手柄指示灯亮起后即插即用）");
+            }
+        }
+    }
+
     // 首选引擎自己的鼠标增量（PlayerController::GetInputMouseDelta）：
     // 它就是游戏用来转视角的那份数据，不依赖 OS 钩子，前台/窗口化/光标捕获都不影响。
     //

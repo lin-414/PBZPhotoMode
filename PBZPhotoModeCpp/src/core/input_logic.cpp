@@ -33,6 +33,18 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.reset = resolve_key(cfg.key_reset, map.reset, "key_reset", warnings, map.all_resolved);
     map.fov_up = resolve_key(cfg.key_fov_up, map.fov_up, "key_fov_up", warnings, map.all_resolved);
     map.fov_down = resolve_key(cfg.key_fov_down, map.fov_down, "key_fov_down", warnings, map.all_resolved);
+
+    const auto resolve_combo = [&](const std::string& text, const std::vector<PadButton>& fallback, const char* label) {
+        const PadCombo parsed = parse_pad_combo(text, fallback, label, warnings);
+        if (!parsed.ok) map.all_resolved = false;
+        return parsed.buttons;
+    };
+    map.pad_toggle = resolve_combo(cfg.pad_toggle, map.pad_toggle, "pad_toggle");
+    map.pad_menu = resolve_combo(cfg.pad_menu, map.pad_menu, "pad_menu");
+    map.pad_freeze = resolve_combo(cfg.pad_freeze, map.pad_freeze, "pad_freeze");
+    map.pad_reset = resolve_combo(cfg.pad_reset, map.pad_reset, "pad_reset");
+    map.pad_fov_up = resolve_combo(cfg.pad_fov_up, map.pad_fov_up, "pad_fov_up");
+    map.pad_fov_down = resolve_combo(cfg.pad_fov_down, map.pad_fov_down, "pad_fov_down");
     return map;
 }
 
@@ -60,6 +72,22 @@ void InputLogic::on_mouse_button(MouseButton button, bool down) {
 
 void InputLogic::on_wheel(double notches) {
     wheel_ += notches;
+}
+
+void InputLogic::on_gamepad(const PadState& state) {
+    pad_ = state;
+}
+
+bool InputLogic::pad_combo_down(const PadState& s, const std::vector<PadButton>& combo) const {
+    if (combo.empty()) return false;
+    for (const PadButton b : combo) {
+        if (!pad_held(s, b)) return false;
+    }
+    return true;
+}
+
+bool InputLogic::pad_combo_pressed(const std::vector<PadButton>& combo) const {
+    return pad_combo_down(pad_, combo) && !pad_combo_down(pad_prev_, combo);
 }
 
 bool InputLogic::held(int vk) const {
@@ -104,6 +132,37 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
     out.toggle_menu = key_pressed(keys.menu);
     out.toggle_freeze = key_pressed(keys.freeze);
     out.reset_view = key_pressed(keys.reset);
+
+    // FOV 步进：键盘 FOV 键 + 手柄十字键
+    if (key_pressed(keys.fov_up) || pad_combo_pressed(keys.pad_fov_up)) out.fov_nudge += 1;
+    if (key_pressed(keys.fov_down) || pad_combo_pressed(keys.pad_fov_down)) out.fov_nudge -= 1;
+
+    // 手柄：enabled=false 时快照全为“松开”，任何组合都不会触发
+    if (cfg.pad_enabled) {
+        out.toggle_mode = out.toggle_mode || pad_combo_pressed(keys.pad_toggle);
+        out.toggle_menu = out.toggle_menu || pad_combo_pressed(keys.pad_menu);
+        out.toggle_freeze = out.toggle_freeze || pad_combo_pressed(keys.pad_freeze);
+        out.reset_view = out.reset_view || pad_combo_pressed(keys.pad_reset);
+
+        // 左摇杆移动（模拟行程，deadzone 后 0..1）
+        double lx = pad_.lx;
+        double ly = pad_.ly;
+        apply_stick_deadzone(lx, ly, cfg.pad_deadzone);
+        out.move_forward += ly * cfg.pad_move_scale;
+        out.move_right += lx * cfg.pad_move_scale;
+
+        // 右摇杆视角：折算成度/秒；XInput 正 = 上，Intent 约定正 = 向下，翻转 Y
+        double rx = pad_.rx;
+        double ry = pad_.ry;
+        apply_stick_deadzone(rx, ry, cfg.pad_deadzone);
+        out.pad_look_dx = rx * cfg.pad_look_speed;
+        out.pad_look_dy = -ry * cfg.pad_look_speed;
+
+        // RT 上 / LT 下（模拟量）；LB 加速 / RB 减速
+        out.move_up += pad_.rt - pad_.lt;
+        out.boost = out.boost || pad_held(pad_, PadButton::LB);
+        out.slow = out.slow || pad_held(pad_, PadButton::RB);
+    }
     return out;
 }
 
@@ -112,6 +171,7 @@ void InputLogic::end_frame() {
     dx_ = 0.0;
     dy_ = 0.0;
     wheel_ = 0.0;
+    pad_prev_ = pad_;
 }
 
 void InputLogic::reset() {
@@ -122,6 +182,9 @@ void InputLogic::reset() {
     wheel_ = 0.0;
     lmb_ = false;
     rmb_ = false;
+    // 注意：pad_/pad_prev_ 不能清。切换摄影模式时组合键还按着（如 LS+RS），
+    // 清掉上一帧状态会让“仍按住”被当成新的按下沿，进出模式死循环。
+    // 键盘没有这个问题：win_input 的 key_state_ 在 reset 之外自己记住边沿。
 }
 
 }  // namespace pbzpm

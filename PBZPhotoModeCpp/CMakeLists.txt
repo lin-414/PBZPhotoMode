@@ -13,6 +13,7 @@ endif()
 # 不含任何 UE4SS/UE 头文件：配置解析、输入状态机、数学、摄影模式状态机、菜单模型。
 add_library(pbzpm_core STATIC
     src/core/config.cpp
+    src/core/gamepad.cpp
     src/core/input_logic.cpp
     src/core/menu_model.cpp
     src/core/photo_mode.cpp

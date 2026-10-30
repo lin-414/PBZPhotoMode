@@ -999,6 +999,408 @@ void test_photo_mode_input_blocking() {
     }
 }
 
+void test_gamepad_names() {
+    section("pad_button 名字表");
+    using namespace pbzpm;
+    PadButton b{};
+    CHECK(pad_button_from_name("LS", b) && b == PadButton::LS);
+    CHECK(pad_button_from_name("l3", b) && b == PadButton::LS);
+    CHECK(pad_button_from_name("R3", b) && b == PadButton::RS);
+    CHECK(pad_button_from_name("cross", b) && b == PadButton::A);
+    CHECK(pad_button_from_name("Triangle", b) && b == PadButton::Y);
+    CHECK(pad_button_from_name("L1", b) && b == PadButton::LB);
+    CHECK(pad_button_from_name("L2", b) && b == PadButton::LT);
+    CHECK(pad_button_from_name("options", b) && b == PadButton::Start);
+    CHECK(pad_button_from_name("share", b) && b == PadButton::Back);
+    CHECK(pad_button_from_name("ps", b) && b == PadButton::Guide);
+    CHECK(pad_button_from_name("DPAD_UP", b) && b == PadButton::Up);
+    CHECK(pad_button_from_name("RT", b) && b == PadButton::RT);
+    CHECK(!pad_button_from_name("NOPE", b));
+    CHECK(!pad_button_from_name("", b));
+    CHECK_STR(pad_button_name(PadButton::LS), "LS");
+    CHECK_STR(pad_button_name(PadButton::Start), "START");
+    CHECK_STR(pad_button_name(PadButton::Guide), "GUIDE");
+}
+
+void test_gamepad_parse_combo() {
+    section("parse_pad_combo");
+    using namespace pbzpm;
+    std::vector<std::string> warnings;
+    const std::vector<PadButton> fb{PadButton::LS, PadButton::RS};
+
+    PadCombo r = parse_pad_combo("LS+RS", fb, "pad_toggle", &warnings);
+    CHECK(r.ok);
+    CHECK_INT((int)r.buttons.size(), 2);
+    CHECK(r.buttons[0] == PadButton::LS && r.buttons[1] == PadButton::RS);
+
+    r = parse_pad_combo(" start ", fb, "pad_menu", &warnings);
+    CHECK(r.ok && r.buttons.size() == 1 && r.buttons[0] == PadButton::Start);
+
+    r = parse_pad_combo("ls + rs", fb, "pad_toggle", &warnings);
+    CHECK(r.ok && r.buttons.size() == 2);
+
+    r = parse_pad_combo("NONE", fb, "pad_freeze", &warnings);
+    CHECK(r.ok && r.buttons.empty());
+
+    warnings.clear();
+    r = parse_pad_combo("A+FOO", fb, "pad_toggle", &warnings);
+    CHECK(!r.ok && r.buttons.size() == 2);
+    CHECK_INT((int)warnings.size(), 1);
+
+    warnings.clear();
+    r = parse_pad_combo("", fb, "pad_toggle", &warnings);
+    CHECK(!r.ok && warnings.size() == 1);
+
+    warnings.clear();
+    r = parse_pad_combo("NONE+A", fb, "pad_toggle", &warnings);
+    CHECK(!r.ok && warnings.size() == 1);
+
+    CHECK_STR(pad_combo_name(fb), "LS+RS");
+    CHECK_STR(pad_combo_name({}), "NONE");
+
+    // 默认配置文本包含手柄节，且能无损往返解析
+    const std::string defaults = default_config_text();
+    CHECK(defaults.find("[gamepad]") != std::string::npos);
+    CHECK(defaults.find("pad_toggle = LS+RS") != std::string::npos);
+    const ConfigLoadResult rt = parse_config(defaults);
+    CHECK_INT((int)rt.warnings.size(), 0);
+    CHECK_STR(rt.cfg.pad_toggle, "LS+RS");
+    CHECK(rt.cfg.pad_enabled);
+    CHECK_NEAR(rt.cfg.pad_look_speed, 180.0, 1e-9);
+    CHECK_NEAR(rt.cfg.pad_deadzone, 0.15, 1e-9);
+}
+
+void test_gamepad_deadzone() {
+    section("apply_stick_deadzone");
+    using namespace pbzpm;
+    double x = 0.1, y = 0.0;
+    apply_stick_deadzone(x, y, 0.15);
+    CHECK_NEAR(x, 0.0, 1e-9);
+
+    x = 1.0;
+    apply_stick_deadzone(x, y, 0.15);
+    CHECK_NEAR(x, 1.0, 1e-9);
+
+    x = 0.5;
+    apply_stick_deadzone(x, y, 0.25);
+    CHECK_NEAR(x, 1.0 / 3.0, 1e-9);  // (0.5-0.25)/(1-0.25)
+
+    x = 0.0, y = -1.0;
+    apply_stick_deadzone(x, y, 0.15);
+    CHECK_NEAR(y, -1.0, 1e-9);
+
+    x = 0.05, y = 0.05;  // 幅度 0.0707 < 0.15
+    apply_stick_deadzone(x, y, 0.15);
+    CHECK_NEAR(x, 0.0, 1e-9);
+    CHECK_NEAR(y, 0.0, 1e-9);
+
+    x = 0.7, y = 0.0;
+    apply_stick_deadzone(x, y, 0.0);
+    CHECK_NEAR(x, 0.7, 1e-9);  // 死区 0 不缩放
+
+    x = 5.0;
+    apply_stick_deadzone(x, y, 0.0);
+    CHECK_NEAR(x, 1.0, 1e-9);  // 分量夹紧
+}
+
+void test_gamepad_input_logic() {
+    section("InputLogic 手柄");
+    using namespace pbzpm;
+
+    Config cfg;
+    std::vector<std::string> warnings;
+    const KeyMap keys = build_keymap(cfg, &warnings);
+    CHECK(keys.all_resolved);
+    CHECK_INT((int)warnings.size(), 0);
+    CHECK_INT((int)keys.pad_toggle.size(), 2);
+
+    InputLogic input;
+    Intent in;
+
+    // 组合键边沿：按住只触发一次，松开再按才再触发
+    PadState combo;
+    combo.held[static_cast<int>(PadButton::LS)] = true;
+    combo.held[static_cast<int>(PadButton::RS)] = true;
+    input.on_gamepad(combo);
+    in = input.build(cfg, keys);
+    CHECK(in.toggle_mode);
+    input.end_frame();
+    in = input.build(cfg, keys);  // 仍按住
+    CHECK(!in.toggle_mode);
+    input.end_frame();
+    input.on_gamepad(PadState{});  // 松开
+    input.end_frame();
+    input.on_gamepad(combo);  // 再按
+    in = input.build(cfg, keys);
+    CHECK(in.toggle_mode);
+    input.end_frame();
+    input.reset();
+
+    // enabled=false 时不触发
+    Config off = cfg;
+    off.pad_enabled = false;
+    input.on_gamepad(combo);
+    in = input.build(off, keys);
+    CHECK(!in.toggle_mode);
+    input.end_frame();
+    input.reset();
+
+    // handle_toggle 会调 reset()：此时组合键仍按住，不能立刻再次触发（否则进出死循环）
+    {
+        InputLogic fresh;  // 全新状态机，不带上文
+        fresh.on_gamepad(combo);
+        in = fresh.build(cfg, keys);
+        CHECK(in.toggle_mode);
+        fresh.end_frame();  // prev = combo
+        fresh.reset();      // 模拟退出模式时的 input_.reset()
+        in = fresh.build(cfg, keys);
+        CHECK(!in.toggle_mode);  // 仍按住：没有新的按下沿
+        fresh.end_frame();
+        fresh.on_gamepad(PadState{});  // 松开
+        fresh.end_frame();
+        fresh.on_gamepad(combo);  // 再按
+        in = fresh.build(cfg, keys);
+        CHECK(in.toggle_mode);
+        fresh.end_frame();
+    }
+    input.reset();
+
+    // NONE 解绑后不触发，且不算解析失败
+    {
+        Config unbind = cfg;
+        unbind.pad_menu = "NONE";
+        std::vector<std::string> w2;
+        const KeyMap k2 = build_keymap(unbind, &w2);
+        CHECK(k2.all_resolved);
+        CHECK(k2.pad_menu.empty());
+        PadState s;
+        s.held[static_cast<int>(PadButton::Start)] = true;
+        input.on_gamepad(s);
+        CHECK(!input.build(unbind, k2).toggle_menu);
+        input.end_frame();
+        input.reset();
+    }
+
+    // 非法按钮名：回退默认组合并记 warning
+    {
+        Config bad = cfg;
+        bad.pad_toggle = "FOO";
+        std::vector<std::string> w3;
+        const KeyMap k3 = build_keymap(bad, &w3);
+        CHECK(!k3.all_resolved);
+        CHECK_INT((int)w3.size(), 1);
+        CHECK_INT((int)k3.pad_toggle.size(), 2);
+    }
+
+    // 自定义组合 + 扳机当按钮（rt >= 0.3 视为按下）
+    {
+        Config custom = cfg;
+        custom.pad_freeze = "RB + RT";
+        std::vector<std::string> w4;
+        const KeyMap k4 = build_keymap(custom, &w4);
+        CHECK(k4.all_resolved);
+        PadState s;
+        s.rt = 1.0;
+        s.held[static_cast<int>(PadButton::RB)] = true;
+        input.on_gamepad(s);
+        CHECK(input.build(custom, k4).toggle_freeze);
+        input.end_frame();
+        PadState s2 = s;
+        s2.rt = 0.29;  // 阈值以下
+        input.on_gamepad(s2);
+        CHECK(!input.build(custom, k4).toggle_freeze);
+        input.end_frame();
+        input.reset();
+    }
+
+    // 左摇杆移动：满行程 ±1；半行程按死区缩放
+    PadState stick;
+    stick.ly = 1.0;
+    input.on_gamepad(stick);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.move_forward, 1.0, 1e-9);
+    CHECK_NEAR(in.move_right, 0.0, 1e-9);
+    PadState stick_half;
+    stick_half.ly = 0.5;
+    stick_half.lx = -0.5;  // 幅度 0.7071：径向死区后整体缩放，方向不变
+    input.on_gamepad(stick_half);
+    in = input.build(cfg, keys);
+    const double mag = std::sqrt(0.5);
+    const double scaled = (mag - 0.15) / 0.85;
+    CHECK_NEAR(in.move_forward, scaled * (0.5 / mag), 1e-9);
+    CHECK_NEAR(in.move_right, -scaled * (0.5 / mag), 1e-9);
+    input.end_frame();
+    input.reset();
+
+    // 右摇杆视角：折算成度/秒；摇杆上推（ry 正）= 向上 = dy 负
+    Config look_cfg = cfg;
+    look_cfg.pad_look_speed = 100.0;
+    PadState rstick;
+    rstick.rx = 1.0;
+    input.on_gamepad(rstick);
+    in = input.build(look_cfg, keys);
+    CHECK_NEAR(in.pad_look_dx, 100.0, 1e-9);
+    CHECK_NEAR(in.pad_look_dy, 0.0, 1e-9);
+    input.end_frame();
+    PadState rstick_up;
+    rstick_up.ry = 1.0;
+    input.on_gamepad(rstick_up);
+    in = input.build(look_cfg, keys);
+    CHECK_NEAR(in.pad_look_dx, 0.0, 1e-9);
+    CHECK_NEAR(in.pad_look_dy, -100.0, 1e-9);
+    input.end_frame();
+    input.reset();
+
+    // 手柄视角不受 free_look_requires_alt 限制；鼠标增量仍被挡
+    Config alt_cfg = cfg;
+    alt_cfg.free_look_requires_alt = true;
+    InputLogic logic2;
+    logic2.on_mouse_move(10.0, 0.0);
+    PadState r2;
+    r2.rx = 1.0;
+    logic2.on_gamepad(r2);
+    in = logic2.build(alt_cfg, keys);
+    CHECK_NEAR(in.look_dx, 0.0, 1e-9);
+    CHECK_NEAR(in.pad_look_dx, cfg.pad_look_speed, 1e-9);
+    logic2.end_frame();
+
+    // RT/LT 升降（模拟量）+ LB/RB 变速
+    PadState trig;
+    trig.rt = 1.0;
+    trig.lt = 0.5;
+    trig.held[static_cast<int>(PadButton::LB)] = true;
+    trig.held[static_cast<int>(PadButton::RB)] = true;
+    input.on_gamepad(trig);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.move_up, 0.5, 1e-9);
+    CHECK(in.boost);
+    CHECK(in.slow);
+    input.end_frame();
+    input.reset();
+
+    // FOV 步进：手柄十字键与键盘 FOV 键（此前键盘 FOV 键只解析未生效，现在一并接上）
+    PadState dpad;
+    dpad.held[static_cast<int>(PadButton::Up)] = true;
+    input.on_gamepad(dpad);
+    in = input.build(cfg, keys);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    input.on_key(keys.fov_down, true);
+    in = input.build(cfg, keys);
+    CHECK_INT(in.fov_nudge, -1);
+    input.end_frame();
+    input.reset();
+
+    // 手柄冻结/重置键
+    PadState btns;
+    btns.held[static_cast<int>(PadButton::X)] = true;
+    btns.held[static_cast<int>(PadButton::Y)] = true;
+    input.on_gamepad(btns);
+    in = input.build(cfg, keys);
+    CHECK(in.toggle_freeze);
+    CHECK(in.reset_view);
+    CHECK(!in.toggle_menu);
+    input.end_frame();
+}
+
+void test_photo_mode_gamepad() {
+    section("PhotoMode 手柄");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    FakeEngine fe;
+    fe.pov.loc = Vec3{0.0, 0.0, 0.0};
+    fe.pov.rot = Rot{0.0, 0.0, 0.0};
+    fe.pov.fov = 90.0;
+    Config cfg;
+    cfg.pad_look_speed = 100.0;
+    PhotoMode mode(fe, cfg);
+    CHECK(mode.enter());
+
+    // 右摇杆右推到底：100 度/秒 * 0.25 秒 = yaw +25（tick 内部把 dt 夹到 0.25）
+    Intent look;
+    look.pad_look_dx = 100.0;
+    fe.reset_calls();
+    mode.tick(look, 0.25);
+    CHECK_NEAR(mode.pose().rot.yaw, 25.0, 1e-9);
+    CHECK(fe.has("apply_pose"));
+
+    // 摇杆上推（pad_look_dy 负）-> pitch 增大
+    Intent look_up;
+    look_up.pad_look_dy = -40.0;
+    mode.tick(look_up, 0.25);
+    CHECK_NEAR(mode.pose().rot.pitch, 10.0, 1e-9);
+
+    // invert_y 同时作用于手柄
+    Config inv = cfg;
+    inv.invert_y = true;
+    PhotoMode mode2(fe, inv);
+    CHECK(mode2.enter());
+    Intent stick_up;
+    stick_up.pad_look_dy = -20.0;  // 摇杆上推
+    mode2.tick(stick_up, 0.25);    // 反转后 pitch -5
+    CHECK_NEAR(mode2.pose().rot.pitch, -5.0, 1e-9);
+    mode2.leave();
+
+    // FOV 步进：+1 格 / -1 格
+    const double fov0 = mode.fov();
+    Intent fov_up;
+    fov_up.fov_nudge = 1;
+    mode.tick(fov_up, 0.016);
+    CHECK_NEAR(mode.fov(), fov0 + cfg.fov_step, 1e-9);
+    Intent fov_dn;
+    fov_dn.fov_nudge = -1;
+    mode.tick(fov_dn, 0.016);
+    CHECK_NEAR(mode.fov(), fov0, 1e-9);
+
+    // 左摇杆半程 = 半速；满行程 = 全速
+    {
+        FakeEngine fe2;
+        Config c2;
+        c2.move_speed = 100.0;
+        PhotoMode m2(fe2, c2);
+        CHECK(m2.enter());
+        const Vec3 before = m2.pose().loc;
+        Intent half;
+        half.move_forward = 0.5;
+        m2.tick(half, 0.25);
+        const double dist_half = std::sqrt(std::pow(m2.pose().loc.x - before.x, 2) +
+                                           std::pow(m2.pose().loc.y - before.y, 2) +
+                                           std::pow(m2.pose().loc.z - before.z, 2));
+        CHECK_NEAR(dist_half, 12.5, 1e-9);
+
+        const Vec3 before2 = m2.pose().loc;
+        Intent full;
+        full.move_forward = 1.0;
+        m2.tick(full, 0.25);
+        const double dist_full = std::sqrt(std::pow(m2.pose().loc.x - before2.x, 2) +
+                                           std::pow(m2.pose().loc.y - before2.y, 2) +
+                                           std::pow(m2.pose().loc.z - before2.z, 2));
+        CHECK_NEAR(dist_full, 25.0, 1e-9);
+
+        // 键盘对角仍归一化到全速（不因改动变快/变慢）
+        const Vec3 before3 = m2.pose().loc;
+        Intent diag;
+        diag.move_forward = 1.0;
+        diag.move_right = 1.0;
+        m2.tick(diag, 0.1);
+        const double dist_diag = std::sqrt(std::pow(m2.pose().loc.x - before3.x, 2) +
+                                           std::pow(m2.pose().loc.y - before3.y, 2) +
+                                           std::pow(m2.pose().loc.z - before3.z, 2));
+        CHECK_NEAR(dist_diag, 10.0, 1e-9);
+
+        // RT 升 / LT 降（vertical_speed 默认 200）
+        Intent up;
+        up.move_up = 1.0;
+        m2.tick(up, 0.25);
+        CHECK_NEAR(m2.pose().loc.z, 50.0, 1e-9);
+        Intent down;
+        down.move_up = -1.0;
+        m2.tick(down, 0.25);
+        CHECK_NEAR(m2.pose().loc.z, 0.0, 1e-9);
+    }
+}
+
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
 
@@ -1016,6 +1418,11 @@ int main() {
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
     test_menu_model();
+    test_gamepad_names();
+    test_gamepad_parse_combo();
+    test_gamepad_deadzone();
+    test_gamepad_input_logic();
+    test_photo_mode_gamepad();
 
     std::printf("\n----------------------------------------\n");
     std::printf("检查 %d 项，失败 %d 项\n", g_checks, g_failures);

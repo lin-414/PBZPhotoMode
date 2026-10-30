@@ -6,6 +6,7 @@
 
 #include <string>
 
+#include "core/gamepad.h"
 #include "core/menu_model.h"
 #include "core/version.h"
 
@@ -95,6 +96,30 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
     }
     if (ImGui::IsItemHovered()) {
         ImGui::SetTooltip("进入摄影模式时自动冻结时间；关闭后可按 %s 手动冻结。", vk_to_name(keys.freeze).c_str());
+    }
+
+    ImGui::Separator();
+
+    bool pad_enabled = cfg.pad_enabled;
+    if (ImGui::Checkbox("手柄支持", &pad_enabled)) {
+        cfg.pad_enabled = pad_enabled;
+        mode.set_config(cfg);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("手柄 %s 进入/退出摄影模式。\n改按钮绑定请编辑 config.ini 的 [gamepad] 节后点「重新载入」。",
+                          pad_combo_name(keys.pad_toggle).c_str());
+    }
+    ImGui::SameLine();
+    float pad_look = static_cast<float>(cfg.pad_look_speed);
+    if (ImGui::SliderFloat("手柄视角速度", &pad_look, 30.0f, 540.0f, "%.0f 度/s")) {
+        cfg.pad_look_speed = static_cast<double>(pad_look);
+        mode.set_config(cfg);
+    }
+    ImGui::SameLine();
+    float pad_deadzone = static_cast<float>(cfg.pad_deadzone);
+    if (ImGui::SliderFloat("手柄死区", &pad_deadzone, 0.0f, 0.5f, "%.2f")) {
+        cfg.pad_deadzone = static_cast<double>(pad_deadzone);
+        mode.set_config(cfg);
     }
 
     ImGui::Separator();

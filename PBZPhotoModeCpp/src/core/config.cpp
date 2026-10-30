@@ -124,6 +124,16 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
         else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
         else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
+        else if (key == "pad_enabled") set_bool(cfg.pad_enabled, value, error, key.c_str());
+        else if (key == "pad_toggle") set_string(cfg.pad_toggle, value, error, key.c_str());
+        else if (key == "pad_menu") set_string(cfg.pad_menu, value, error, key.c_str());
+        else if (key == "pad_freeze") set_string(cfg.pad_freeze, value, error, key.c_str());
+        else if (key == "pad_reset") set_string(cfg.pad_reset, value, error, key.c_str());
+        else if (key == "pad_fov_up") set_string(cfg.pad_fov_up, value, error, key.c_str());
+        else if (key == "pad_fov_down") set_string(cfg.pad_fov_down, value, error, key.c_str());
+        else if (key == "pad_look_speed") set_double(cfg.pad_look_speed, value, error, key.c_str());
+        else if (key == "pad_move_scale") set_double(cfg.pad_move_scale, value, error, key.c_str());
+        else if (key == "pad_deadzone") set_double(cfg.pad_deadzone, value, error, key.c_str());
         else if (key == "move_speed") set_double(cfg.move_speed, value, error, key.c_str());
         else if (key == "boost_mult") set_double(cfg.boost_mult, value, error, key.c_str());
         else if (key == "slow_mult") set_double(cfg.slow_mult, value, error, key.c_str());
@@ -232,6 +242,18 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         result.warnings.push_back("freeze_dilation 应在 (0, 1]，已回退 0.0001");
         result.cfg.freeze_dilation = 0.0001;
     }
+    if (result.cfg.pad_look_speed < 10.0 || result.cfg.pad_look_speed > 720.0) {
+        result.warnings.push_back("pad_look_speed 应在 [10, 720]，已回退 180");
+        result.cfg.pad_look_speed = 180.0;
+    }
+    if (result.cfg.pad_move_scale < 0.0 || result.cfg.pad_move_scale > 3.0) {
+        result.warnings.push_back("pad_move_scale 应在 [0, 3]，已回退 1");
+        result.cfg.pad_move_scale = 1.0;
+    }
+    if (result.cfg.pad_deadzone < 0.0 || result.cfg.pad_deadzone > 0.5) {
+        result.warnings.push_back("pad_deadzone 应在 [0, 0.5]，已回退 0.15");
+        result.cfg.pad_deadzone = 0.15;
+    }
     return result;
 }
 
@@ -284,6 +306,29 @@ std::string default_config_text() {
         << "; 左键上移/右键下移：translate=相机上下平移，look=俯仰\n"
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
         << "vertical_speed = " << c.vertical_speed << "\n\n"
+        << "[gamepad]\n"
+        << "; 手柄支持总开关（false=不轮询手柄）\n"
+        << "pad_enabled = " << (c.pad_enabled ? "true" : "false") << "\n"
+        << "; 进入/退出摄影模式：默认左右摇杆同时按下（LS=左摇杆按下 L3，RS=右摇杆按下 R3）\n"
+        << "; 可用按钮：A B X Y LB RB LS RS BACK START GUIDE UP DOWN LEFT RIGHT LT RT\n"
+        << "; 也认 PS 叫法（CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS）\n"
+        << "; 多个按钮用 + 连接（同时按住触发）；写 NONE 表示解绑该功能\n"
+        << "pad_toggle = " << c.pad_toggle << "\n"
+        << "; 显示/隐藏菜单\n"
+        << "pad_menu = " << c.pad_menu << "\n"
+        << "; 冻结/恢复时间\n"
+        << "pad_freeze = " << c.pad_freeze << "\n"
+        << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
+        << "pad_reset = " << c.pad_reset << "\n"
+        << "; FOV 加减（十字键上/下）\n"
+        << "pad_fov_up = " << c.pad_fov_up << "\n"
+        << "pad_fov_down = " << c.pad_fov_down << "\n"
+        << "; 右摇杆转视角速度（度/秒，全行程）\n"
+        << "pad_look_speed = " << c.pad_look_speed << "\n"
+        << "; 左摇杆移动速度占 move_speed 的比例\n"
+        << "pad_move_scale = " << c.pad_move_scale << "\n"
+        << "; 摇杆死区（0~0.5，摇杆有漂移就调大）\n"
+        << "pad_deadzone = " << c.pad_deadzone << "\n\n"
         << "[camera]\n"
         << "fov_default = " << c.fov_default << "\n"
         << "fov_min = " << c.fov_min << "\n"

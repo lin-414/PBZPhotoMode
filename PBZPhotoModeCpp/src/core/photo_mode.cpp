@@ -256,6 +256,18 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         pose_dirty_ = true;
     }
 
+    // 手柄右摇杆：pad_look_* 已是度/秒（含灵敏度与死区），乘 dt 转成角度。
+    // 不受 free_look_requires_alt 限制——手柄上没有 Alt 可按。
+    if (intent.pad_look_dx != 0.0) {
+        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.pad_look_dx * dt);
+        pose_dirty_ = true;
+    }
+    if (intent.pad_look_dy != 0.0) {
+        const double pad_dy = cfg_.invert_y ? -intent.pad_look_dy : intent.pad_look_dy;
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - pad_dy * dt, cfg_.pitch_limit);
+        pose_dirty_ = true;
+    }
+
     // look 模式下左右键改俯仰（持续按住持续转）
     if (intent.pitch_up_click) {
         pose_.rot.pitch = clamp_pitch(pose_.rot.pitch + kPitchSpeedDegPerSec * dt, cfg_.pitch_limit);
@@ -271,6 +283,11 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         set_fov(fov_ - intent.wheel * cfg_.fov_step);
     }
 
+    // FOV 键/手柄十字键：一个按下沿走一格；正值 = 增大 FOV（拉远）
+    if (intent.fov_nudge != 0) {
+        set_fov(fov_ + intent.fov_nudge * cfg_.fov_step);
+    }
+
     const double mult = (intent.boost ? cfg_.boost_mult : 1.0) * (intent.slow ? cfg_.slow_mult : 1.0);
     const double step = cfg_.move_speed * mult * dt;
 
@@ -284,9 +301,11 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         double dz = fwd.z * fwd_in;
         const double len = std::sqrt(dx * dx + dy * dy + dz * dz);
         if (len > 1e-9) {
-            pose_.loc.x += dx / len * step;
-            pose_.loc.y += dy / len * step;
-            pose_.loc.z += dz / len * step;
+            // 键盘对角（len≈1.41）归一化到全速；手柄摇杆行程 <1 时按行程减速
+            const double k = len > 1.0 ? 1.0 / len : 1.0;
+            pose_.loc.x += dx * k * step;
+            pose_.loc.y += dy * k * step;
+            pose_.loc.z += dz * k * step;
             pose_dirty_ = true;
         }
     }

@@ -4,9 +4,9 @@
 
 ## 一句话状态
 
-**C++ 版 v1.0.14 已编译、已打包**：
-`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.14-cpp.zip`。
-核心层 **298 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.14 进入摄影模式自动暂停时间。
+**C++ 版 v1.0.15 已编译、已打包**：
+`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.15-cpp.zip`。
+核心层 **393 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.14 进入摄影模式自动暂停时间；**v1.0.15 新增手柄支持（默认 LS+RS 进出，键位可在 [gamepad] 段改）**。
 
 ## 已完成
 
@@ -361,3 +361,91 @@ AHUD Actor 上没有可绘制组件，所以这个开关看起来没有效果。
 - `config.ini.example` / dist config / 游戏目录 config：新增 `auto_pause_time = true` 与中文注释。
 - 核心层测试 257 → **298 项全绿**（新增自动暂停、关闭自动暂停、dilation 自动冻结、失败不阻断等场景）。
 - 版本 `1.0.14-cpp`；产物 `build-dll/PBZPhotoModeCpp.dll`（614,912 B）；包 `dist/PBZPhotoModeCpp_1.0.14-cpp.zip`（328,209 B）；已覆盖游戏目录 DLL、README 与 config。
+
+## 1.0.15-cpp（2026-10-30：手柄支持，默认快捷键 = 左右摇杆同时按下）
+
+需求：加上手柄支持，默认快捷键为左右摇杆（L3+R3）同时按下进入/退出摄影模式，键位可在配置文件里改。
+
+实现：
+- **新文件 `src/core/gamepad.h/.cpp`**：`PadButton` 枚举（Xbox 规范名，兼容 PS 叫法 CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS/HOME）、`parse_pad_combo("LS+RS")`（`+` 连接组合键，`NONE` 解绑）、`apply_stick_deadzone` 径向死区（分量夹紧→幅度判零→线性缩放回 0..1）、扳机阈值 `kPadTriggerHeld = 0.3`。
+- **`[gamepad]` 配置节**：`pad_enabled`（总开关）、`pad_toggle`（默认 `LS+RS`）、`pad_menu`（START）、`pad_freeze`（X）、`pad_reset`（Y）、`pad_fov_up/down`（十字键上/下）、`pad_look_speed`（右摇杆转速，度/秒，默认 180）、`pad_move_scale`（左摇杆移动比例，默认 1）、`pad_deadzone`（默认 0.15）；解析器做范围保护，非法值回退默认并记 warning。
+- **`InputLogic`**：新增 `on_gamepad(PadState)`；`build()` 里手柄按键用「组合键按下沿」触发（本帧全按住且上一帧不是），摇杆折算成 Intent：左摇杆→move_forward/right（模拟行程）、右摇杆→新字段 `pad_look_dx/dy`（度/秒，XInput 上推=负 dy）、RT/LT→move_up、LB/RB→boost/slow。
+- **`PhotoMode::tick`**：`pad_look_* × dt` 转角度（不受 free_look_requires_alt 限制，invert_y 同样生效）；新字段 `Intent.fov_nudge`（±1 格 `fov_step`）——顺带把**只解析从未生效的键盘 `key_fov_up/down` 一并接通**；移动归一化改为 `k = min(1, 1/len)`：键盘对角（len≈1.41）仍是全速，摇杆半程就是半速。
+- **`reset()` 不清手柄快照**（关键坑）：handle_toggle 里会调 `input_.reset()`，若把 pad_prev_ 一起清掉，仍按住的 LS+RS 下一帧会被当成新的按下沿 → 进出模式死循环。键盘没这个问题是因为 win_input 的 key_state_ 自己记住边沿。已有测试锁住该行为。
+- **`win_input.cpp`**：动态加载 XInput（xinput1_4 → 1_3 → 9_1_0，不链 xinput.lib；SDK 头没有 `XINPUT_GAMEPAD_GUIDE`，手动补宏 0x0400）。未锁定槽位时每帧只扫一个槽位（最坏 4 帧轮完，避免每帧 4 次 XInput 调用的卡顿），连上后锁定槽位独占轮询，连续 3 帧读失败判拔出；切后台强制喂空快照防组合键卡住。`poll()` 签名加 `gamepad_enabled`。
+- **接线与 UI**：mod_app 传 `cfg_.pad_enabled`、手柄插拔各打一行日志（`手柄已连接（XInput 槽位 N）`）、诊断行加 `手柄槽位=%d`、加载日志变成「按 F2 或手柄 LS+RS 进入摄影模式」；游戏内文字菜单与 ImGui 面板都加了手柄提示/设置（开关、视角速度、死区滑条）。
+- 测试 298 → **393 项全绿**（名字表、组合键解析、死区、边沿/防重复触发、enabled 门控、模拟量移动与视角、PhotoMode 集成）；`CMakeLists.txt` 与 `build_tests.bat` 已加 gamepad.cpp。
+- 版本 `1.0.15-cpp`；产物 `build-dll/PBZPhotoModeCpp.dll`（640,000 B）；包 `dist/PBZPhotoModeCpp_1.0.15-cpp.zip`（340,864 B）；已覆盖游戏目录 DLL、README 与 config（config 已含 `[gamepad]` 节）。
+
+### 1.0.15 待真机验证
+
+1. 游戏内按 **LS+RS** 应进入/退出摄影模式，日志应有 `手柄已连接（XInput 槽位 N）`。
+2. 进模式后：左摇杆移动、右摇杆转视角、RT/LT 升降、十字键调 FOV、X 冻结、Y 重置、START 隐藏菜单。
+3. **注意**：`block_game_input` 对键鼠已实测有效，但它是否同样屏蔽**手柄**输入未经真机验证——若进摄影模式后角色仍跟着左摇杆动，需要给输入屏蔽再加手柄通道（Enhanced Input 的清理或 `SetIgnoreMoveInput` 之外的手段）。
+4. X 键在游戏内若有其他功能（如互动），非摄影模式下按 LS+RS/X 仍会触发游戏自身动作，属预期行为。
+
+## 1.0.15 实机日志结论（2026-10-30 23:51 UE4SS.log，942 行）
+
+- v1.0.15 加载成功（`按 F2 或手柄 LS+RS 进入摄影模式`）；F2 进出、HUD 隐藏/恢复、F 冻结/恢复全部正常。
+- **整场会话 `手柄槽位=-1`，无任何 `手柄已连接` 日志** —— XInput 从未发现手柄。两种可能：① 测试时手柄没插；② XInput 加载静默失败（旧代码无日志无法区分）；③ 手柄不是 XInput 设备（蓝牙直连的 PS/Switch 手柄 XInput 看不见，需要 Steam Input / DS4Windows 包装）。
+- 23:51:49~58 的连续 暂停/恢复 是键盘 F 反复按（手柄槽位=-1 排除手柄触发）。
+
+## 1.0.16-cpp（2026-10-30：XInput 状态不再静默）
+
+- 加载日志区分：`XInput 已加载（插上手柄会打「手柄已连接」日志）` vs `XInput 加载失败，手柄功能不可用！`（`Win32InputSource::pad_api_ready()`）。
+- 下次日志据此分流：已加载但槽位=-1 → 手柄没插或非 XInput 设备；加载失败 → 查游戏目录是否有代理 xinput dll。
+- 版本 `1.0.16-cpp`；核心层测试保持 393 项全绿；产物 640,000 B；包 `dist/PBZPhotoModeCpp_1.0.16-cpp.zip`（341,039 B）；已覆盖游戏目录 DLL 与 README（config 无变化）。
+
+## 1.0.16 实机日志结论（2026-10-31 00:06）
+
+- `XInput 已加载` —— 加载环节没问题。但该局只跑了 70 秒、没进摄影模式，且无 `手柄已连接`。
+- 用户确认手柄是 **Xbox 手柄 USB 直连**（XInput 一定能看到的类型）。槽位=-1 说明当时手柄对系统不可见：USB 插着但**手柄没开机**（Xbox 指示灯没亮）也会枚举不到。
+
+## 1.0.17-cpp（2026-10-31：手柄扫描心跳 + 离线构建脚本）
+
+- `mod_app` 启动 10 秒后打一行 `手柄扫描正常：暂未发现手柄，持续扫描中`（或 `已连接（槽位 N）`）——证明 XInput 轮询管线活着；没有这行 = 引擎 Tick 没跑，另查。
+- 新增 `tools/build_dll_offline.bat`：与 build_dll.bat 相同但加 `-DFETCHCONTENT_FULLY_DISCONNECTED=ON`，跳过 FetchContent 的 git update（GitHub 不通时离线构建；要求 _deps 已有一次成功构建）。1.0.17 就是网络抽风时用它编出来的。
+- 版本 `1.0.17-cpp`；测试保持 393 项全绿；产物 642,048 B；包 `dist/PBZPhotoModeCpp_1.0.17-cpp.zip`（341,603 B）；已覆盖游戏目录 DLL 与 README。
+
+### 下一次验证手柄的步骤
+
+1. 确认 Xbox 手柄**指示灯亮着**（USB 插上后手柄会自动开机；没亮就按一下 Xbox 键）。
+2. 进游戏（主菜单即可），等 10 秒看 UE4SS.log：应出现 `手柄扫描正常：...`。
+3. 插着手柄进游戏世界，按 **LS+RS**（两个摇杆同时按下）→ 日志应出现 `手柄已连接（XInput 槽位 0）` 和 `进入摄影模式`。
+
+## 手柄机器级体检（2026-10-31 00:1x，tools/check_pad.ps1）
+
+00:13 那局（1.0.17 心跳日志 `暂未发现手柄`）之后，直接在本机跑 `powershell -File tools/check_pad.ps1`：
+
+- **XInput 槽位 0：已连接**，槽位 1-3 未连接 → 手柄此刻可见，模组逻辑没有问题。
+- PnP 设备里有 **GeniTech Virtual Gamepad Device + Nefarius Virtual Gamepad Emulation Bus（ViGEm）**，还有「支持 Windows 的 XBOX 360 控制器」→ 用户走的是**虚拟手柄映射**（DS4Windows / 盖世小鸡助手一类），游戏里看到的「Xbox 手柄」是 ViGEm 虚拟设备。
+- 结论：00:13 测试时手柄/映射软件不在场（虚拟手柄不存在 + 物理手柄可能被 HidHide 藏了），所以 XInput 全空。**用模组前必须让映射软件开着、手柄在线**。
+- 新增 `tools/check_pad.ps1`：随时单独体检 XInput 槽位与 PnP 设备，不用进游戏。
+
+## 1.0.18-cpp（2026-10-31 00:2x：显式加载 System32 的 XInput）
+
+00:23 那局：心跳 `暂未发现手柄`（管线活着），但本机 PowerShell 探测槽位 0 已连接 → **同一系统、游戏进程看不到手柄**。高度怀疑游戏进程加载到了游戏目录/Steam 放进来的同名 xinput 代理 DLL（代理常"加载成功但永远报无手柄"）。
+
+- `load_xinput()` 改为：先用 `GetSystemDirectoryW` 按绝对路径加载系统目录的 xinput1_4/1_3/9_1_0，失败才回退搜索顺序；记录实际加载的模块完整路径。
+- 加载日志带路径：`（XInput 已加载：C:\Windows\System32\xinput1_4.dll）`——下次日志看路径就能确认有没有绕开代理。
+- 版本 `1.0.18-cpp`；测试保持 393 项全绿；包 `dist/PBZPhotoModeCpp_1.0.18-cpp.zip`；已覆盖游戏目录 DLL 与 README。
+
+### 若 1.0.18 还看不到手柄（按概率排查）
+
+1. 日志里 XInput 模块路径是否 `C:\Windows\System32\...`；不是 → 还有更深的注入。
+2. 跑 `tools/check_pad.ps1` 看游戏外能否看到；看不到 → 手柄/映射软件层面的状态（ViGEm 虚拟手柄只在映射软件运行时存在，物理手柄可能被 HidHide 藏了）。
+3. 游戏是否走 Steam 启动、Steam Input 对该游戏是否启用；虚拟手柄被映射软件"独占"时 Steam Input 可能不给别的进程转发。
+
+## 1.0.18 实机验收通过（2026-10-31 00:31 UE4SS.log）✅
+
+根因确认：**Steam 对 PBZ 开着「使用 Steam 输入」时，游戏进程里的 XInput 看不到手柄**（用户手柄经 ViGEm 映射软件出虚拟 Xbox 手柄，被 Steam Input 拦下不转发给游戏）。用户在 Steam 库 → PBZ 属性 → 控制器里关掉「使用 Steam 输入」后立即恢复。
+
+日志验收（v1.0.18）：
+- `XInput 已加载：C:\Windows\system32\xinput1_4.dll`（显式系统路径加载生效）
+- `手柄已连接（XInput 槽位 0）` → 心跳 `已连接（槽位 0）`
+- 00:31:41 `进入摄影模式`（LS+RS 触发）
+- 相机位置/朝向持续变化而 dx=dy=0、引擎增量=0 → 右摇杆转视角走的就是手柄通道 ✅
+- `时间已冻结/已恢复` 两次 → 手柄 X 键冻结 ✅
+- FOV 88→126 连续变化且 `滚轮事件=0` → FOV 步进通道（手柄十字键/键盘 FOV 键）首次实机生效 ✅
+
+给 README 排障补一条 Steam Input 的说明（虚拟手柄用户大概率踩同一个坑）。

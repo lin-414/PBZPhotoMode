@@ -5,6 +5,12 @@
 #include <atomic>
 #include <chrono>
 #include <thread>
+#include <xinput.h>
+
+// 部分 Windows SDK 的 xinput.h 略去了 GUIDE 键宏（原生值 0x0400）
+#ifndef XINPUT_GAMEPAD_GUIDE
+#define XINPUT_GAMEPAD_GUIDE 0x0400
+#endif
 
 #include "core/input_logic.h"
 
@@ -24,6 +30,74 @@ std::atomic<unsigned long> g_ll_wheel_events{0};
 HHOOK g_mouse_hook = nullptr;
 
 constexpr wchar_t kRawWindowClass[] = L"PBZPM_RawInputSink";
+
+// ---------------- XInput（手柄） ----------------
+// 动态加载而不是链 xinput.lib：不给构建加依赖，1_4 缺失时退回 1_3 / 9_1_0 也照常工作。
+using PFN_XInputGetState = DWORD(WINAPI*)(DWORD dwUserIndex, XINPUT_STATE* pState);
+PFN_XInputGetState g_xinput_get_state = nullptr;
+std::wstring g_xinput_module_path;
+
+void load_xinput() {
+    if (g_xinput_get_state != nullptr) return;
+
+    // 先按绝对路径加载系统目录的 DLL：游戏目录/第三方（Steam Input、代理 DLL）常往
+    // 游戏进程目录塞同名 xinput，那种代理可能"加载成功但永远报无手柄"，必须绕开。
+    wchar_t sys_dir[MAX_PATH]{};
+    const UINT sys_len = ::GetSystemDirectoryW(sys_dir, MAX_PATH);
+
+    for (const wchar_t* name : {L"xinput1_4.dll", L"xinput1_3.dll", L"xinput9_1_0.dll"}) {
+        const auto try_load = [&](const std::wstring& path) {
+            if (g_xinput_get_state != nullptr) return;
+            HMODULE mod = ::LoadLibraryW(path.c_str());
+            if (mod == nullptr) return;
+            auto* fn = reinterpret_cast<PFN_XInputGetState>(::GetProcAddress(mod, "XInputGetState"));
+            if (fn != nullptr) {
+                g_xinput_get_state = fn;
+                wchar_t file[MAX_PATH]{};
+                g_xinput_module_path = ::GetModuleFileNameW(mod, file, MAX_PATH) > 0 ? file : path;
+                return;
+            }
+            ::FreeLibrary(mod);
+        };
+        if (sys_len > 0) try_load(std::wstring(sys_dir) + L"\\" + name);
+        try_load(name);  // 系统路径失败再按搜索顺序兜底
+        if (g_xinput_get_state != nullptr) return;
+    }
+}
+
+double thumb_to_axis(SHORT value) {
+    double v = static_cast<double>(value) / 32767.0;
+    if (v > 1.0) v = 1.0;
+    if (v < -1.0) v = -1.0;
+    return v;
+}
+
+PadState xinput_to_pad(const XINPUT_STATE& st) {
+    PadState p;
+    const WORD b = st.Gamepad.wButtons;
+    p.held[static_cast<int>(PadButton::A)] = (b & XINPUT_GAMEPAD_A) != 0;
+    p.held[static_cast<int>(PadButton::B)] = (b & XINPUT_GAMEPAD_B) != 0;
+    p.held[static_cast<int>(PadButton::X)] = (b & XINPUT_GAMEPAD_X) != 0;
+    p.held[static_cast<int>(PadButton::Y)] = (b & XINPUT_GAMEPAD_Y) != 0;
+    p.held[static_cast<int>(PadButton::LB)] = (b & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
+    p.held[static_cast<int>(PadButton::RB)] = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
+    p.held[static_cast<int>(PadButton::LS)] = (b & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
+    p.held[static_cast<int>(PadButton::RS)] = (b & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
+    p.held[static_cast<int>(PadButton::Back)] = (b & XINPUT_GAMEPAD_BACK) != 0;
+    p.held[static_cast<int>(PadButton::Start)] = (b & XINPUT_GAMEPAD_START) != 0;
+    p.held[static_cast<int>(PadButton::Guide)] = (b & XINPUT_GAMEPAD_GUIDE) != 0;
+    p.held[static_cast<int>(PadButton::Up)] = (b & XINPUT_GAMEPAD_DPAD_UP) != 0;
+    p.held[static_cast<int>(PadButton::Down)] = (b & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
+    p.held[static_cast<int>(PadButton::Left)] = (b & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
+    p.held[static_cast<int>(PadButton::Right)] = (b & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
+    p.lt = static_cast<double>(st.Gamepad.bLeftTrigger) / 255.0;
+    p.rt = static_cast<double>(st.Gamepad.bRightTrigger) / 255.0;
+    p.lx = thumb_to_axis(st.Gamepad.sThumbLX);
+    p.ly = thumb_to_axis(st.Gamepad.sThumbLY);
+    p.rx = thumb_to_axis(st.Gamepad.sThumbRX);
+    p.ry = thumb_to_axis(st.Gamepad.sThumbRY);
+    return p;
+}
 
 // 需要轮询的键：功能键 + 摄影模式里用到的所有键
 constexpr int kPolledKeys[] = {
@@ -158,9 +232,28 @@ unsigned long Win32InputSource::mouse_event_count() const {
     return g_mouse_events.load();
 }
 
+bool Win32InputSource::pad_connected() const {
+    return pad_slot_active_ >= 0;
+}
+
+int Win32InputSource::pad_slot() const {
+    return pad_slot_active_;
+}
+
+bool Win32InputSource::pad_api_ready() const {
+    return g_xinput_get_state != nullptr;
+}
+
+std::string Win32InputSource::pad_api_module() const {
+    if (g_xinput_module_path.empty()) return "(未加载)";
+    return std::string(g_xinput_module_path.begin(), g_xinput_module_path.end());
+}
+
 bool Win32InputSource::install(bool enable_wheel_hook) {
     if (thread_ != nullptr) return true;
     g_wheel_hook_enabled.store(enable_wheel_hook);
+
+    load_xinput();
 
     ::SetLastError(0);
     auto* thread = new std::thread(&raw_thread_main);
@@ -199,7 +292,7 @@ unsigned long Win32InputSource::ll_wheel_events() const {
     return g_ll_wheel_events.load();
 }
 
-void Win32InputSource::poll(InputLogic& logic) {
+void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
     foreground_ = foreground_is_ours();
     const bool active = foreground_;
 
@@ -275,6 +368,35 @@ void Win32InputSource::poll(InputLogic& logic) {
     if (right != right_down_) {
         right_down_ = right;
         logic.on_mouse_button(MouseButton::Right, right);
+    }
+
+    // 5) 手柄（XInput）：每帧喂一份快照。没接手柄/被禁用时喂空状态，组合键视为全部松开。
+    //    没锁定槽位时每帧只扫一个槽位（最坏 4 帧轮完），避免每帧 4 次 XInput 调用的卡顿。
+    if (gamepad_enabled && g_xinput_get_state != nullptr) {
+        XINPUT_STATE st{};
+        if (pad_slot_active_ >= 0) {
+            if (g_xinput_get_state(static_cast<DWORD>(pad_slot_active_), &st) == ERROR_SUCCESS) {
+                pad_last_ = xinput_to_pad(st);
+                pad_fail_frames_ = 0;
+            } else if (++pad_fail_frames_ >= 3) {
+                // 连续三帧读不到：判定拔出，回到槽位扫描并松开所有键
+                pad_slot_active_ = -1;
+                pad_fail_frames_ = 0;
+                pad_last_ = PadState{};
+            }
+        } else {
+            const int slot = pad_scan_pos_;
+            pad_scan_pos_ = (pad_scan_pos_ + 1) % 4;
+            if (g_xinput_get_state(static_cast<DWORD>(slot), &st) == ERROR_SUCCESS) {
+                pad_slot_active_ = slot;
+                pad_last_ = xinput_to_pad(st);
+                pad_fail_frames_ = 0;
+            }
+        }
+        if (!active) pad_last_ = PadState{};  // 切后台时强制松开，避免组合键卡住
+        logic.on_gamepad(pad_last_);
+    } else {
+        logic.on_gamepad(PadState{});
     }
 }
 

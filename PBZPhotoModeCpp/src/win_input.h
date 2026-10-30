@@ -4,6 +4,8 @@
 
 #ifdef PBZPM_WITH_UE4SS
 
+#include "core/gamepad.h"
+
 namespace pbzpm {
 
 class InputLogic;
@@ -38,8 +40,9 @@ public:
     // Raw Input 是否注册成功（失败时 poll 会退化成 GetCursorPos 差分）
     bool raw_ready() const;
 
-    // 每帧调用（引擎 Tick 线程）：把自上次以来累积的鼠标事件 + 键盘状态喂给 logic
-    void poll(InputLogic& logic);
+    // 每帧调用（引擎 Tick 线程）：把自上次以来累积的鼠标事件 + 键盘状态喂给 logic。
+    // gamepad_enabled=false 时不轮询 XInput，并喂一份空手柄快照（组合键视为全部松开）。
+    void poll(InputLogic& logic, bool gamepad_enabled);
     // 引擎侧钩子已经在提供鼠标增量时，把系统层增量静音，避免同一段移动被算两次
     void set_mouse_muted(bool muted) { mouse_muted_ = muted; }
 
@@ -52,6 +55,13 @@ public:
     bool raw_dead() const { return raw_dead_; }
     // 诊断用：当前前台窗口是否属于本进程（为 false 时所有输入都会被忽略）
     bool foreground() const { return foreground_; }
+    // 手柄诊断：是否检测到连接（已锁定 XInput 槽位）与槽位号（-1 = 未连接/未启用）
+    bool pad_connected() const;
+    int pad_slot() const;
+    // XInput 是否加载成功（失败 = 手柄功能完全不可用，与有没有插手柄无关）
+    bool pad_api_ready() const;
+    // 实际加载的 XInput 模块完整路径（诊断：确认没加载到游戏目录里的代理 DLL）
+    std::string pad_api_module() const;
 
 private:
     Win32InputSource() = default;
@@ -73,6 +83,12 @@ private:
     bool mouse_muted_{false};
     int cursor_move_frames_{0};
     bool foreground_{false};
+
+    // 手柄（XInput）：只在引擎 Tick 线程的 poll() 里访问，无需加锁
+    int pad_slot_active_{-1};  // 已锁定并独占轮询的槽位；-1 = 尚未发现手柄
+    int pad_scan_pos_{0};      // 未锁定时每帧扫描一个槽位，最坏 4 帧轮完
+    int pad_fail_frames_{0};   // 锁定槽位连续读失败的帧数（满 3 次判定拔出）
+    PadState pad_last_{};      // 最近一份有效快照（读失败的帧继续喂它，避免组合键抖动）
 };
 
 }  // namespace pbzpm

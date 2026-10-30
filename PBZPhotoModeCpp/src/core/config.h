@@ -35,6 +35,18 @@ struct Config {
     MouseVerticalMode mouse_vertical_mode{MouseVerticalMode::Translate};
     double vertical_speed{200.0};    // 左右键上下平移速度
 
+    // ---- [gamepad] 手柄 ----
+    bool pad_enabled{true};           // 总开关（false=不轮询手柄）
+    std::string pad_toggle{"LS+RS"};  // 进入/退出：默认左右摇杆同时按下（L3+R3）
+    std::string pad_menu{"START"};
+    std::string pad_freeze{"X"};
+    std::string pad_reset{"Y"};
+    std::string pad_fov_up{"UP"};
+    std::string pad_fov_down{"DOWN"};
+    double pad_look_speed{180.0};     // 右摇杆满行程的转速（度/秒）
+    double pad_move_scale{1.0};       // 左摇杆移动占 move_speed 的比例
+    double pad_deadzone{0.15};        // 摇杆死区（0~0.5）
+
     // ---- [camera] ----
     double fov_default{90.0};
     double fov_min{15.0};

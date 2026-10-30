@@ -3,7 +3,7 @@
 ## 1. Short description（短简介，≤255 字符）
 
 ```text
-Free-camera photo mode for Phantom Blade Zero. Press F2 to enter — time pauses automatically; Alt + mouse to look, WASD to fly, wheel for FOV, F to toggle freeze. Native UE4SS C++ mod.
+Free-camera photo mode for Phantom Blade Zero. Press F2 (or L3+R3 on a controller) to enter — time pauses automatically; fly with WASD or the sticks, look with mouse or right stick, wheel for FOV. Native UE4SS C++ mod.
 ```
 
 ## 2. Full description（完整简介，Nexus BBCode 格式）
@@ -20,6 +20,7 @@ Free-camera photo mode for Phantom Blade Zero. Press F2 to enter — time pauses
 [list]
 [*][b]True free camera[/b] — detaches from the character and lets you fly anywhere in the level.
 [*][b]Full camera control[/b] — look with the mouse, move with WASD, rise/descend with Q/E, boost or slow with Shift/Ctrl.
+[*][b]Gamepad support[/b] — enter / exit photo mode with L3 + R3 (both sticks pressed together), fly with the left stick, look with the right stick, rise / descend with RT / LT, FOV with the D-pad. Every binding is configurable in the [gamepad] section of config.ini (Xbox and PlayStation button names are both accepted).
 [*][b]Time freeze[/b] — time is paused automatically when you enter photo mode (default on, can be disabled in config.ini); press F to freeze / unfreeze at any time. Game-pause mode stops enemies, NPCs and effects while the photo camera keeps moving.
 [*][b]Clean shots[/b] — the game HUD (health, quickslot, quest text, boss bars) is hidden automatically on entering photo mode and restored on exit; hide the menu with T; optionally hide the player character from the config.
 [*][b]Input isolation[/b] — while photo mode is active the game does not receive movement/attack inputs, so you can hold a mouse button to move the camera without swinging a sword. Everything is restored on exit.
@@ -42,6 +43,20 @@ Free-camera photo mode for Phantom Blade Zero. Press F2 to enter — time pauses
 [/list]
 All keys can be rebound in [code]config.ini[/code].
 
+[b][size=5]Gamepad controls (default)[/size][/b]
+[list]
+[*][b]LS + RS[/b] — enter / exit photo mode (press both stick clicks together)
+[*][b]Left stick[/b] — move (analog speed)
+[*][b]Right stick[/b] — look
+[*][b]RT / LT[/b] — ascend / descend
+[*][b]LB / RB[/b] — move faster / slower
+[*][b]D-pad Up / Down[/b] — adjust FOV
+[*][b]X[/b] — freeze / unfreeze time
+[*][b]Y[/b] — reset camera
+[*][b]START / OPTIONS[/b] — show / hide menu
+[/list]
+Gamepad bindings can be rebound in the [gamepad] section of [code]config.ini[/code]. Button names in both Xbox (LS, RS, START…) and PlayStation (L3, R3, OPTIONS…) styles are accepted; several buttons joined with + form a combo that must be held together, and [code]NONE[/code] unbinds an action.
+
 [b][size=5]Requirements[/size][/b]
 [list]
 [*][b]Phantom Blade Zero[/b] (Steam version, UE 5.7)
@@ -51,13 +66,13 @@ All keys can be rebound in [code]config.ini[/code].
 [b][size=5]Installation[/size][/b]
 [list=1]
 [*]Install the Phantom Blade Zero build of UE4SS into your game root folder (you should see dwmapi.dll and an ue4ss folder next to the game executable).
-[*]Download [b]PBZPhotoModeCpp_1.0.14-cpp.zip[/b] from the Files tab and extract it into the game root folder.
+[*]Download [b]PBZPhotoModeCpp_1.0.18-cpp.zip[/b] from the Files tab and extract it into the game root folder.
 [*]Check that the resulting structure is: [code]ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll[/code] plus config.ini and enabled.txt in the same mod folder.
-[*]Launch the game and press [b]F2[/b]. The menu appears in the bottom-right corner.
+[*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller). The menu appears in the bottom-right corner.
 [/list]
 
 [b][size=5]Configuration[/size][/b]
-Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, freeze_mode (pause or dilation), auto_pause_time, hide_player, hide_game_hud and all keybinds.
+Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, freeze_mode (pause or dilation), auto_pause_time, hide_player, hide_game_hud, all keybinds, and the [gamepad] section (pad_toggle / pad_menu / pad_freeze / pad_reset / pad_fov_up / pad_fov_down, pad_look_speed, pad_move_scale, pad_deadzone, pad_enabled).
 
 [b][size=5]Troubleshooting[/size][/b]
 [list]
@@ -66,6 +81,7 @@ Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall bac
 [*][b]The mod does not load:[/b] make sure you are using the Phantom Blade Zero UE4SS build listed above. The DLL imports UE4SS symbols and is not compatible with arbitrary UE4SS versions.
 [*][b]Game input stuck after exiting:[/b] press F2 again to toggle out, or restart the game. Please report it with the relevant UE4SS.log lines.
 [*][b]No menu but camera works:[/b] press T to show the menu, or enable the UE4SS console and use the ImGui tab.
+[*][b]Gamepad not detected:[/b] disable [b]Steam Input[/b] for the game (Steam library → right-click → Properties → Controller) — with Steam Input on, the game's XInput usually sees no controller at all, especially when using DS4Windows / GameSir or other virtual-gamepad remappers. UE4SS.log shows whether XInput loaded (1.0.18+ loads it from the system directory) and logs a line whenever a controller connects or disconnects.
 [/list]
 
 [b][size=5]Known limitations[/size][/b]
@@ -86,6 +102,7 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 [b][size=5]Version history[/size][/b]
 [list]
+[*][b]1.0.18[/b] — 2026-10-31 — Gamepad support: enter / exit photo mode with L3 + R3 (default) and full analog camera control on sticks and triggers; every binding configurable in the [gamepad] section of config.ini. XInput is loaded explicitly from the system directory. Verified in-game — see the Steam Input note under Troubleshooting. Core tests: 393 passed.
 [*][b]1.0.14[/b] — 2026-10-30 — Time is paused automatically when entering photo mode (auto_pause_time, default on; can be disabled in config.ini). Core tests: 298 passed.
 [*][b]1.0.13[/b] — 2026-10-30 — Removed the experimental screenshot feature; use NVIDIA App / GeForce Experience or Steam for screenshots. Core tests: 257 passed.
 [*][b]1.0.12[/b] — 2026-10-30 — Game HUD (health, quickslot, quest text, boss bars) is hidden automatically in photo mode and restored on exit.
@@ -99,13 +116,15 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 **PBZ Photo Mode（C++）— 影之刃零摄影模式**
 
-给《影之刃零》加一个真正的自由摄影相机：按 F2 进入摄影模式，相机脱离角色，可以自由飞到场景任意位置构图；按住 Alt + 鼠标转视角，WASD 平移，Q/E 升降，滚轮调 FOV，F 冻结时间。
+给《影之刃零》加一个真正的自由摄影相机：按 F2（或手柄左右摇杆同时按下 L3+R3）进入摄影模式，相机脱离角色，可以自由飞到场景任意位置构图；按住 Alt + 鼠标转视角，WASD 平移，Q/E 升降，滚轮调 FOV，F 冻结时间。
 
 **主要功能**
 
 - 真正的自由相机，不受角色位置限制
 - 摄影模式下屏蔽游戏键鼠输入，退出时完整还原
 - 时间冻结：进入摄影模式自动暂停时间（`auto_pause_time` 默认开启，可在 `config.ini` 关闭）；角色、敌人、NPC 与特效会真正静止，相机仍可移动
+- 手柄支持：**左右摇杆同时按下（L3+R3）** 进入 / 退出摄影模式；左摇杆移动、右摇杆转视角、RT/LT 升降、LB/RB 变速、十字键调 FOV、X 冻结、Y 重置、START 菜单；键位全部可在 `config.ini` 的 `[gamepad]` 段修改（Xbox / PS 按钮叫法都认，`NONE` 解绑）
+- 手柄注意：Steam 需把本作的「使用 Steam 输入」关掉，否则游戏进程看不到手柄
 - 可隐藏角色、隐藏 HUD，拍出干净的画面
 - 所有键位、速度、灵敏度、FOV 范围、自动暂停开关都可在 `config.ini` 中修改
 - 截图请使用 NVIDIA App / GeForce Experience 或 Steam 等系统工具
@@ -117,6 +136,6 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 **安装**
 
-解压 `PBZPhotoModeCpp_1.0.14-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构，进游戏按 F2。
+解压 `PBZPhotoModeCpp_1.0.18-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构，进游戏按 F2（或手柄 L3+R3）。
 
 详细说明与源码见：https://github.com/lin-414/PBZPhotoMode

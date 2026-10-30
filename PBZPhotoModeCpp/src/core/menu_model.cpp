@@ -3,6 +3,7 @@
 #include <cstdio>
 #include <sstream>
 
+#include "core/gamepad.h"
 #include "core/version.h"
 #include "core/vk.h"
 
@@ -95,6 +96,19 @@ MenuModel build_menu_model(const PhotoMode& mode, const KeyMap& keys) {
     model.hints_ascii.push_back(vk_to_name(keys.reset) + " reset view");
     model.hints_ascii.push_back(vk_to_name(keys.freeze) + " freeze    " + vk_to_name(keys.menu) + " hide menu    " +
                                 vk_to_name(keys.toggle) + " exit");
+
+    if (mode.config().pad_enabled) {
+        model.hints.push_back("手柄 " + pad_combo_name(keys.pad_toggle) + " 进/出    左摇杆移动  右摇杆视角");
+        model.hints.push_back("RT/LT 升降    LB/RB 变速    " + pad_combo_name(keys.pad_fov_up) + "/" +
+                              pad_combo_name(keys.pad_fov_down) + " FOV    " + pad_combo_name(keys.pad_freeze) +
+                              " 冻结  " + pad_combo_name(keys.pad_reset) + " 重置  " +
+                              pad_combo_name(keys.pad_menu) + " 菜单");
+        model.hints_ascii.push_back("PAD " + pad_combo_name(keys.pad_toggle) + " enter/exit   L-stick move  R-stick look");
+        model.hints_ascii.push_back("RT/LT up-dn   LB/RB speed   " + pad_combo_name(keys.pad_fov_up) + "/" +
+                                     pad_combo_name(keys.pad_fov_down) + " fov   " + pad_combo_name(keys.pad_freeze) +
+                                     " freeze  " + pad_combo_name(keys.pad_reset) + " reset  " +
+                                     pad_combo_name(keys.pad_menu) + " menu");
+    }
     return model;
 }
 
