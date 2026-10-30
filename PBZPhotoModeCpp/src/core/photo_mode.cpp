@@ -106,6 +106,12 @@ bool PhotoMode::enter() {
     char buf[160]{};
     std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
     log(LogLevel::Info, buf);
+
+    // 配置默认开启：进入摄影模式即自动冻结时间，不用再按 F。
+    if (cfg_.auto_pause_time) {
+        log(LogLevel::Info, "自动暂停时间：进入即冻结");
+        toggle_freeze();
+    }
     return true;
 }
 
@@ -116,7 +122,7 @@ void PhotoMode::leave(const char* reason) {
     }
 
     if (frozen_) {
-        if (cfg_.freeze_mode == FreezeMode::Pause) {
+        if (frozen_with_pause_) {
             engine_.set_paused(false);
         } else {
             engine_.set_time_dilation(prev_dilation_);
@@ -177,30 +183,30 @@ bool PhotoMode::set_fov(double fov) {
 void PhotoMode::toggle_freeze() {
     if (!active_) return;
 
-    if (cfg_.freeze_mode == FreezeMode::Pause) {
-        const bool want = !frozen_;
-        if (engine_.set_paused(want)) {
-            frozen_ = want;
+    const bool want = !frozen_;
+    bool ok = false;
+    bool use_pause = frozen_with_pause_;
+    if (want) {
+        use_pause = cfg_.freeze_mode == FreezeMode::Pause;
+        if (use_pause) {
+            ok = engine_.set_paused(true);
         } else {
-            log(LogLevel::Warn, "暂停/恢复失败");
-        }
-    } else {
-        if (!frozen_) {
             const double prev = engine_.get_time_dilation();
             if (prev > 0.0 && prev <= 10.0) prev_dilation_ = prev;
-            if (engine_.set_time_dilation(cfg_.freeze_dilation)) {
-                frozen_ = true;
-            } else {
-                log(LogLevel::Warn, "冻结时间失败");
-            }
-        } else {
-            if (engine_.set_time_dilation(prev_dilation_)) {
-                frozen_ = false;
-            } else {
-                log(LogLevel::Warn, "恢复时间失败");
-            }
+            ok = engine_.set_time_dilation(cfg_.freeze_dilation);
         }
+    } else if (use_pause) {
+        ok = engine_.set_paused(false);
+    } else {
+        ok = engine_.set_time_dilation(prev_dilation_);
     }
+
+    if (!ok) {
+        log(LogLevel::Warn, want ? "冻结时间失败" : "恢复时间失败");
+        return;
+    }
+    frozen_ = want;
+    frozen_with_pause_ = want && use_pause;
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
 }
 

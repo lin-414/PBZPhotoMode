@@ -41,6 +41,8 @@ public:
     bool fail_hide_player{false};
     bool fail_hud{false};
     bool fail_postfx{false};
+    bool fail_pause{false};
+    bool fail_time_dilation{false};
 
     bool world_valid() override {
         calls.push_back("world_valid");
@@ -117,11 +119,13 @@ public:
     }
     bool set_time_dilation(double value) override {
         calls.push_back("set_time_dilation");
+        if (fail_time_dilation) return false;
         dilation = value;
         return true;
     }
     bool set_paused(bool value) override {
         calls.push_back(value ? "pause_on" : "pause_off");
+        if (fail_pause) return false;
         paused = value;
         return true;
     }

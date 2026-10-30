@@ -87,6 +87,15 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
         cfg.hide_game_hud = hide_hud;
         mode.set_config(cfg);
     }
+    ImGui::SameLine();
+    bool auto_pause = cfg.auto_pause_time;
+    if (ImGui::Checkbox("进入时暂停", &auto_pause)) {
+        cfg.auto_pause_time = auto_pause;
+        mode.set_config(cfg);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("进入摄影模式时自动冻结时间；关闭后可按 %s 手动冻结。", vk_to_name(keys.freeze).c_str());
+    }
 
     ImGui::Separator();
 

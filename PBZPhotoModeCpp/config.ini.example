@@ -44,6 +44,8 @@ fov_step = 2
 hide_player = false
 ; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）
 hide_game_hud = true
+; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）
+auto_pause_time = true
 ; pause=游戏暂停（默认，真正冻结角色/敌人/特效）；dilation=只调全局时间倍率
 freeze_mode = pause
 freeze_dilation = 0.0001

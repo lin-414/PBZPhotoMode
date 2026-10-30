@@ -75,6 +75,13 @@ MenuModel build_menu_model(const PhotoMode& mode, const KeyMap& keys) {
     freeze.value_ascii = pause_mode ? "pause" : "dilation";
     model.rows.push_back(freeze);
 
+    MenuRow auto_pause;
+    auto_pause.label = "进入时暂停";
+    auto_pause.label_ascii = "AUTO PAUSE";
+    auto_pause.value = mode.config().auto_pause_time ? "开" : "关";
+    auto_pause.value_ascii = mode.config().auto_pause_time ? "on" : "off";
+    model.rows.push_back(auto_pause);
+
     model.hints.push_back("ALT + 鼠标  自由转视角");
     model.hints.push_back("WASD 平移    Q/E 升降    Shift/Ctrl 变速");
     model.hints.push_back("滚轮 FOV    左键上移  右键下移");

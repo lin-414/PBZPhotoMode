@@ -4,9 +4,9 @@
 
 ## 一句话状态
 
-**C++ 版 v1.0.13 已编译、已打包**：
-`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.13-cpp.zip`。
-核心层 **257 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.13 移除实验性的 F9 截图功能。
+**C++ 版 v1.0.14 已编译、已打包**：
+`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.14-cpp.zip`。
+核心层 **298 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.14 进入摄影模式自动暂停时间。
 
 ## 已完成
 
@@ -15,7 +15,7 @@
 | GitHub ↔ Epic 绑定 | 你已绑定，`UEPseudo` 拉取成功 |
 | UE4SS 子模块 | `deps/first/Unreal`(UEPseudo) + `deps/first/patternsleuth` 均已检出 |
 | Rust 工具链 | `rustc/cargo 1.99.1`，在 `%USERPROFILE%\.cargo\bin`（不在默认 PATH，`build_dll.bat` 会自动加） |
-| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **257 项断言全绿** |
+| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **298 项断言全绿** |
 | C++ 引擎层 | 已按 UEPseudo 真实 API 重写并在 MSVC 19.44 + Ninja 下**编译通过** |
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
@@ -349,3 +349,15 @@ AHUD Actor 上没有可绘制组件，所以这个开关看起来没有效果。
 - 已移除 `key_shutter`、`screenshot_command`、`run_command()`、`poll_screenshot()` 及菜单/ImGui 中的截图入口。
 - 截图请使用 NVIDIA App / GeForce Experience（默认 `Alt + F1`）或 Steam（`F12`）等系统工具。
 - 版本 `1.0.13-cpp`；核心层测试 258 → **257 项全绿**（移除截图测试）。
+
+## 1.0.14-cpp（2026-10-30：进入摄影模式自动暂停时间）
+
+需求：打开相机模式时自动暂停时间，用户可在 ini 配置文件中自行修改开关，默认开启。
+
+实现：
+- `src/core/config.h/.cpp`：新增 `auto_pause_time`（默认 `true`，位于 `[effects]` 段）；`default_config_text()` 同步输出。
+- `src/core/photo_mode.cpp`：`PhotoMode::enter()` 成功进入后按配置调用 `toggle_freeze()`，复用现有 `freeze_mode`（pause/dilation）逻辑；退出/解冻按原逻辑还原。
+- `src/core/menu_model.cpp`、`src/ui_tab.cpp`：游戏内菜单新增「进入时暂停」状态行，ImGui 面板新增对应开关。
+- `config.ini.example` / dist config / 游戏目录 config：新增 `auto_pause_time = true` 与中文注释。
+- 核心层测试 257 → **298 项全绿**（新增自动暂停、关闭自动暂停、dilation 自动冻结、失败不阻断等场景）。
+- 版本 `1.0.14-cpp`；产物 `build-dll/PBZPhotoModeCpp.dll`（614,912 B）；包 `dist/PBZPhotoModeCpp_1.0.14-cpp.zip`（328,209 B）；已覆盖游戏目录 DLL、README 与 config。

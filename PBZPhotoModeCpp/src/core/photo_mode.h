@@ -66,6 +66,8 @@ private:
     bool postfx_saved_{false};
 
     double prev_dilation_{1.0};
+    // 冻结时实际使用的模式：配置在冻结中途被热重载改掉时，解冻仍按进入时的模式还原
+    bool frozen_with_pause_{false};
     double reassert_accum_{0.0};
     double hud_retry_accum_{0.0};
     bool pose_dirty_{false};

@@ -3,7 +3,7 @@
 ## 1. Short description（短简介，≤255 字符）
 
 ```text
-Free-camera photo mode for Phantom Blade Zero. Press F2 to enter, Alt + mouse to look, WASD to fly, wheel for FOV, F to freeze time. Native UE4SS C++ mod.
+Free-camera photo mode for Phantom Blade Zero. Press F2 to enter — time pauses automatically; Alt + mouse to look, WASD to fly, wheel for FOV, F to toggle freeze. Native UE4SS C++ mod.
 ```
 
 ## 2. Full description（完整简介，Nexus BBCode 格式）
@@ -20,10 +20,10 @@ Free-camera photo mode for Phantom Blade Zero. Press F2 to enter, Alt + mouse to
 [list]
 [*][b]True free camera[/b] — detaches from the character and lets you fly anywhere in the level.
 [*][b]Full camera control[/b] — look with the mouse, move with WASD, rise/descend with Q/E, boost or slow with Shift/Ctrl.
-[*][b]Time freeze[/b] — freeze the action with F. Game-pause mode stops enemies, NPCs and effects while the photo camera keeps moving.
+[*][b]Time freeze[/b] — time is paused automatically when you enter photo mode (default on, can be disabled in config.ini); press F to freeze / unfreeze at any time. Game-pause mode stops enemies, NPCs and effects while the photo camera keeps moving.
 [*][b]Clean shots[/b] — the game HUD (health, quickslot, quest text, boss bars) is hidden automatically on entering photo mode and restored on exit; hide the menu with T; optionally hide the player character from the config.
 [*][b]Input isolation[/b] — while photo mode is active the game does not receive movement/attack inputs, so you can hold a mouse button to move the camera without swinging a sword. Everything is restored on exit.
-[*][b]Fully configurable[/b] — every keybind, move speed, sensitivity, FOV range, freeze mode and UI option can be changed in config.ini.
+[*][b]Fully configurable[/b] — every keybind, move speed, sensitivity, FOV range, auto-pause on entry, freeze mode and UI option can be changed in config.ini.
 [/list]
 
 [b][size=5]Controls (default)[/size][/b]
@@ -51,13 +51,13 @@ All keys can be rebound in [code]config.ini[/code].
 [b][size=5]Installation[/size][/b]
 [list=1]
 [*]Install the Phantom Blade Zero build of UE4SS into your game root folder (you should see dwmapi.dll and an ue4ss folder next to the game executable).
-[*]Download [b]PBZPhotoModeCpp_1.0.13-cpp.zip[/b] from the Files tab and extract it into the game root folder.
+[*]Download [b]PBZPhotoModeCpp_1.0.14-cpp.zip[/b] from the Files tab and extract it into the game root folder.
 [*]Check that the resulting structure is: [code]ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll[/code] plus config.ini and enabled.txt in the same mod folder.
 [*]Launch the game and press [b]F2[/b]. The menu appears in the bottom-right corner.
 [/list]
 
 [b][size=5]Configuration[/size][/b]
-Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, freeze_mode (pause or dilation), hide_player, hide_game_hud and all keybinds.
+Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, freeze_mode (pause or dilation), auto_pause_time, hide_player, hide_game_hud and all keybinds.
 
 [b][size=5]Troubleshooting[/size][/b]
 [list]
@@ -86,6 +86,7 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 [b][size=5]Version history[/size][/b]
 [list]
+[*][b]1.0.14[/b] — 2026-10-30 — Time is paused automatically when entering photo mode (auto_pause_time, default on; can be disabled in config.ini). Core tests: 298 passed.
 [*][b]1.0.13[/b] — 2026-10-30 — Removed the experimental screenshot feature; use NVIDIA App / GeForce Experience or Steam for screenshots. Core tests: 257 passed.
 [*][b]1.0.12[/b] — 2026-10-30 — Game HUD (health, quickslot, quest text, boss bars) is hidden automatically in photo mode and restored on exit.
 [*][b]1.0.11[/b] — 2026-10-30 — Time freeze uses game pause by default; verified in-game that enemies, NPCs and effects stop while the camera stays movable. Core tests: 252 passed.
@@ -104,9 +105,9 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 - 真正的自由相机，不受角色位置限制
 - 摄影模式下屏蔽游戏键鼠输入，退出时完整还原
-- 时间冻结：默认使用游戏暂停，角色、敌人、NPC 与特效会真正静止，相机仍可移动
+- 时间冻结：进入摄影模式自动暂停时间（`auto_pause_time` 默认开启，可在 `config.ini` 关闭）；角色、敌人、NPC 与特效会真正静止，相机仍可移动
 - 可隐藏角色、隐藏 HUD，拍出干净的画面
-- 所有键位、速度、灵敏度、FOV 范围都可在 `config.ini` 中修改
+- 所有键位、速度、灵敏度、FOV 范围、自动暂停开关都可在 `config.ini` 中修改
 - 截图请使用 NVIDIA App / GeForce Experience 或 Steam 等系统工具
 - 原生 UE4SS C++ Mod，支持 UE4SS 控制台中的 ImGui 面板
 
@@ -116,6 +117,6 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 **安装**
 
-解压 `PBZPhotoModeCpp_1.0.13-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构，进游戏按 F2。
+解压 `PBZPhotoModeCpp_1.0.14-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构，进游戏按 F2。
 
 详细说明与源码见：https://github.com/lin-414/PBZPhotoMode

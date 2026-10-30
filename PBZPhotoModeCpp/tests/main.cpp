@@ -106,6 +106,7 @@ void test_config_defaults_and_parse() {
     CHECK(empty.cfg.block_game_input);
     CHECK(!empty.cfg.hide_player);
     CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
+    CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
 
@@ -130,6 +131,9 @@ fov_default = 75
 fov_min = 20
 fov_max = 120
 
+[effects]
+auto_pause_time = false
+
 [misc]
 log_level = debug
 dry_run = on
@@ -145,6 +149,7 @@ dry_run = on
     CHECK(!parsed.cfg.free_look_requires_alt);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Look);
     CHECK_NEAR(parsed.cfg.fov_default, 75.0, 1e-9);
+    CHECK(!parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
     CHECK(parsed.cfg.dry_run);
     CHECK_STR(parsed.source, "test.ini");
@@ -194,6 +199,7 @@ void test_config_default_text_roundtrip() {
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
     CHECK_NEAR(parsed.cfg.fov_step, 2.0, 1e-9);
+    CHECK(parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
 }
 
@@ -388,7 +394,7 @@ void test_photo_mode_happy_path() {
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "hud_off", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose"},
+                     "hud_off", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose", "pause_on"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -400,7 +406,8 @@ void test_photo_mode_happy_path() {
     CHECK(!fe.hud_visible);    // 默认隐藏游戏 HUD
     CHECK_NEAR(mode.fov(), 88.0, 1e-9);
     CHECK_NEAR(mode.pose().rot.yaw, 45.0, 1e-9);
-    CHECK(!mode.frozen());
+    CHECK(mode.frozen());  // 默认 auto_pause_time=true：进入即冻结
+    CHECK(fe.paused);
     CHECK(mode.menu_visible());
 
     // 再进一次不应重复 spawn
@@ -411,9 +418,12 @@ void test_photo_mode_happy_path() {
     // 退出：严格逆序还原，且只还原做过的步骤
     fe.reset_calls();
     mode.leave("test");
-    expect_sequence(fe, {"restore_postfx", "hud_on", "block_input_off", "ignore_move_off", "restore_view", "destroy_camera"},
+    expect_sequence(fe,
+                    {"pause_off", "restore_postfx", "hud_on", "block_input_off", "ignore_move_off", "restore_view",
+                     "destroy_camera"},
                     "退出");
     CHECK(!mode.active());
+    CHECK(!fe.paused);
     CHECK(!fe.camera_exists);
     CHECK(!fe.view_attached);
     CHECK(!fe.ignore_move);
@@ -644,6 +654,7 @@ void test_photo_mode_freeze() {
         FakeEngine fe;
         fe.dilation = 0.8;  // 模拟游戏本来就不是 1.0（慢动作状态）
         Config cfg;
+        cfg.auto_pause_time = false;  // 本组测手动 F 键
         cfg.freeze_mode = FreezeMode::Dilation;
         PhotoMode mode(fe, cfg);
         CHECK(mode.enter());
@@ -668,6 +679,7 @@ void test_photo_mode_freeze() {
     {
         FakeEngine fe;
         Config cfg;
+        cfg.auto_pause_time = false;  // 本组测手动 F 键
         cfg.freeze_mode = FreezeMode::Pause;
         PhotoMode mode(fe, cfg);
         CHECK(mode.enter());
@@ -683,12 +695,118 @@ void test_photo_mode_freeze() {
     // 冻结键走 intent 通道也能生效
     {
         FakeEngine fe;
-        PhotoMode mode(fe, Config{});
+        Config cfg;
+        cfg.auto_pause_time = false;
+        PhotoMode mode(fe, cfg);
         CHECK(mode.enter());
         Intent freeze;
         freeze.toggle_freeze = true;
         mode.tick(freeze, 0.016);
         CHECK(mode.frozen());
+    }
+}
+
+void test_photo_mode_auto_pause() {
+    section("PhotoMode 自动暂停时间");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 默认配置：进入即自动暂停（freeze_mode=pause）
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.active());
+        CHECK(mode.frozen());
+        CHECK(fe.paused);
+        CHECK(fe.logs_contain("自动暂停时间"));
+        CHECK(fe.logs_contain("时间已冻结"));
+
+        // F 键仍可恢复时间，再按一次重新冻结
+        Intent toggle;
+        toggle.toggle_freeze = true;
+        mode.tick(toggle, 0.016);
+        CHECK(!mode.frozen());
+        CHECK(!fe.paused);
+        mode.tick(toggle, 0.016);
+        CHECK(mode.frozen());
+        CHECK(fe.paused);
+
+        mode.leave("test");
+        CHECK(!fe.paused);
+    }
+
+    // 冻结期间配置热重载改了 freeze_mode：解冻仍按实际使用的 pause 模式还原
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        Config changed;
+        changed.freeze_mode = FreezeMode::Dilation;
+        mode.set_config(changed);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK(!fe.paused);
+        CHECK_INT(fe.count("pause_off"), 1);
+        CHECK_INT(fe.count("set_time_dilation"), 0);
+    }
+
+    // auto_pause_time = false：进入后时间照常流动，F 仍可手动冻结
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(!mode.frozen());
+        CHECK(!fe.paused);
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        CHECK(fe.paused);
+        mode.leave("test");
+        CHECK(!fe.paused);
+    }
+
+    // dilation 模式也遵守 auto_pause_time：进入即切到 freeze_dilation，退出还原原倍率
+    {
+        FakeEngine fe;
+        fe.dilation = 0.8;
+        Config cfg;
+        cfg.freeze_mode = FreezeMode::Dilation;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_NEAR(fe.dilation, cfg.freeze_dilation, 1e-12);
+        mode.leave("test");
+        CHECK_NEAR(fe.dilation, 0.8, 1e-12);
+    }
+
+    // 自动暂停失败不阻止进模式：只告警，状态保持未冻结
+    {
+        FakeEngine fe;
+        fe.fail_pause = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.active());
+        CHECK(!mode.frozen());
+        CHECK(!fe.paused);
+        CHECK(fe.logs_contain("冻结时间失败"));
+        mode.leave("test");
+        CHECK(!mode.active());
+    }
+
+    // dilation 自动冻结失败同样不阻止进模式
+    {
+        FakeEngine fe;
+        fe.fail_time_dilation = true;
+        Config cfg;
+        cfg.freeze_mode = FreezeMode::Dilation;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.active());
+        CHECK(!mode.frozen());
+        CHECK(fe.logs_contain("冻结时间失败"));
+        mode.leave("test");
     }
 }
 
@@ -782,7 +900,9 @@ void test_menu_model() {
     using pbzpm::test::FakeEngine;
 
     FakeEngine fe;
-    PhotoMode mode(fe, Config{});
+    Config menu_cfg;
+    menu_cfg.auto_pause_time = false;  // 本组测菜单状态，手动控制冻结
+    PhotoMode mode(fe, menu_cfg);
     const KeyMap keys = build_keymap(mode.config(), nullptr);
 
     MenuModel off = build_menu_model(mode, keys);
@@ -892,6 +1012,7 @@ int main() {
     test_photo_mode_failures_rollback();
     test_photo_mode_tick();
     test_photo_mode_freeze();
+    test_photo_mode_auto_pause();
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
     test_menu_model();

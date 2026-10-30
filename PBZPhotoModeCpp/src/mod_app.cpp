@@ -47,7 +47,7 @@ PhotoModeMod* g_mod = nullptr;
 PhotoModeMod::PhotoModeMod() {
     ModName = STR("PBZPhotoModeCpp");
     ModVersion = PBZPM_WIDEN(PBZPM_VERSION);
-    ModDescription = STR("Photo mode: free camera / FOV / freeze time / ImGui tab");
+    ModDescription = STR("Photo mode: free camera / FOV / auto-pause time / ImGui tab");
     ModAuthors = STR("PBZPhotoMode");
     g_mod = this;
 }
