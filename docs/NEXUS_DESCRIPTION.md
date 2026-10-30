@@ -67,7 +67,7 @@ Gamepad bindings can be rebound in the [gamepad] section of [code]config.ini[/co
 [b]Option A — with the mod manager (recommended)[/b]
 [list=1]
 [*]Install [url=https://www.nexusmods.com/phantombladezero/mods/2][b]Phantom Blade Mod Manager[/b][/url] from Nexus Mods and set it up following its own instructions.
-[*]Use it to install this mod from [b]PBZPhotoModeCpp_1.0.18-cpp.zip[/b] (Files tab). The UE4SS Phantom Blade Zero build (see Requirements) must be installed as well.
+[*]Use it to install this mod from [b]PBZPhotoModeCpp_1.0.18-cpp.zip[/b] (Files tab) — the manager also installs the required UE4SS Phantom Blade Zero build for you.
 [*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller).
 [/list]
 [b]Option B — manual[/b]
@@ -142,7 +142,7 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 **安装**
 
-- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_1.0.18-cpp.zip` 完成安装；《影之刃零》专用版 UE4SS 仍需已装好。
+- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_1.0.18-cpp.zip` 完成安装（所需 UE4SS 也会由它一并装好）。
 - 方法二（手动）：解压 `PBZPhotoModeCpp_1.0.18-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构，进游戏按 F2（或手柄 L3+R3）。
 
 详细说明与源码见：https://github.com/lin-414/PBZPhotoMode
