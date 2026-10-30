@@ -17,9 +17,12 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <cstdio>
 #include <cmath>
+#include <filesystem>
 #include <string>
+#include <system_error>
 #include <vector>
 
 #include <DynamicOutput/DynamicOutput.hpp>
@@ -30,6 +33,7 @@
 #include <Unreal/FHitResult.hpp>
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
+#include <Unreal/Property/FEnumProperty.hpp>
 #include <Unreal/NameTypes.hpp>
 #include <Unreal/UObject.hpp>
 #include <Unreal/UFunctionStructs.hpp>
@@ -140,6 +144,12 @@ auto write_number(FProperty* property, void* container, double value) -> bool {
         *static_cast<uint8_t*>(address) = static_cast<uint8_t>(value);
         return true;
     }
+    if (property->IsA<FEnumProperty>()) {
+        FNumericProperty* underlying = static_cast<FEnumProperty*>(property)->GetUnderlyingProperty();
+        if (underlying == nullptr) return false;
+        underlying->SetIntPropertyValue(address, static_cast<int64_t>(value));
+        return true;
+    }
     if (property->IsA<FIntProperty>()) {
         *static_cast<int32_t*>(address) = static_cast<int32_t>(value);
         return true;
@@ -168,6 +178,12 @@ auto read_number(FProperty* property, void* container, double& out) -> bool {
     }
     if (property->IsA<FByteProperty>()) {
         out = *static_cast<uint8_t*>(address);
+        return true;
+    }
+    if (property->IsA<FEnumProperty>()) {
+        FNumericProperty* underlying = static_cast<FEnumProperty*>(property)->GetUnderlyingProperty();
+        if (underlying == nullptr) return false;
+        out = static_cast<double>(underlying->GetSignedIntPropertyValue(address));
         return true;
     }
     if (property->IsA<FIntProperty>()) {
@@ -878,13 +894,184 @@ bool Ue4ssPort::set_player_hidden(bool hidden) {
     return true;
 }
 
-bool Ue4ssPort::set_hud_visible(bool visible) {
-    UObject* pc = controller();
-    if (!is_ok(pc)) return false;
-    UObject* hud = nullptr;
-    if (!read_object(find_property(pc, "MyHUD"), pc, hud)) return false;
-    static_cast<AActor*>(hud)->SetActorHiddenInGame(!visible);
+namespace {
+
+// UMG 的 UWidget::Visibility 是 TEnumAsByte<ESlateVisibility>：
+// Visible=0 / Collapsed=1 / Hidden=2 / HitTestInvisible=3 / SelfHitTestInvisible=4。
+// 必须走 UWidget::SetVisibility（而不是直接改属性），否则 Slate 控件不会立即刷新。
+auto set_widget_visibility(UObject* widget, int visibility) -> bool {
+    if (!is_ok(widget)) return false;
+    if (UFunction* function = find_function(widget, "SetVisibility"); function != nullptr) {
+        ParamBlock params(function);
+        if (!params.valid()) return false;
+        if (!params.set_number_any({"InVisibility"}, 0, static_cast<double>(visibility))) return false;
+        widget->ProcessEvent(function, params.data());
+        return true;
+    }
+    // 退路：个别版本把 SetVisibility 裁掉时，直接写属性（可能要到下一帧才刷新）
+    return write_number(find_property(widget, "Visibility"), widget, static_cast<double>(visibility));
+}
+
+auto get_widget_visibility(UObject* widget, int& out) -> bool {
+    if (!is_ok(widget)) return false;
+    if (UFunction* function = find_function(widget, "GetVisibility"); function != nullptr) {
+        ParamBlock params(function);
+        if (params.valid()) {
+            widget->ProcessEvent(function, params.data());
+            double value = 0.0;
+            if (params.get_number("ReturnValue", value)) {
+                out = static_cast<int>(value);
+                return true;
+            }
+        }
+    }
+    double value = 0.0;
+    if (read_number(find_property(widget, "Visibility"), widget, value)) {
+        out = static_cast<int>(value);
+        return true;
+    }
+    return false;
+}
+
+// 游戏内 HUD 的 UMG 根控件。CXXHeaderDump 里只有 W_FrontEndHUDLayout_C 继承自
+// UPBZHUDLayout；HP/快捷栏/武器/任务/Boss 血条都挂在它的子树下。找不到 Blueprint
+// 子类时退回 PNative 基类名，最后退回整个 CommonUI 根布局 WB_OverLayerOut_C。
+auto find_hud_layout_widgets(std::vector<UObject*>& out) -> void {
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("W_FrontEndHUDLayout_C"), out);
+    if (out.empty()) {
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("PBZHUDLayout"), out);
+    }
+    if (out.empty()) {
+        // 最后的 UMG 兜底：整个 CommonUI 根布局（包含所有 Layer 栈）。
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("WB_OverLayerOut_C"), out);
+    }
+}
+
+auto pointer_in(const std::vector<UObject*>& list, UObject* target) -> bool {
+    return std::find(list.begin(), list.end(), target) != list.end();
+}
+
+auto tracked_hud_widget(const std::vector<std::pair<UObject*, int>>& list, UObject* target) -> bool {
+    for (const auto& entry : list) {
+        if (entry.first == target) return true;
+    }
+    return false;
+}
+
+// 游戏自带的“为拍照/PV 隐藏 UI”总开关（UPBZUIManagerSubsystem::SetHideUIForPV）。
+// 它会广播 OnHideUIForPVChanged，Boss 血条、教程提示、世界空间 HUD 等订阅者会一起隐藏；
+// 这是最完整的隐藏路径，纯 UMG 根控件 Collapsed 只是它的补充。
+auto set_ui_manager_hide_for_pv(bool hidden) -> bool {
+    UObject* manager = RC::Unreal::UObjectGlobals::FindFirstOf(STR("PBZUIManagerSubsystem"));
+    if (!is_ok(manager)) return false;
+    UFunction* function = find_function(manager, "SetHideUIForPV");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    if (!params.set_bool("bHidden", hidden)) {
+        FProperty* property = params.prop({"bHidden"}, 0);
+        if (property == nullptr || !write_bool(property, params.data(), hidden)) return false;
+    }
+    manager->ProcessEvent(function, params.data());
     return true;
+}
+
+}  // namespace
+
+bool Ue4ssPort::set_hud_visible(bool visible) {
+    bool touched = false;
+
+    std::vector<UObject*> widgets;
+    find_hud_layout_widgets(widgets);
+
+    if (!visible) {
+        // 先记录原始可见性，再调用游戏自己的 PV 开关——它内部可能先把控件改成 Collapsed。
+        for (UObject* widget : widgets) {
+            if (!is_ok(widget)) continue;
+            if (!tracked_hud_widget(hud_widgets_, widget)) {
+                int original = 0;
+                if (!get_widget_visibility(widget, original)) original = 0;  // 默认 Visible
+                hud_widgets_.emplace_back(widget, original);
+            }
+        }
+
+        // 主路径：游戏 UIManager 的“为拍照/PV 隐藏 UI”总开关。
+        const bool pv_ok = set_ui_manager_hide_for_pv(true);
+        pv_hide_active_ = pv_ok;
+        if (pv_ok) {
+            log(LogLevel::Info, "UIManager.SetHideUIForPV(true) 已请求隐藏游戏 UI/HUD");
+        }
+
+        // 补充路径：HUD 布局根控件也设为 Collapsed，覆盖没有订阅 PV 事件的纯 UMG 控件。
+        int hidden_count = 0;
+        for (UObject* widget : widgets) {
+            if (!is_ok(widget)) continue;
+            if (set_widget_visibility(widget, 1)) {  // Collapsed
+                touched = true;
+                ++hidden_count;
+            }
+        }
+        if (hidden_count > 0) {
+            hud_widget_missing_logged_ = false;
+            log(LogLevel::Info, "UMG HUD 已隐藏：控件数=" + std::to_string(hidden_count) +
+                                    "（退出摄影模式时恢复原可见性）");
+        } else if (widgets.empty() && !pv_ok) {
+            if (!hud_widget_missing_logged_) {
+                hud_widget_missing_logged_ = true;
+                log(LogLevel::Warn, "找不到 UMG HUD 根控件（W_FrontEndHUDLayout_C），也未找到 UIManager，退回隐藏 AHUD");
+            }
+        } else if (!widgets.empty()) {
+            hud_widget_missing_logged_ = false;
+        }
+
+        // 最后一道兜底：AHUD Actor（纯 UMG 的 HUD 对 SetActorHiddenInGame 不敏感）。
+        if (widgets.empty() && !pv_ok) {
+            UObject* pc = controller();
+            if (is_ok(pc)) {
+                UObject* hud = nullptr;
+                if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud)) {
+                    static_cast<AActor*>(hud)->SetActorHiddenInGame(true);
+                    touched = true;
+                }
+            }
+        }
+        return pv_ok || touched;
+    }
+
+    // 恢复：先关掉游戏 UIManager 的 PV 隐藏开关，再按记录的原值恢复 UMG 控件。
+    bool pv_restored = false;
+    if (pv_hide_active_) {
+        pv_restored = set_ui_manager_hide_for_pv(false);
+        pv_hide_active_ = false;
+        if (pv_restored) {
+            log(LogLevel::Info, "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD");
+        }
+    }
+
+    // 重新枚举一次做存活校验：关卡切换后旧控件可能已销毁，不能直接解引用旧指针。
+    int restored_count = 0;
+    for (const auto& entry : hud_widgets_) {
+        if (!pointer_in(widgets, entry.first)) continue;
+        if (set_widget_visibility(entry.first, entry.second)) {
+            touched = true;
+            ++restored_count;
+        }
+    }
+    if (restored_count > 0) {
+        log(LogLevel::Info, "UMG HUD 已恢复：控件数=" + std::to_string(restored_count));
+    }
+    hud_widgets_.clear();
+
+    // AHUD 兜底恢复（即使 PV 开关没找到，也把可能被隐藏的 AHUD 恢复）
+    UObject* pc = controller();
+    if (is_ok(pc)) {
+        UObject* hud = nullptr;
+        if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud)) {
+            static_cast<AActor*>(hud)->SetActorHiddenInGame(false);
+            touched = true;
+        }
+    }
+    return pv_restored || touched;
 }
 
 double Ue4ssPort::get_time_dilation() {
@@ -1124,13 +1311,6 @@ bool Ue4ssPort::save_postfx() {
 
 void Ue4ssPort::restore_postfx() { postfx_saved_ = false; }
 
-bool Ue4ssPort::run_command(const std::string& command) {
-    // PBZ 关闭了控制台，且 PlayerController::ConsoleCommand 需要 FString 参数；
-    // 这里只在日志里留痕，真正截图请用引擎自带的 HighResShot 快捷键。
-    emit(LogLevel::Info, widen("[PBZPhotoMode] 忽略控制台命令：" + command));
-    return false;
-}
-
 void Ue4ssPort::log(LogLevel level, const std::string& message) {
     emit(level, widen("[PBZPhotoMode] " + message + "\n"));
 }
@@ -1230,6 +1410,44 @@ void Ue4ssPort::dump_engine_state() {
         log(LogLevel::Info, "HUD函数: " + names);
     } else {
         log(LogLevel::Warn, "MyHUD 读取失败（本作可能没有 AHUD 实例）");
+    }
+
+    // UIManager 的 PV 隐藏开关诊断：这是隐藏游戏全局 UI/HUD 的主路径
+    UObject* ui_manager = RC::Unreal::UObjectGlobals::FindFirstOf(STR("PBZUIManagerSubsystem"));
+    if (is_ok(ui_manager)) {
+        log(LogLevel::Info, "UIManager=" + narrow(ui_manager->GetFullName()) +
+                                " SetHideUIForPV=" +
+                                (find_function(ui_manager, "SetHideUIForPV") != nullptr ? "有" : "无"));
+    } else {
+        log(LogLevel::Warn, "找不到 PBZUIManagerSubsystem（UIManager 的 PV 隐藏开关不可用）");
+    }
+
+    // UMG HUD 根控件诊断：进入摄影模式时必须能找到它，否则 hide_game_hud 只能退回 AHUD
+    std::vector<UObject*> hud_widgets;
+    find_hud_layout_widgets(hud_widgets);
+    if (!hud_widgets.empty()) {
+        for (UObject* widget : hud_widgets) {
+            int visibility = -1;
+            get_widget_visibility(widget, visibility);
+            log(LogLevel::Info, "HUD控件=" + narrow(widget->GetFullName()) +
+                                    " Visibility=" + std::to_string(visibility));
+        }
+    } else {
+        log(LogLevel::Warn, "找不到 UMG HUD 根控件（W_FrontEndHUDLayout_C）");
+        // 兜底诊断：把运行时类名里带 HUD/Hud 的 UserWidget 列出来，方便下个版本改类名
+        std::vector<UObject*> all_widgets;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("UserWidget"), all_widgets);
+        std::string candidates;
+        for (UObject* widget : all_widgets) {
+            if (!is_ok(widget)) continue;
+            const std::string class_name = narrow(widget->GetClassPrivate()->GetName());
+            if (class_name.find("HUD") == std::string::npos && class_name.find("Hud") == std::string::npos) continue;
+            if (!candidates.empty()) candidates += ", ";
+            candidates += class_name;
+        }
+        if (!candidates.empty()) {
+            log(LogLevel::Info, "含 HUD 的 Widget 类：" + candidates);
+        }
     }
 
     if (is_ok(camera_actor_)) {

@@ -13,7 +13,6 @@ namespace pbzpm {
 struct UiCommands {
     bool toggle_freeze{false};
     bool hide_menu{false};
-    bool shutter{false};
     bool exit_mode{false};
     bool apply_fov{false};
     double new_fov{0.0};

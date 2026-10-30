@@ -64,10 +64,6 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
         commands.toggle_freeze = true;
     }
     ImGui::SameLine();
-    if (ImGui::Button("截图")) {
-        commands.shutter = true;
-    }
-    ImGui::SameLine();
     if (ImGui::Button("隐藏菜单")) {
         commands.hide_menu = true;
     }

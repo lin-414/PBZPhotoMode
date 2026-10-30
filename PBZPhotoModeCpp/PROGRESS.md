@@ -4,10 +4,9 @@
 
 ## 一句话状态
 
-**C++ 版 v1.0.11 已编译、已打包，核心功能实机验证通过**：
-`build-dll/PBZPhotoModeCpp.dll`（约 595 KB，导出 `start_mod`/`uninstall_mod`，导入的 71 个 UE4SS
-符号在游戏内 `UE4SS.dll` 的导出表里全部存在）→
-`dist/PBZPhotoModeCpp_1.0.11-cpp.zip`。核心层 **252 项测试全绿**；F 键冻结已实机验证。
+**C++ 版 v1.0.13 已编译、已打包**：
+`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.13-cpp.zip`。
+核心层 **257 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.13 移除实验性的 F9 截图功能。
 
 ## 已完成
 
@@ -16,7 +15,7 @@
 | GitHub ↔ Epic 绑定 | 你已绑定，`UEPseudo` 拉取成功 |
 | UE4SS 子模块 | `deps/first/Unreal`(UEPseudo) + `deps/first/patternsleuth` 均已检出 |
 | Rust 工具链 | `rustc/cargo 1.99.1`，在 `%USERPROFILE%\.cargo\bin`（不在默认 PATH，`build_dll.bat` 会自动加） |
-| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **252 项断言全绿** |
+| C++ 核心层 | `src/core/` 全部完成，`tools\build_tests.bat` → **257 项断言全绿** |
 | C++ 引擎层 | 已按 UEPseudo 真实 API 重写并在 MSVC 19.44 + Ninja 下**编译通过** |
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
@@ -54,7 +53,7 @@
    预期日志：`加载完成` → 按 F2 后 `进入摄影模式`。
 2. 如果 `SetViewTargetWithBlend` / 相机创建报错，日志会写 `进入摄影模式失败：<原因>`，
    把那段贴回来（C++ 版的报错点更精确）。
-3. 可选增强：`src/core/` 里已有 `ScreenshotService` 的命令接口，接游戏自身的截图控制台命令。
+3. 截图请交给 NVIDIA App / Steam 等系统工具，Mod 不内置截图。
 
 ## 关键环境事实（明天不用重查）
 
@@ -173,7 +172,7 @@ cmake --build build
    - `src/mod_app.cpp` + `src/mod_app.h`
    - `dllmain.cpp`（include 与 `RC::CppUserModBase` 前缀）
 3. 输入方案（沿用已验证的思路）：
-   - 开关类（F2/T/F/F9/FOV）→ `register_keydown_event` 足够
+   - 开关类（F2/T/F/FOV）→ `register_keydown_event` 足够
    - 按住类（Alt/WASD/QE/左右键/鼠标位移/滚轮）→ hook `PlayerController:InputKey` + `InputAxis`，
      反射读 `FInputKeyParams` 里的 Key/Event/Delta，`FKey` 是含 `KeyName`(FName) 的结构体
    - 鼠标轴名：`MouseX` / `MouseY`，滚轮看 `MouseWheelAxis` 或 `MouseScrollUp/Down`（两个都要兜）
@@ -319,3 +318,34 @@ PBZ 的 WorldSettings 很可能把 `bAllowTimeDilation` 关了（或把 Min 夹�
 ### 1.0.11 实机验证（2026-10-30 16:04）
 
 用户日志（UE4SS.log 843/845/855）：`游戏暂停成功 | IsGamePaused=true` → `时间已冻结`；暂停期间仍可用 Alt+鼠标转视角、WASD 移动相机；解冻 `IsGamePaused=false` → `时间已恢复`。**F 键冻结时间已确认可用。**
+
+## 1.0.12-cpp（2026-10-30：进入相机模式时隐藏游戏内 HUD）
+
+需求：进入摄影模式时隐藏游戏内 HUD。
+
+问题：旧版 `hide_game_hud` 只是 `PlayerController.MyHUD.SetActorHiddenInGame`。本作 HUD 是纯 UMG，
+AHUD Actor 上没有可绘制组件，所以这个开关看起来没有效果。CXXHeaderDump 证据：
+`W_FrontEndHUDLayout_C : UPBZHUDLayout`，HP/快捷栏/武器/任务/Boss 血条都是它的子控件。
+
+改动：
+- `src/engine/ue4ss_port.cpp/.h`：
+  - **主路径**：调用游戏自带的 `UPBZUIManagerSubsystem::SetHideUIForPV(true/false)`。它会广播
+    `OnHideUIForPVChanged`，Boss 血条、教程提示、世界空间 HUD 等订阅者一起隐藏/恢复。
+  - **补充路径**：枚举 `W_FrontEndHUDLayout_C`（找不到时退 `PBZHUDLayout`，再退 `WB_OverLayerOut_C`），
+    记录每个控件的原始 `Visibility` 后设为 `Collapsed`；退出时按原值恢复。
+  - 新增 `set_widget_visibility()` / `get_widget_visibility()`，走 `UWidget::SetVisibility(ESlateVisibility)`；
+    反射层补了 `FEnumProperty` 的读写（`ESlateVisibility` 参数在 UE5.7 里是枚举属性）。
+  - AHUD 的 `SetActorHiddenInGame` 保留为最后的兜底。
+  - `set_hud_visible()` 的返回值改为“游戏 UIManager 或 UMG 根控件是否真的隐藏成功”；HUD 还没建好时返回 false，交给 core 重试。
+  - `dump_engine_state()` 增加 `UIManager=... SetHideUIForPV=有/无` 和 `HUD控件=... Visibility=...` 诊断；找不到根控件时列出运行时带 HUD 的 Widget 类。
+- `src/core/config.h`、`config.cpp`、`config.ini.example`、dist/已安装 config：`hide_game_hud` 默认改为 `true`。
+- `src/core/photo_mode.*`：`hide_game_hud=true` 且进入时隐藏失败，每秒重试一次；成功后记入 `hud_hidden_`，退出时按原可见性恢复。
+- 版本 `1.0.12-cpp`；核心层测试 252 → **258 项全绿**。
+- 待真机验证：进入 F2 后看日志是否有 `UMG HUD 已隐藏：控件数=...`，以及画面 HUD 是否消失；退出 F2 后是否恢复。
+
+## 1.0.13-cpp（2026-10-30：移除实验性的 F9 截图）
+
+- 曾尝试给 C++ 版加入 F9 截图：`PlayerController.ConsoleCommand` 在 PBZ 的 `BP_PlayerController_C` 上不存在；改走 `UGameViewportClient::ConsoleCommand` 的 vtable 偏移属于未验证的 ABI 调用，存在崩溃风险。
+- 已移除 `key_shutter`、`screenshot_command`、`run_command()`、`poll_screenshot()` 及菜单/ImGui 中的截图入口。
+- 截图请使用 NVIDIA App / GeForce Experience（默认 `Alt + F1`）或 Steam（`F12`）等系统工具。
+- 版本 `1.0.13-cpp`；核心层测试 258 → **257 项全绿**（移除截图测试）。

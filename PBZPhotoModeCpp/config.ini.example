@@ -16,8 +16,6 @@ key_reset = R
 ; FOV 加减（小键盘 +/-，也可写 OEM_PLUS / OEM_MINUS）
 key_fov_up = ADD
 key_fov_down = SUBTRACT
-; 截图
-key_shutter = F9
 
 [control]
 ; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速
@@ -44,7 +42,8 @@ fov_step = 2
 
 [effects]
 hide_player = false
-hide_game_hud = false
+; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）
+hide_game_hud = true
 ; pause=游戏暂停（默认，真正冻结角色/敌人/特效）；dilation=只调全局时间倍率
 freeze_mode = pause
 freeze_dilation = 0.0001
@@ -58,6 +57,5 @@ imgui_tab = true
 hud_fallback = false
 
 [misc]
-screenshot_command = HighResShot 1
 log_level = info
 dry_run = false

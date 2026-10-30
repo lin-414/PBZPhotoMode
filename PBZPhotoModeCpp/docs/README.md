@@ -4,14 +4,14 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.11 |
-| 核心层测试 | 252 项，全部通过 |
-| 实机验证 | F 键冻结时间已通过（游戏暂停模式） |
+| 版本 | v1.0.13 |
+| 核心层测试 | 257 项，全部通过 |
+| 实机验证 | F 键冻结时间已通过（游戏暂停模式）；v1.0.12 HUD 隐藏待验证；v1.0.13 已移除 F9 截图 |
 
 ## 项目结构
 
 ```
-src/core/      纯逻辑，不碰引擎 —— 已完成，252 项断言全绿
+src/core/      纯逻辑，不碰引擎 —— 已完成，257 项断言全绿
   config        配置解析（含容错、范围夹紧、默认配置生成）
   vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…）
   input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿）
@@ -32,7 +32,7 @@ src/ui_tab     ImGui 面板（滑块/按钮，纯展示 + 回传命令）
 tools\build_tests.bat
 ```
 
-不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 252 项，失败 0 项`。
+不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 257 项，失败 0 项`。
 
 ## 键位
 
@@ -47,7 +47,6 @@ tools\build_tests.bat
 | 重置相机视角 | `R`（回到进入摄影模式时的位置/朝向/FOV） |
 | 冻结时间 | `F` |
 | 隐藏菜单 | `T` |
-| 截图 | `F9` |
 
 键位都能在 `config.ini` 里改（`[keys]` 段）。
 
@@ -68,7 +67,7 @@ tools\build_tests.bat
 
 - **P0**：核心逻辑 + 单元测试 → 完成
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
-- **P2**：PostProcess 快照还原、快门参数（焦距/景深）、滤镜、连拍、录像
+- **P2**：PostProcess 快照还原、滤镜、连拍、录像
 
 ## 1.0.3 这次改了什么
 
@@ -163,3 +162,21 @@ tools\build_tests.bat
 ## 1.0.11 实机验证
 
 2026-10-30 16:04 用户日志确认：`游戏暂停成功 | IsGamePaused=true` → `时间已冻结`，暂停期间相机仍可移动；`IsGamePaused=false` → `时间已恢复`。F 键冻结时间已验证通过。
+
+## 1.0.12 这次改了什么（进入摄影模式自动隐藏 HUD）
+
+- 旧版 `hide_game_hud` 只是把 `PlayerController.MyHUD`（AHUD Actor）`SetActorHiddenInGame`，对本作纯 UMG 的 HUD 无效。
+- 1.0.12 首先调用游戏自带的 `UPBZUIManagerSubsystem::SetHideUIForPV(true/false)` 总开关（它会广播 `OnHideUIForPVChanged`，
+  Boss 血条、教程提示等订阅者一起隐藏/恢复）；同时找 UMG HUD 根控件 `W_FrontEndHUDLayout_C`
+  （`UPBZHUDLayout` 的唯一蓝图子类，HP/快捷栏/武器/任务等挂在它下面），通过
+  `UWidget::SetVisibility(ESlateVisibility::Collapsed)` 隐藏，退出时按进入前读到的原始 `Visibility` 值恢复。
+- 如果进入模式时 HUD 根控件还没建好，每秒重试一次；成功后不再重复遍历对象数组，退出时清理记录。
+- `hide_game_hud` 默认值改为 `true`；想保留游戏 HUD 可在 `config.ini` 改回 `false`。
+- 进入摄影模式时的引擎对象日志会多出 `HUD控件=... Visibility=...`，用于确认根控件是否找到。
+- 版本 `1.0.12-cpp`；核心层测试 258 项全绿；打包为 `dist/PBZPhotoModeCpp_1.0.12-cpp.zip`。
+
+## 1.0.13 这次改了什么（移除 F9 截图）
+
+- 曾尝试用 `HighResShot` 实现 F9 截图，但本作 `BP_PlayerController_C` 没有 `ConsoleCommand` UFunction；直接调用 `UGameViewportClient` 虚函数存在 ABI/崩溃风险，已全部移除。
+- 截图请使用 NVIDIA App / GeForce Experience（默认 `Alt + F1`）或 Steam（`F12`）等系统工具。
+- 版本 `1.0.13-cpp`；核心层测试 257 项全绿。

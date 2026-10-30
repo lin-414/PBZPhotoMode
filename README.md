@@ -4,7 +4,7 @@
 不改游戏文件、不动存档，装上即用。
 
 > 按 `F2` 进入摄影模式：右下角弹出菜单，`Alt + 鼠标` 自由转视角，`WASD` 平移，
-> 滚轮调 FOV，`F` 冻结时间，`F9` 截图。
+> 滚轮调 FOV，`F` 冻结时间。
 
 ## 功能
 
@@ -13,22 +13,23 @@
 - **镜头参数**：滚轮调 FOV，小键盘 `+` / `-` 微调，`R` 一键重置到进入时的视角
 - **时间冻结**：`F` 冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
+- **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性
 - **可配置**：键位、移动速度、灵敏度、FOV 范围、冻结方式等全部写在 `config.ini` 里
-- **截图**：`F9` 触发游戏 `HighResShot`
 
 ## 当前版本
 
-**v1.0.11-cpp** —— 已编译并在真机验证：
+**v1.0.13-cpp** —— 已编译：
 
+- 进入摄影模式自动隐藏游戏 HUD（UMG 根控件 `W_FrontEndHUDLayout_C`），退出时按进入前的可见性恢复
 - F 键冻结时间使用游戏暂停模式，角色、敌人、NPC 与特效会真正静止，摄影相机仍可自由移动
-- 核心层 252 项单元测试全部通过
-- 产物：`PBZPhotoModeCpp_1.0.11-cpp.zip`
+- 核心层 257 项单元测试全部通过
+- 产物：`PBZPhotoModeCpp_1.0.13-cpp.zip`
 
 ## 安装
 
 需要《影之刃零》专用 UE4SS（[KintaroModding/ue4ss](https://github.com/KintaroModding/ue4ss) 的 `phantombladezero` 发行包，开发验证版本 `v3.0.1-1183-gcdbc0b66`）。
 
-从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.11-cpp.zip`，解压到游戏根目录，形成：
+从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.13-cpp.zip`，解压到游戏根目录，形成：
 
 ```
 <游戏目录>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp\
@@ -45,7 +46,7 @@
 
 ```bat
 cd PBZPhotoModeCpp
-tools\build_tests.bat          :: 252 项断言全绿
+tools\build_tests.bat          :: 257 项断言全绿
 ```
 
 构建 DLL 需要一份 [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) 源码（含 Epic 授权的 `UEPseudo` 子模块）：
@@ -61,11 +62,11 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ```
 .
-├─ PBZPhotoModeCpp/         # UE4SS C++ Mod（v1.0.11）
+├─ PBZPhotoModeCpp/         # UE4SS C++ Mod（v1.0.13）
 │  ├─ src/core/             # 纯逻辑层（配置/输入/状态机/菜单模型，含单元测试）
 │  ├─ src/engine/           # UE4SS 引擎适配层
 │  ├─ src/mod_app.cpp       # CppUserModBase 入口
-│  ├─ tests/                # 252 项核心层断言
+│  ├─ tests/                # 257 项核心层断言
 │  ├─ tools/                # 构建 / 打包脚本
 │  └─ docs/                 # 构建、安装、核对清单
 ├─ docs/
@@ -76,6 +77,8 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ## 版本记录
 
+- **v1.0.13**（2026-10-30）：移除实验性的截图功能，截图改用 NVIDIA App / Steam 等系统工具。
+- **v1.0.12**（2026-10-30）：进入摄影模式自动隐藏游戏 HUD（UMG 根控件），退出恢复；`hide_game_hud` 默认改为 `true`。
 - **v1.0.11**（2026-10-30）：F 冻结改为游戏暂停（`pause`），真机验证：暂停期间相机仍可移动，解冻正常恢复。
 - 逐版本修复记录（含每次真机日志的根因分析）见 [PBZPhotoModeCpp/PROGRESS.md](PBZPhotoModeCpp/PROGRESS.md)。
 
@@ -85,5 +88,7 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 - [KintaroModding/ue4ss](https://github.com/KintaroModding/ue4ss) — 影之刃零专用分支
 
 ## 说明
+
+截图请使用 NVIDIA App / GeForce Experience（默认 `Alt + F1`）或 Steam（`F12`）等系统工具。
 
 本项目仅供单机游戏摄影与学习交流使用；使用 Mod 的风险由使用者自行承担。

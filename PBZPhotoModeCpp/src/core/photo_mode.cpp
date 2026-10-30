@@ -101,6 +101,7 @@ bool PhotoMode::enter() {
     menu_visible_ = true;
     pose_dirty_ = false;
     reassert_accum_ = 0.0;
+    hud_retry_accum_ = 0.0;
 
     char buf[160]{};
     std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
@@ -237,11 +238,6 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         log(LogLevel::Info, "相机视角已重置（位置/朝向/FOV）");
     }
 
-    if (intent.shutter) {
-        if (!engine_.run_command(cfg_.screenshot_command)) {
-            log(LogLevel::Warn, "截图命令执行失败：" + cfg_.screenshot_command);
-        }
-    }
 
     const double sens = cfg_.look_sensitivity;
     if (intent.look_dx != 0.0) {
@@ -296,6 +292,17 @@ void PhotoMode::tick(const Intent& intent, double dt) {
 
     if (!apply_pose_if_dirty()) {
         log(LogLevel::Warn, "应用相机位姿失败");
+    }
+
+    // HUD 是 UMG，可能比摄影模式晚建好；隐藏失败时每秒重试一次，
+    // 成功后由 hud_hidden_ 记住，退出时才会正确恢复。
+    if (cfg_.hide_game_hud && !hud_hidden_) {
+        hud_retry_accum_ += dt;
+        if (hud_retry_accum_ >= 1.0) {
+            hud_retry_accum_ = 0.0;
+            hud_hidden_ = engine_.set_hud_visible(false);
+            if (hud_hidden_) log(LogLevel::Info, "HUD 延迟隐藏成功");
+        }
     }
 
     // 每 1 秒重新确认一次 ViewTarget：防止游戏里某些流程（过场、重生）把视角抢回去

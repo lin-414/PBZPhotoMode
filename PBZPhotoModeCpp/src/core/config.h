@@ -22,7 +22,6 @@ struct Config {
     std::string key_reset{"R"};
     std::string key_fov_up{"ADD"};
     std::string key_fov_down{"SUBTRACT"};
-    std::string key_shutter{"F9"};
 
     // ---- [control] ----
     double move_speed{400.0};        // 单位/秒
@@ -44,7 +43,7 @@ struct Config {
 
     // ---- [effects] ----
     bool hide_player{false};
-    bool hide_game_hud{false};
+    bool hide_game_hud{true};  // 摄影模式默认隐藏游戏 HUD（退出时恢复）
     FreezeMode freeze_mode{FreezeMode::Pause};
     double freeze_dilation{0.0001};
     bool restore_fov_on_exit{true};
@@ -55,7 +54,6 @@ struct Config {
     bool hud_fallback{false};    // 无 ImGui 时用 PrintString 画右下角文字菜单
 
     // ---- [misc] ----
-    std::string screenshot_command{"HighResShot 1"};
     LogLevel log_level{LogLevel::Info};
     bool dry_run{false};         // 只打日志不改游戏状态（排障用）
 };

@@ -3,6 +3,8 @@
 #include <filesystem>
 #include <functional>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "core/engine_port.h"
 
@@ -51,8 +53,6 @@ public:
 
     bool save_postfx() override;
     void restore_postfx() override;
-
-    bool run_command(const std::string& command) override;
 
     void log(LogLevel level, const std::string& message) override;
 
@@ -130,6 +130,10 @@ private:
     bool overlay_show_hud_forced_{false};
     bool overlay_process_hook_installed_{false};
     bool overlay_diag_logged_{false};
+    // 被隐藏的 UMG HUD 根控件（控件指针 + 原始 ESlateVisibility 值），退出时原样恢复
+    std::vector<std::pair<RC::Unreal::UObject*, int>> hud_widgets_;
+    bool hud_widget_missing_logged_{false};
+    bool pv_hide_active_{false};  // 本次隐藏是否走了 UIManager.SetHideUIForPV
     // PrintString 兜底菜单的状态（HUD Canvas 钩子收不到回调时使用）
     bool print_path_working_{false};
     bool screen_messages_checked_{false};
@@ -141,6 +145,7 @@ private:
     RC::Unreal::UFunction* axis_function_{nullptr};
     AxisSink axis_sink_;
     std::string overlay_text_;
+
 };
 
 }  // namespace pbzpm

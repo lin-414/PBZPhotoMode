@@ -124,7 +124,6 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
         else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
         else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
-        else if (key == "key_shutter") set_string(cfg.key_shutter, value, error, key.c_str());
         else if (key == "move_speed") set_double(cfg.move_speed, value, error, key.c_str());
         else if (key == "boost_mult") set_double(cfg.boost_mult, value, error, key.c_str());
         else if (key == "slow_mult") set_double(cfg.slow_mult, value, error, key.c_str());
@@ -155,7 +154,6 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
             else error = "freeze_mode 只能是 dilation 或 pause：" + value;
         } else if (key == "imgui_tab") set_bool(cfg.imgui_tab, value, error, key.c_str());
         else if (key == "hud_fallback") set_bool(cfg.hud_fallback, value, error, key.c_str());
-        else if (key == "screenshot_command") set_string(cfg.screenshot_command, value, error, key.c_str());
         else if (key == "log_level") {
             const std::string v = lower(value);
             if (v == "error") cfg.log_level = LogLevel::Error;
@@ -268,9 +266,7 @@ std::string default_config_text() {
         << "key_reset = " << c.key_reset << "\n"
         << "; FOV 加减（小键盘 +/-，也可写 OEM_PLUS / OEM_MINUS）\n"
         << "key_fov_up = " << c.key_fov_up << "\n"
-        << "key_fov_down = " << c.key_fov_down << "\n"
-        << "; 截图\n"
-        << "key_shutter = " << c.key_shutter << "\n\n"
+        << "key_fov_down = " << c.key_fov_down << "\n\n"
         << "[control]\n"
         << "; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速\n"
         << "move_speed = " << c.move_speed << "\n"
@@ -294,7 +290,8 @@ std::string default_config_text() {
         << "fov_step = " << c.fov_step << "\n\n"
         << "[effects]\n"
         << "hide_player = false\n"
-        << "hide_game_hud = false\n"
+        << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"
+        << "hide_game_hud = true\n"
         << "; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停\n"
         << "freeze_mode = " << (c.freeze_mode == FreezeMode::Pause ? "pause" : "dilation") << "\n"
         << "freeze_dilation = " << c.freeze_dilation << "\n"
@@ -306,7 +303,6 @@ std::string default_config_text() {
         << "; 没有 ImGui 时用文字菜单兜底\n"
         << "hud_fallback = false\n\n"
         << "[misc]\n"
-        << "screenshot_command = " << c.screenshot_command << "\n"
         << "log_level = " << log_level_name(c.log_level) << "\n"
         << "dry_run = false\n";
     return out.str();

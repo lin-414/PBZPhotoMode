@@ -67,6 +67,7 @@ private:
 
     double prev_dilation_{1.0};
     double reassert_accum_{0.0};
+    double hud_retry_accum_{0.0};
     bool pose_dirty_{false};
     bool pov_fallback_used_{false};
     std::string last_error_{};

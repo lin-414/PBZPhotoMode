@@ -17,7 +17,6 @@ struct KeyMap {
     int menu{'T'};
     int freeze{'F'};
     int reset{'R'};
-    int shutter{0x78};   // F9
     int fov_up{0x6B};    // ADD
     int fov_down{0x6D};  // SUBTRACT
     bool all_resolved{true};
@@ -41,7 +40,6 @@ struct Intent {
     bool toggle_menu{};
     bool toggle_freeze{};
     bool reset_view{};  // R：回到进入摄影模式时的位姿/FOV
-    bool shutter{};
 };
 
 // 纯状态机：喂 Win32 风格事件，产出 Intent。不依赖引擎，可单测。

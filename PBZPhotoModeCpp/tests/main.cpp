@@ -105,7 +105,7 @@ void test_config_defaults_and_parse() {
     CHECK(empty.cfg.free_look_requires_alt);
     CHECK(empty.cfg.block_game_input);
     CHECK(!empty.cfg.hide_player);
-    CHECK(!empty.cfg.hide_game_hud);
+    CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
 
@@ -388,7 +388,7 @@ void test_photo_mode_happy_path() {
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "save_postfx", "get_time_dilation", "apply_fov", "apply_pose"},
+                     "hud_off", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -397,6 +397,7 @@ void test_photo_mode_happy_path() {
     CHECK(fe.ignore_move);
     CHECK(fe.input_blocked);
     CHECK(!fe.player_hidden);  // 默认不隐藏角色：摄影模式要能把自己拍进去
+    CHECK(!fe.hud_visible);    // 默认隐藏游戏 HUD
     CHECK_NEAR(mode.fov(), 88.0, 1e-9);
     CHECK_NEAR(mode.pose().rot.yaw, 45.0, 1e-9);
     CHECK(!mode.frozen());
@@ -410,7 +411,7 @@ void test_photo_mode_happy_path() {
     // 退出：严格逆序还原，且只还原做过的步骤
     fe.reset_calls();
     mode.leave("test");
-    expect_sequence(fe, {"restore_postfx", "block_input_off", "ignore_move_off", "restore_view", "destroy_camera"},
+    expect_sequence(fe, {"restore_postfx", "hud_on", "block_input_off", "ignore_move_off", "restore_view", "destroy_camera"},
                     "退出");
     CHECK(!mode.active());
     CHECK(!fe.camera_exists);
@@ -418,7 +419,7 @@ void test_photo_mode_happy_path() {
     CHECK(!fe.ignore_move);
     CHECK(!fe.input_blocked);
     CHECK(!fe.player_hidden);
-    CHECK(fe.hud_visible);  // 没开 hide_game_hud，就不该动 HUD
+    CHECK(fe.hud_visible);  // 退出后恢复
     CHECK_NEAR(fe.dilation, 1.0, 1e-12);
 
     // 幂等：再退一次不应有任何调用
@@ -623,13 +624,6 @@ void test_photo_mode_tick() {
     mover.tick(lag, 5.0);
     CHECK_NEAR(std::fabs(mover.pose().loc.x - lag_start.x), 400.0 * 0.25, 1e-6);
 
-    // 截图命令
-    fe.reset_calls();
-    Intent shot;
-    shot.shutter = true;
-    cfg.screenshot_command = "HighResShot 1";
-    mode.tick(shot, 0.016);
-    CHECK(fe.has("run_command:HighResShot 1"));
 
     // 世界失效 -> 自动退出并还原
     fe.world_ok = false;
@@ -757,6 +751,24 @@ void test_photo_mode_reassert_and_partial() {
         PhotoMode mode(fe, cfg);
         CHECK(mode.enter());
         CHECK(!fe.hud_visible);
+        mode.leave();
+        CHECK(fe.hud_visible);
+    }
+
+    // HUD 比摄影模式晚建好：进入时隐藏失败，tick 每秒重试，成功后退出仍能恢复
+    {
+        FakeEngine fe;
+        fe.fail_hud = true;
+        Config cfg;
+        cfg.hide_game_hud = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(fe.hud_visible);  // 第一次隐藏失败
+        CHECK(fe.logs_contain("隐藏 HUD 失败"));
+        fe.fail_hud = false;
+        Intent none;
+        for (int i = 0; i < 5; ++i) mode.tick(none, 0.25);  // 累计 1.25 秒，跨过重试阈值
+        CHECK(!fe.hud_visible);  // 每秒重试后成功
         mode.leave();
         CHECK(fe.hud_visible);
     }

@@ -41,10 +41,9 @@
 | `destroy_camera` | `AActor::K2_DestroyActor()` | 退出时务必调用 |
 | `set_ignore_move_input` | `APlayerController::SetIgnoreMoveInput(bool)` | **只屏蔽移动**，别用 SetIgnoreLookInput（会连带屏蔽鼠标） |
 | `set_player_hidden` | `AActor::SetActorHiddenInGame(bool)` | 作用于 Pawn |
-| `set_hud_visible` | `AHUD::SetActorHiddenInGame(bool)` | HUD 从 `PlayerController.MyHUD` 取 |
+| `set_hud_visible` | `UWidget::SetVisibility(ESlateVisibility)` on `W_FrontEndHUDLayout_C` | 本作 HUD 是 UMG；`AHUD::SetActorHiddenInGame` 仅作兜底 |
 | `get/set_time_dilation` | `UGameplayStatics::Get/SetGlobalTimeDilation` | CDO 路径 `/Script/Engine.Default__GameplayStatics` |
 | `set_paused` | `APlayerController::SetPause(bool)` | 仅 `freeze_mode = pause` 时用 |
-| `run_command` | `APlayerController::ConsoleCommand(FString, bool)` | 截图 `HighResShot 1` |
 
 ## D. mod_app.cpp 的接线点
 
@@ -89,9 +88,8 @@
 | `apply_fov` | 直接写相机组件属性 `FieldOfView`（float/double 自适应）—— 早期原型就是卡在这一步 |
 | `destroy_camera` | `AActor::K2_DestroyActor()` |
 | `set_ignore_move_input` | `PlayerController::SetIgnoreMoveInput`（**只屏蔽移动**） |
-| `set_hud_visible` | `PlayerController.MyHUD` → `SetActorHiddenInGame` |
+| `set_hud_visible` | 枚举 `W_FrontEndHUDLayout_C`（`PBZHUDLayout` 子类）→ `UWidget::SetVisibility(Collapsed)`，记录/恢复原 `Visibility`；`PlayerController.MyHUD` 隐藏作为兜底 |
 | `get/set_time_dilation` | GameplayStatics CDO 的 `Get/SetGlobalTimeDilation` |
-| `run_command` | `PlayerController::ConsoleCommand` |
 | `mod_directory()` | 走 `CppUserModBase` 提供的路径接口 + `config.ini` |
 | `bind_input()` | **改为 Win32 输入**：`WH_MOUSE_LL` 钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 只有 keydown，无 keyup，无法表达“按住 Alt”） |
 | `bind_hooks()` | 只挂 `Hook::RegisterEngineTickPreCallback`（InputKey/InputAxis hook 因参数块布局随版本变动而放弃） |

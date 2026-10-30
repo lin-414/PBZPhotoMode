@@ -31,7 +31,6 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.menu = resolve_key(cfg.key_menu, map.menu, "key_menu", warnings, map.all_resolved);
     map.freeze = resolve_key(cfg.key_freeze, map.freeze, "key_freeze", warnings, map.all_resolved);
     map.reset = resolve_key(cfg.key_reset, map.reset, "key_reset", warnings, map.all_resolved);
-    map.shutter = resolve_key(cfg.key_shutter, map.shutter, "key_shutter", warnings, map.all_resolved);
     map.fov_up = resolve_key(cfg.key_fov_up, map.fov_up, "key_fov_up", warnings, map.all_resolved);
     map.fov_down = resolve_key(cfg.key_fov_down, map.fov_down, "key_fov_down", warnings, map.all_resolved);
     return map;
@@ -105,7 +104,6 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
     out.toggle_menu = key_pressed(keys.menu);
     out.toggle_freeze = key_pressed(keys.freeze);
     out.reset_view = key_pressed(keys.reset);
-    out.shutter = key_pressed(keys.shutter);
     return out;
 }
 

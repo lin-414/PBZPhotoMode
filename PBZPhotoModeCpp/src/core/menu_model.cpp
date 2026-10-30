@@ -80,14 +80,14 @@ MenuModel build_menu_model(const PhotoMode& mode, const KeyMap& keys) {
     model.hints.push_back("滚轮 FOV    左键上移  右键下移");
     model.hints.push_back(vk_to_name(keys.reset) + " 重置相机视角（回到进入时）");
     model.hints.push_back(vk_to_name(keys.freeze) + " 冻结时间    " + vk_to_name(keys.menu) + " 隐藏菜单    " +
-                          vk_to_name(keys.shutter) + " 截图    " + vk_to_name(keys.toggle) + " 退出");
+                          vk_to_name(keys.toggle) + " 退出");
 
     model.hints_ascii.push_back("ALT + MOUSE  free look");
     model.hints_ascii.push_back("WASD move    Q/E up-down    Shift/Ctrl speed");
     model.hints_ascii.push_back("WHEEL fov    LMB up   RMB down");
     model.hints_ascii.push_back(vk_to_name(keys.reset) + " reset view");
     model.hints_ascii.push_back(vk_to_name(keys.freeze) + " freeze    " + vk_to_name(keys.menu) + " hide menu    " +
-                                vk_to_name(keys.shutter) + " shot    " + vk_to_name(keys.toggle) + " exit");
+                                vk_to_name(keys.toggle) + " exit");
     return model;
 }
 

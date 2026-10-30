@@ -50,8 +50,6 @@ public:
     virtual bool save_postfx() = 0;
     virtual void restore_postfx() = 0;
 
-    virtual bool run_command(const std::string& command) = 0;
-
     virtual void log(LogLevel level, const std::string& message) = 0;
 };
 

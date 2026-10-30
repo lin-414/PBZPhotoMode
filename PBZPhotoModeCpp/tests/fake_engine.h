@@ -41,7 +41,6 @@ public:
     bool fail_hide_player{false};
     bool fail_hud{false};
     bool fail_postfx{false};
-    bool fail_command{false};
 
     bool world_valid() override {
         calls.push_back("world_valid");
@@ -137,10 +136,6 @@ public:
         calls.push_back("restore_postfx");
         postfx_saved = false;
         ++postfx_restore_count;
-    }
-    bool run_command(const std::string& command) override {
-        calls.push_back("run_command:" + command);
-        return !fail_command;
     }
     void log(LogLevel level, const std::string& message) override {
         const char* tag = "?";
