@@ -24,6 +24,7 @@
 #include "engine/imgui_overlay.h"
 #include "engine/ue4ss_port.h"
 #include "engine/umg2_layout.h"
+#include "engine/wbp_layout.h"
 #include "ui_tab.h"
 #include "win_input.h"
 
@@ -153,6 +154,9 @@ void PhotoModeMod::reload_config() {
     if (mode_) {
         mode_->set_config(cfg_);
     }
+    if (port_) {
+        port_->wbp_set_asset_path(cfg_.menu_asset_path);
+    }
 }
 
 void PhotoModeMod::bind_engine_tick() {
@@ -177,6 +181,13 @@ void PhotoModeMod::on_unreal_init() {
     reload_config();
     port_ = std::make_unique<Ue4ssPort>(std::filesystem::path(mod_directory()));
     mode_ = std::make_unique<PhotoMode>(*port_, cfg_);
+    port_->wbp_set_asset_path(cfg_.menu_asset_path);
+
+    // pak 自动安装（1.3.0）：WBP 资产必须放游戏 Paks\~mods 才会被挂载，
+    // 模组管理器只往 ue4ss\Mods\ 装——所以由 DLL 启动时把 paks\ 三件套拷过去
+    if (cfg_.menu_pak_autocopy) {
+        ensure_pak_installed();
+    }
 
     input_source_ = &Win32InputSource::instance();
     // 排障开关：mod 目录里放一个 no_wheel_hook.txt 就不装低级鼠标钩子
@@ -389,11 +400,65 @@ void PhotoModeMod::handle_intent(const Intent& intent, double dt) {
     mode_->tick(intent, dt);
 }
 
+// 开菜单沿解析一次 UI 缩放（umg2/WBP 悬停判定共用）：umg2_scale.txt 覆盖 >
+// 物理客户区/Slate视口 > 窗口 DPI。UE 的 UI 缩放走分辨率曲线，跟 Windows DPI 是两码事；
+// 物理/Slate 才是真值（1.2.2 用 DPI 推算，2K/4K 或缩放曲线不对时命中区整体偏移）。
+void PhotoModeMod::resolve_panel_scale() {
+    umg2_scale_override_ = read_umg2_scale_override(mod_directory());
+    umg2_scale_cached_ = 0.0f;
+    const HWND w = find_umg2_window();
+    RECT c{};
+    const bool have_client = w != nullptr && GetClientRect(w, &c) != 0;
+    float slate_w = 0.0f;
+    float slate_h = 0.0f;
+    const bool have_slate = umg2_scale_override_ <= 0.0f && have_client &&
+                            port_->umg2_viewport_size(slate_w, slate_h);
+    if (umg2_scale_override_ > 0.0f) {
+        umg2_scale_cached_ = umg2_scale_override_;
+    } else if (have_slate && slate_w > 1.0f) {
+        umg2_scale_cached_ = static_cast<float>(c.right) / slate_w;
+    }
+    if (have_client) {
+        const float s = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
+                                                  : static_cast<float>(umg2_dpi(w)) / 96.0f;
+        char buf[260]{};
+        std::snprintf(buf, sizeof(buf),
+                      "交互菜单命中映射：窗口=%p 客户区=%ldx%ld Slate视口=%.0fx%.0f DPI=%u 缩放=%.3f(%s) "
+                      "面板左缘x=%.0f 顶y=%.0f",
+                      reinterpret_cast<void*>(w), c.right, c.bottom, slate_w, slate_h, umg2_dpi(w), s,
+                      umg2_scale_override_ > 0.0f ? "覆盖" : (have_slate ? "视口换算" : "DPI兜底"),
+                      static_cast<float>(c.right) - umg2layout::kPanelFromRight * s,
+                      umg2layout::kPanelTop * s);
+        port_->log(LogLevel::Info, buf);
+    }
+}
+
+// 指针是否落在缩放后的面板矩形内（umg2 文本面板与 WBP 资产菜单共用）
+bool PhotoModeMod::cursor_in_scaled_panel(float from_right, float top, float width, float height) {
+    if (HWND game_window = find_umg2_window(); game_window != nullptr) {
+        RECT client{};
+        if (GetClientRect(game_window, &client)) {
+            POINT cursor{};
+            if (GetCursorPos(&cursor) && ScreenToClient(game_window, &cursor)) {
+                float scale = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
+                                                        : static_cast<float>(umg2_dpi(game_window)) / 96.0f;
+                scale = std::clamp(scale, 0.25f, 8.0f);
+                const float panel_left_px = static_cast<float>(client.right) - from_right * scale;
+                const float px = (static_cast<float>(cursor.x) - panel_left_px) / scale;
+                const float py = (static_cast<float>(cursor.y) - top * scale) / scale;
+                return px >= 0.0f && py >= 0.0f && px <= width && py <= height;
+            }
+        }
+    }
+    return false;
+}
+
 void PhotoModeMod::update_overlay() {
     if (!mode_ || !port_) return;
 
     // 优先级 1：DX12 ImGui 浮窗（无帧生成 + imgui_dx12_force.txt 的进阶路径）
     if (overlay_ != nullptr && overlay_->available()) {
+        port_->wbp_hide();
         port_->umg2_hide();
         port_->hide_overlay();
         return;
@@ -401,7 +466,46 @@ void PhotoModeMod::update_overlay() {
 
     const bool want_menu = mode_->active() && mode_->menu_visible();
 
-    // 优先级 2：UMG 交互菜单（游戏原生控件；帧生成环境下零冲突。构建失败自动落回文字版）
+    // 优先级 2：WBP 资产菜单（离线制作的真滑条/真按钮，Slate 原生路由；1.3.0）。
+    // C++ 与资产只通过 BP 变量对话：读 FovValue/SpeedValue/SensValue/Command/bDragging，
+    // 写回真值与命令清零；换算逻辑在 core/menu_bridge（可单测）。
+    if (cfg_.menu_asset && want_menu && port_->wbp_available()) {
+        if (port_->wbp_show()) {
+            port_->hide_overlay();
+            port_->umg2_hide();
+            if (!wbp_menu_open_prev_) {
+                wbp_menu_open_prev_ = true;
+                wbp_bridge_.on_opened(mode_->fov(), cfg_.move_speed, cfg_.look_sensitivity);
+                resolve_panel_scale();
+            }
+            WbpVars vars;
+            port_->wbp_read_vars(vars);
+            WbpWriteBack back;
+            const WbpCommands commands =
+                wbp_bridge_.step(vars, mode_->fov(), cfg_.move_speed, cfg_.look_sensitivity, mode_->frozen(),
+                                 cfg_.fov_min, cfg_.fov_max, 0.01, 0.50, back);
+            port_->wbp_apply(back);
+            apply_wbp_commands(commands);
+
+            // 悬停静音：Slate 负责控件自身的点击，我们只负责让相机让路（同一套缩放机器）
+            umg2_cursor_in_panel_ =
+                cursor_in_scaled_panel(wbplayout::kPanelFromRight, wbplayout::kPanelTop, wbplayout::kPanelWidth,
+                                       wbplayout::kPanelHeight);
+
+            // Esc 关闭菜单
+            const bool esc_down = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+            if (esc_down && !esc_prev_) mode_->set_menu_visible(false);
+            esc_prev_ = esc_down;
+            return;
+        }
+        // wbp_show 失败但还没标记不可用（世界未就绪/重建节流中）：本帧先不显示任何菜单，
+        // 下一帧重试；一旦标记不可用就落到下面的 UMG2/文字层
+        if (port_->wbp_available()) return;
+    }
+    wbp_menu_open_prev_ = false;
+    wbp_bridge_.reset();
+
+    // 优先级 3：UMG 交互菜单（游戏原生控件；帧生成环境下零冲突。构建失败自动落回文字版）
     if (want_menu && port_->umg2_available()) {
         // 鼠标命中判定（不走 Slate 路由）：窗口客户区 → 面板内坐标 → 命中区表。
         // 坐标系必须与 ue4ss_port 的摆放一致（右上角锚定）；Slate 单位按缩放换算成物理像素。
@@ -410,36 +514,7 @@ void PhotoModeMod::update_overlay() {
         umg2_cursor_in_panel_ = false;
         if (!umg2_menu_open_prev_) {
             umg2_menu_open_prev_ = true;
-            umg2_scale_override_ = read_umg2_scale_override(mod_directory());
-            umg2_scale_cached_ = 0.0f;
-            const HWND w = find_umg2_window();
-            RECT c{};
-            const bool have_client = w != nullptr && GetClientRect(w, &c) != 0;
-            float slate_w = 0.0f;
-            float slate_h = 0.0f;
-            // 缩放解析：umg2_scale.txt 覆盖 > 物理客户区/Slate视口 > 窗口DPI。
-            // UE 的 UI 缩放走分辨率曲线，跟 Windows DPI 是两码事；物理/Slate 才是真值
-            //（1.2.2 用 DPI 推算，2K/4K 或缩放曲线不对时命中区整体偏移）。
-            const bool have_slate = umg2_scale_override_ <= 0.0f && have_client &&
-                                    port_->umg2_viewport_size(slate_w, slate_h);
-            if (umg2_scale_override_ > 0.0f) {
-                umg2_scale_cached_ = umg2_scale_override_;
-            } else if (have_slate && slate_w > 1.0f) {
-                umg2_scale_cached_ = static_cast<float>(c.right) / slate_w;
-            }
-            if (have_client) {
-                const float s = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
-                                                          : static_cast<float>(umg2_dpi(w)) / 96.0f;
-                char buf[260]{};
-                std::snprintf(buf, sizeof(buf),
-                              "交互菜单命中映射：窗口=%p 客户区=%ldx%ld Slate视口=%.0fx%.0f DPI=%u 缩放=%.3f(%s) "
-                              "面板左缘x=%.0f 顶y=%.0f",
-                              reinterpret_cast<void*>(w), c.right, c.bottom, slate_w, slate_h, umg2_dpi(w), s,
-                              umg2_scale_override_ > 0.0f ? "覆盖" : (have_slate ? "视口换算" : "DPI兜底"),
-                              static_cast<float>(c.right) - umg2layout::kPanelFromRight * s,
-                              umg2layout::kPanelTop * s);
-                port_->log(LogLevel::Info, buf);
-            }
+            resolve_panel_scale();
         }
         if (HWND game_window = find_umg2_window(); game_window != nullptr) {
             RECT client{};
@@ -503,6 +578,7 @@ void PhotoModeMod::update_overlay() {
     umg2_menu_open_prev_ = false;
 
     if (!want_menu) {
+        port_->wbp_hide();
         port_->umg2_hide();
         port_->hide_overlay();
         return;
@@ -519,6 +595,74 @@ void PhotoModeMod::update_overlay() {
             port_->log(LogLevel::Info, "游戏内菜单已显示（UMG 控件）");
         }
     }
+}
+
+// 应用 WBP 资产菜单攒下的动作（bridge 每帧轮询产生；绝对值语义，与 umg2 的步进语义不同）
+void PhotoModeMod::apply_wbp_commands(const WbpCommands& commands) {
+    if (commands.fov_changed) mode_->set_fov(commands.fov);  // set_fov 自带 [fov_min, fov_max] 夹紧
+    if (commands.speed_changed) {
+        cfg_.move_speed = std::clamp(commands.speed, 0.0, static_cast<double>(kWbpSpeedMax));
+        mode_->set_config(cfg_);
+    }
+    if (commands.sens_changed) {
+        cfg_.look_sensitivity = std::clamp(commands.sens, 0.01, 0.50);
+        mode_->set_config(cfg_);
+    }
+    if (commands.toggle_freeze) mode_->toggle_freeze();
+    if (commands.reset_view) menu_reset_view_ = true;
+    if (commands.exit_mode) {
+        mode_->leave("menu");
+        input_.reset();
+        overlay_ok_ = false;
+    }
+}
+
+// pak 自动安装（1.3.0）：模组管理器只把 zip 解到 ue4ss\Mods\PBZPhotoModeCpp\，
+// 而 WBP 资产 pak 必须在 <游戏>\ProjectPBZ\Content\Paks\~mods\ 才会被引擎挂载
+// （本机 ~mods 已有 4 个成功加载的先例）。启动时把 paks\ 三件套拷过去；失败只 Warn 不阻断。
+void PhotoModeMod::ensure_pak_installed() {
+    if (pak_copy_done_) return;
+    pak_copy_done_ = true;
+    namespace fs = std::filesystem;
+    const fs::path src_dir = fs::path(mod_directory()) / "paks";
+    if (!fs::exists(src_dir)) {
+        port_->log(LogLevel::Info, "pak 自动安装：模组目录没有 paks\\，跳过（资产菜单不可用时自动用文字面板）");
+        return;
+    }
+    // 模组目录在 <游戏>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp，上溯 4 级到游戏根
+    fs::path game_root = fs::path(mod_directory());
+    for (int i = 0; i < 4; ++i) game_root = game_root.parent_path();
+    const fs::path mods_dir = game_root / "ProjectPBZ" / "Content" / "Paks" / "~mods";
+    if (!fs::exists(mods_dir)) {
+        port_->log(LogLevel::Warn, "pak 自动安装：找不到 " + mods_dir.string() +
+                                       "；请手动把模组 paks\\ 里的三个文件拷进游戏 ProjectPBZ\\Content\\Paks\\~mods\\");
+        return;
+    }
+    int copied = 0;
+    int skipped = 0;
+    std::error_code ec;
+    for (const fs::directory_entry& entry : fs::directory_iterator(src_dir)) {
+        const fs::path dst = mods_dir / entry.path().filename();
+        if (fs::exists(dst)) {
+            const auto src_time = fs::last_write_time(entry.path(), ec);
+            const auto dst_time = fs::last_write_time(dst, ec);
+            const auto src_size = fs::file_size(entry.path(), ec);
+            const auto dst_size = fs::file_size(dst, ec);
+            if (!ec && src_size == dst_size && src_time == dst_time) {
+                ++skipped;  // 内容没变（拷贝会保留源 mtime），不动它
+                continue;
+            }
+        }
+        ec.clear();
+        fs::copy_file(entry.path(), dst, fs::copy_options::overwrite_existing, ec);
+        if (ec) {
+            port_->log(LogLevel::Warn, "pak 自动安装失败：" + entry.path().filename().string() + " → " + ec.message());
+        } else {
+            ++copied;
+        }
+    }
+    port_->log(LogLevel::Info, "pak 自动安装：新拷 " + std::to_string(copied) + " 个，未变跳过 " + std::to_string(skipped) +
+                                   " 个（目标 " + mods_dir.string() + "）");
 }
 
 // 应用 UMG 交互菜单攒下的动作（每帧轮询产生）
@@ -626,9 +770,14 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
     if (diag_accum_ < 1.0) return;
     diag_accum_ = 0.0;
 
-    const char* graphic_state = (overlay_ != nullptr && overlay_->available())
-                                    ? (overlay_->menu_open() ? "DX12开" : "DX12关")
-                                    : port_->umg2_state().c_str();
+    std::string graphic_state;
+    if (overlay_ != nullptr && overlay_->available()) {
+        graphic_state = overlay_->menu_open() ? "DX12开" : "DX12关";
+    } else if (port_->wbp_available()) {
+        graphic_state = port_->wbp_state();  // 未创建/资产/隐藏/不可用
+    } else {
+        graphic_state = port_->umg2_state();
+    }
     char buf[360]{};
     std::snprintf(buf, sizeof(buf),
                   "输入诊断 alt=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
@@ -636,7 +785,7 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
                   input_.alt_down() ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
                   input_source_->ll_ready() ? 1 : 0, input_source_->ll_wheel_events(),
                   input_source_->raw_ready() ? 1 : 0, input_source_->mouse_event_count(),
-                  port_->umg_menu_state().c_str(), graphic_state, input_source_->pad_slot());
+                  port_->umg_menu_state().c_str(), graphic_state.c_str(), input_source_->pad_slot());
     engine_peak_dx_ = 0.0;
     engine_peak_dy_ = 0.0;
     port_->log(LogLevel::Info, std::string(buf) + " | " + port_->camera_state_summary());

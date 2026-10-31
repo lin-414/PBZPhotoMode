@@ -15,6 +15,7 @@ add_library(pbzpm_core STATIC
     src/core/config.cpp
     src/core/gamepad.cpp
     src/core/input_logic.cpp
+    src/core/menu_bridge.cpp
     src/core/menu_model.cpp
     src/core/photo_mode.cpp
     src/core/vk.cpp

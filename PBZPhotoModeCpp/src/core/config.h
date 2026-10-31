@@ -65,6 +65,10 @@ struct Config {
     // ---- [ui] ----
     bool imgui_tab{true};        // UE4SS 控制台里的 ImGui 面板
     bool hud_fallback{false};    // 无 ImGui 时用 PrintString 画右下角文字菜单
+    // WBP 资产菜单（1.3.0）：离线在 UE 编辑器里做好的 WidgetBlueprint，打进 pak 随模组分发
+    bool menu_asset{true};           // 加载 WBP 资产菜单（失败自动落回 UMG2 文本面板）
+    std::string menu_asset_path{"/Game/PBZPhotoMode/WBP_PBZPhotoMenu"};  // 资产对象路径（不含 _C）
+    bool menu_pak_autocopy{true};    // 启动时把 assets/paks/ 的三件套自动拷进游戏 ~mods
 
     // ---- [misc] ----
     LogLevel log_level{LogLevel::Info};

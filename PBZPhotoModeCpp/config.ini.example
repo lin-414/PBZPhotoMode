@@ -85,6 +85,12 @@ restore_view_on_exit = true
 imgui_tab = true
 ; 没有 ImGui 时用文字菜单兜底
 hud_fallback = false
+; WBP 资产菜单：加载随模组分发的 WidgetBlueprint 图形菜单（失败自动落回文字面板）
+menu_asset = true
+; WBP 资产菜单的对象路径（在 UE 编辑器里制作，cook 进 pak）
+menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu
+; 启动时把 paks/ 里的三件套自动拷进游戏 ProjectPBZ\Content\Paks\~mods\
+menu_pak_autocopy = true
 
 [misc]
 log_level = info

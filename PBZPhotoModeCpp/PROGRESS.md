@@ -4,9 +4,8 @@
 
 ## 一句话状态
 
-**C++ 版 v1.2.3 已编译、已打包**（修 1.2.2 实机问题：命中区仍偏——UI 缩放改由引擎 Slate 视口求真值（物理客户区÷Slate），不再用 Windows DPI 推算；加未命中诊断日志、放宽命中矩形，待实机验证）：
-`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.2.3-cpp.zip`。
-核心层 **415 项测试全绿**；**v1.1.0 图形化菜单（ImGui + D3D11/12 交换链钩子）v1.1.1 重排时序后待实机验证**；v1.0.20 修了 UMG 文字菜单右下角被裁（现降级为图形菜单失败时的兜底）；v1.0.11 F 键冻结已实机验证；v1.0.12 HUD 自动隐藏；v1.0.14 进入自动暂停时间；v1.0.15-1.0.18 手柄支持（默认 LS+RS 进出，键位可在 [gamepad] 段改）。
+**C++ 版 v1.3.0 已编译**（WBP 资产菜单：离线 UE 编辑器制作的 WidgetBlueprint 打包 IoStore pak，运行时 TryLoad+CreateWidget，交互走 Slate 原生路由 + BP 变量轮询桥；**资产（Phase 3）未制作，当前装包会自动落回 1.2.x 文字面板**）。
+核心层 **469 项测试全绿**；v1.2.3 UMG 文字面板（命中区偏移待实机验证，现为 WBP 失败兜底）；v1.1.x ImGui 直绘在帧生成环境下已判死；v1.0.19-1.0.20 UMG 文字菜单实机验证通过。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -700,3 +699,32 @@ F2 后菜单可见 → `ensure_umg2_menu()` 构建途中进程死亡（`交互�
 2. 点三行 `[-]/[+]` 与 FREEZE/RESET/EXIT：应全部命中；点击不带动相机。
 3. 若仍偏：点几下看得见但没反应的位置，把 `交互菜单命中映射` + 几条 `交互菜单点击未命中：面板内(x,y)` 发回来——未命中坐标和真实按钮位置（54,76 / 198,76 / …，见 umg2_layout.h）一对比就是精确的缩放残差，下一版直接修死。
 7. 若仍卡死 → 唯一剩余的非安全操作只剩 AddChildToCanvas×N 与 SetText/SetVisibility/AddToViewport（1.0.19/20 验证过），把 log+dump 发回来再深挖。
+
+## 1.3.0-cpp（2026-10-31：WBP 资产菜单——UMG 路线的正解）
+
+**思路**：1.2.0 崩溃的根源是运行时反射拼装控件 + ProcessEvent 新函数；1.2.1~1.2.3 三轮修命中区是自建命中判定的固有问题。1.3.0 改为**离线在 UE 5.7 编辑器里做 WidgetBlueprint 资产**（真滑条/真按钮/分页/中文字体），cook 成 IoStore pak 三件套随模组分发，运行时加载实例化——控件树由引擎自己的序列化器反序列化（游戏加载任何 UI 资产的同一条原生路径），交互走 Slate 原生路由，同时消灭两大问题类。
+
+### 环境事实（本会话探查确认）
+
+- 游戏 `D:\Steam\steamapps\common\PBZ`，exe `platform\steam\PBZ.exe`，**UE 5.7**（FileVersionRaw 5.7.4.0；UE4SS.log `Using engine version: 5.7`）。
+- `ProjectPBZ\Content\Paks\` 是 IoStore（.pak+.utoc+.ucas），**`~mods\` 已有 4 个成功加载的 mod pak 三件套**（`_P` 后缀）——分发模式已验证。
+- UE4SS 无 LoadObject；**UEPseudo `FSoftObjectPath::SetPath/TryLoad` 已确认从 UE4SS.dll 导出**（UE4SS.lib 符号验证；AssetRegistry 路线，需游戏线程）。备选 `KismetSystemLibrary:LoadAsset_Blocking`（运行时探测）。
+- UEPseudo 无 UMG/WidgetBlueprintLibrary 强类型头——全走项目现成的反射通用机制（find_function+ParamBlock+ProcessEvent，与 GetViewportSize/KismetTextLibrary 同族）。
+- 本机无 UE 编辑器（Epic Launcher 在 D 盘）；用户决策：装 UE 5.7 编辑器、内置 Noto Sans SC 中文字体、DLL 自动拷 pak、v1 直接做增强版（相机+快捷键两页）。
+
+### 实现
+
+- **`src/core/menu_bridge.h/.cpp`（新）**：WbpBridge 纯逻辑桥（可单测）。C++↔资产只通过 BP 变量对话（契约写在头注释）：读 `FovValue/SpeedValue/SensValue/Command/bDragging`，写回真值/`Frozen`/`StatusId`/Command 清零。语义：滑条值≠基线→命令（config 范围夹紧）；**真值回显只在变化时推**（每帧推会把过期 ext 写进变量，松手帧被当成新输入回退旧值——滑条/相机互相拉扯的自激振荡，测试锁死）；拖动中（bDragging）完全静默；Command 沿语义执行后清 0。
+- **`src/engine/ue4ss_port.*`：wbp_\* 家族**（镜像 umg2_\* 生命周期）：`wbp_load_class`（FSoftObjectPath::TryLoad → 备选 LoadAsset_Blocking 探测 → 读 `GeneratedClass`）；`ensure_wbp_menu`（CDO `/Script/UMG.Default__WidgetBlueprintLibrary` + ProcessEvent `Create`，WidgetType 走新的 `set_class` 助手——FClassProperty 存储是裸 UClass* 槽位）；`wbp_show/read_vars/apply/hide/state`——AddToViewport/SetVisibility/bShowMouseCursor/IsInViewport/查活重建全部复用实机验证过的操作；变量读写是属性直写，**零新增 ProcessEvent**（加载+Create 两个之外）。失败分类：世界未就绪可重试；资产缺失/创建失败/变量缺失永久标记不可用，上层自动落回。
+- **`src/engine/wbp_layout.h`（新）**：面板矩形常量（与资产锚定一致：右上角，fromRight=484，top=90，460×560），悬停静音判定共用。
+- **`src/mod_app.*`**：菜单优先级变四级 **ImGui → WBP 资产 → UMG2 文字面板 → 文字菜单**；缩放解析抽成 `resolve_panel_scale()`（两档悬停判定共用）；`ensure_pak_installed()`（启动时把 mod 目录 `paks\` 三件套拷进 `<游戏>\ProjectPBZ\Content\Paks\~mods\`，大小+mtime 没变跳过，失败只 Warn）；诊断行 `图形=` 增加 WBP 状态（顺带修了 graphic_state 临时 string 悬垂）。
+- **配置** `[ui]`：`menu_asset = true`、`menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu`、`menu_pak_autocopy = true`（config.h/.cpp/default_config_text/config.ini.example/dist config 五处同步）。
+- **打包**：pack.py 按 dist 目录遍历，`dist/PBZPhotoModeCpp/paks/` 里的三件套自动进 zip；README 增 pak 自动安装说明与 Noto Sans SC（SIL OFL 1.1）字体条目。
+- 版本 `1.3.0-cpp`；核心层 **415 → 469 项全绿**（WbpBridge 54 项：自举/推送沿/夹紧/拖动静默/命令沿/未知命令/重置重开）；DLL 编译链接通过（TryLoad 导出验证 ✓）。产物 `build-dll/PBZPhotoModeCpp.dll`。
+
+### 下一步（Phase 3/4，按顺序）
+
+1. **用户装 UE 5.7 编辑器**（Epic Launcher → D 盘，约 30-60GB）。
+2. 编辑器侧（computer-use 操作）：新建空白 BP 工程命名 **ProjectPBZ**（必须与游戏工程同名，cook 产物挂载路径才能对上 /Game/）→ 导入 Noto Sans SC → **WBP_PBZPhotoMenu**（增强版：相机/快捷键两页、三条真滑条、FREEZE/RESET/EXIT、全中文；BP 变量与事件按 menu_bridge.h 契约）+ **WBP_Dummy**（隔离「pak 能否加载」与「菜单本体问题」）→ cook（`UnrealEditor-Cmd -run=Cook -targetplatform=Windows`）→ 三件套改名 `PBZPhotoMode_UI_P.*` → `dist/PBZPhotoModeCpp/paks/`。
+3. pack.py 出 zip → 实机验收（清单见 1.3.0 验证节，重点：pak 自动安装日志、TryLoad 通道、滑条拖动/按钮/两页切换、悬停静音、失败自动落回）。
+4. 风险预案：R1 定制引擎 vs 原版 5.7 cook 产物序列化不兼容（WBP_Dummy 先隔离）；R2 拍照模式鼠标捕获抢 Slate 指针事件（备选反射调 SetInputModeGameAndUI；再不行 WBP 层自动跳过，1.2.x 面板兜底）。

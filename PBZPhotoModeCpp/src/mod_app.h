@@ -8,6 +8,7 @@
 
 #include "core/config.h"
 #include "core/input_logic.h"
+#include "core/menu_bridge.h"
 #include "core/photo_mode.h"
 
 namespace pbzpm {
@@ -16,6 +17,7 @@ class Ue4ssPort;
 class Win32InputSource;
 class ImGuiOverlay;
 struct Umg2Commands;
+struct WbpCommands;
 
 // UE4SS mod 本体：把输入/引擎事件翻译成 core 层 Intent，再把结果交给 PhotoMode。
 class PhotoModeMod final : public RC::CppUserModBase {
@@ -45,6 +47,13 @@ private:
     void publish_menu_snapshot();
     void apply_menu_actions();
     void apply_umg2_commands(const Umg2Commands& commands);
+    void apply_wbp_commands(const WbpCommands& commands);
+    // WBP 资产菜单：指针是否落在面板上（悬停静音，与 umg2 的命中判定同款缩放机器）
+    bool cursor_in_scaled_panel(float from_right, float top, float width, float height);
+    // 开菜单沿解析一次 UI 缩放（umg2_scale.txt 覆盖 > 物理/Slate 视口 > DPI），并打映射日志
+    void resolve_panel_scale();
+    // pak 自动安装：把 mod 目录 paks/ 的三件套拷进游戏 ProjectPBZ\Content\Paks\~mods
+    void ensure_pak_installed();
     // 图形菜单延迟初始化：首次进入摄影模式才安装钩子（1.1.1：不要在游戏 RHI 初始化期碰 D3D）
     void ensure_overlay_started();
     void log_input_diagnostics(const Intent& intent, double dt);
@@ -70,6 +79,10 @@ private:
     float umg2_scale_override_{0.0f};  // 0 = 未覆盖（umg2_scale.txt）
     float umg2_scale_cached_{0.0f};    // 0 = 未定（物理/Slate 或 DPI 推算）
     double umg2_last_miss_log_{0.0};   // 点击未命中日志的节流
+    // WBP 资产菜单：桥 + 打开沿（悬停静音与 umg2 共用 umg2_cursor_in_panel_ / 缩放缓存）
+    WbpBridge wbp_bridge_{};
+    bool wbp_menu_open_prev_{false};
+    bool pak_copy_done_{false};
     // 图形菜单延迟初始化状态
     bool overlay_tried_{false};
     bool overlay_disabled_{false};

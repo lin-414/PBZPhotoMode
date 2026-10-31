@@ -9,6 +9,7 @@
 #include "core/config.h"
 #include "core/input_logic.h"
 #include "core/math3.h"
+#include "core/menu_bridge.h"
 #include "core/menu_model.h"
 #include "core/photo_mode.h"
 #include "core/vk.h"
@@ -1458,6 +1459,215 @@ void test_photo_mode_gamepad() {
     }
 }
 
+// ---------------------------------------------------------------- WBP 资产菜单变量桥
+
+void test_wbp_bridge() {
+    using namespace pbzpm;
+    section("WbpBridge");
+    {
+        // 无效快照：既无命令也无写回（控件不可用时绝不能往别处写属性）
+        WbpBridge b;
+        WbpWriteBack out;
+        WbpVars v;
+        v.valid = false;
+        v.fov = 999;
+        v.command = 3;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
+        CHECK(!c.toggle_freeze && !c.reset_view && !c.exit_mode);
+        CHECK(!out.write_fov && !out.write_speed && !out.write_sens);
+        CHECK(!out.write_frozen && !out.write_status && !out.write_command);
+    }
+    {
+        // 未 on_opened 直接 step：以外部真值为基线自举，并把真值推给 BP
+        WbpBridge b;
+        WbpWriteBack out;
+        WbpVars v;
+        v.valid = true;
+        v.fov = 90;
+        v.speed = 400;
+        v.sens = 0.1f;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
+        CHECK(out.write_fov);
+        CHECK_NEAR(out.fov, 90.0, 1e-6);
+        CHECK(out.write_speed);
+        CHECK_NEAR(out.speed, 400.0, 1e-6);
+        CHECK(out.write_sens);
+        CHECK_NEAR(out.sens, 0.1, 1e-6);
+        CHECK(out.write_frozen && !out.frozen);
+        CHECK(out.write_status && out.status == 1);
+        CHECK(!out.write_command);
+    }
+    {
+        // on_opened 之后的正常帧：同值无命令，状态写回仍在
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpWriteBack out;
+        WbpVars v;
+        v.valid = true;
+        v.fov = 90;
+        v.speed = 400;
+        v.sens = 0.1f;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
+        CHECK(out.write_fov && out.write_speed && out.write_sens);  // 首帧 push_pending：三个真值全推
+        CHECK_NEAR(out.fov, 90.0, 1e-6);
+        out = WbpWriteBack{};
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!out.write_fov && !out.write_speed && !out.write_sens);  // 真值没变 → 不再推
+        CHECK(out.write_frozen && out.write_status);                   // 状态仍然每帧推
+    }
+    {
+        // 滑条变化 → 命令；同值不重复；微抖动（< eps）不触发
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        v.fov = 90;
+        v.speed = 400;
+        v.sens = 0.1f;
+        WbpWriteBack out;
+        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);  // warmup：消耗 push_pending
+        v.fov = 90.03f;  // < kFovEps(0.05)
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed);
+        v.fov = 100.0f;
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.fov_changed);
+        CHECK_NEAR(c.fov, 100.0, 1e-9);
+        CHECK(!out.write_fov);  // 未夹紧：不回写
+        // 外部真值追上来后（相机已应用 100）：命令不重复，真值回显推一次给 BP
+        c = b.step(v, 100, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed);
+        CHECK(out.write_fov);
+        CHECK_NEAR(out.fov, 100.0, 1e-6);
+        out = WbpWriteBack{};
+        c = b.step(v, 100, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!out.write_fov);  // 回显也只推一次
+    }
+    {
+        // 超上限：命令夹紧；拖动中不回写；松手后回写夹紧值
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        v.fov = 90;
+        v.speed = 400;
+        v.sens = 0.1f;
+        WbpWriteBack out;
+        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);  // warmup：消耗 push_pending
+        v.fov = 160.0f;  // 轨道渲染上限 150 之外（理论上不会出现，防资产轨道配错）
+        v.dragging = true;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.fov_changed);
+        CHECK_NEAR(c.fov, 150.0, 1e-9);
+        CHECK(!out.write_fov);  // 拖动中：不回写，避免和拖拽打架
+        v.dragging = false;
+        c = b.step(v, 150, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.fov_changed);   // 残余差仍在 → 仍下发（夹紧后同值，无副作用）
+        CHECK_NEAR(c.fov, 150.0, 1e-9);
+        CHECK(out.write_fov);   // 松手：回写夹紧值，滑条弹回
+        CHECK_NEAR(out.fov, 150.0, 1e-6);
+    }
+    {
+        // 灵敏度低于下限：命令夹紧
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        v.sens = 0.001f;
+        WbpWriteBack out;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.sens_changed);
+        CHECK_NEAR(c.sens, 0.01, 1e-9);
+    }
+    {
+        // 速度：变化下发 + 夹紧到 [0, 2000]
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        v.speed = 3000.0f;
+        WbpWriteBack out;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.speed_changed);
+        CHECK_NEAR(c.speed, 2000.0, 1e-9);
+    }
+    {
+        // 冻结状态每帧同步
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        WbpWriteBack out;
+        b.step(v, 90, 400, 0.1, true, 15, 150, 0.01, 0.5, out);
+        CHECK(out.write_frozen && out.frozen);
+        CHECK(out.write_status && out.status == 2);
+    }
+    {
+        // 命令沿：执行 + 写回 0；写回未生效前不重复；归零后可再次触发
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        WbpWriteBack out;
+        v.command = 1;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.toggle_freeze);
+        CHECK(!c.reset_view && !c.exit_mode);
+        CHECK(out.write_command);
+        CHECK_INT(out.command, 0);
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.toggle_freeze);  // 同值（写回还没被 BP 看到）不双触发
+        v.command = 0;
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!out.write_command || out.command == 0);
+        v.command = 1;
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.toggle_freeze);  // 归零后可再次触发
+    }
+    {
+        // 三种命令各有出口；未知命令忽略但清零
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        WbpVars v;
+        v.valid = true;
+        WbpWriteBack out;
+        v.command = 2;
+        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.reset_view && !c.toggle_freeze);
+        v.command = 0;
+        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        v.command = 3;
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(c.exit_mode);
+        v.command = 0;
+        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        v.command = 7;
+        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.toggle_freeze && !c.reset_view && !c.exit_mode);
+        CHECK(out.write_command);  // 仍要清零，免得卡在未知值上
+    }
+    {
+        // reset + 重新 on_opened：新基线，不产生伪命令
+        WbpBridge b;
+        b.on_opened(90, 400, 0.1);
+        b.reset();
+        b.on_opened(60, 300, 0.05);
+        WbpVars v;
+        v.valid = true;
+        v.fov = 60;
+        v.speed = 300;
+        v.sens = 0.05f;
+        WbpWriteBack out;
+        auto c = b.step(v, 60, 300, 0.05, false, 15, 150, 0.01, 0.5, out);
+        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
+        CHECK(out.write_fov);
+        CHECK_NEAR(out.fov, 60.0, 1e-6);
+    }
+}
+
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
 
@@ -1481,6 +1691,7 @@ int main() {
     test_gamepad_deadzone();
     test_gamepad_input_logic();
     test_photo_mode_gamepad();
+    test_wbp_bridge();
 
     std::printf("\n----------------------------------------\n");
     std::printf("检查 %d 项，失败 %d 项\n", g_checks, g_failures);

@@ -33,6 +33,7 @@
 #include <Unreal/CoreUObject/UObject/FStrProperty.hpp>
 #include <Unreal/CoreUObject/UObject/UnrealType.hpp>
 #include <Unreal/FHitResult.hpp>
+#include <Unreal/FSoftObjectPath.hpp>
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
 #include <Unreal/Property/FEnumProperty.hpp>
@@ -401,6 +402,16 @@ auto set_actor_rotation(UObject* actor, const FRotator& rotation, bool teleport)
     // K2_SetActorRotation 返回 bool；读不到返回值时按“调用成功”处理。
     double result = 1.0;
     if (params.get_number("ReturnValue", result)) return result != 0.0;
+    return true;
+}
+
+// FClassProperty 的存储是裸 UClass* 槽位（与 FObjectProperty 同布局，只是语义约束）。
+// WidgetBlueprintLibrary::Create 的 WidgetType 参数就是 FClassProperty。
+auto set_class(FProperty* prop, void* container, UClass* cls) -> bool {
+    if (prop == nullptr || container == nullptr || cls == nullptr) return false;
+    void* slot = value_ptr(prop, container);
+    if (slot == nullptr) return false;
+    *static_cast<UObject**>(slot) = cls;
     return true;
 }
 
@@ -2177,6 +2188,275 @@ bool Ue4ssPort::umg2_tick(const std::string& status, double fov, double speed, d
     }
     umg2_shown_ = true;
     return true;
+}
+
+// ------------------------------------------------------------------ WBP 资产菜单（v1.3.0）
+//
+// 离线在 UE 5.7 编辑器里做好的 WidgetBlueprint，cook 成 IoStore pak 三件套随模组分发
+// （assets/paks → DLL 启动时拷进 ProjectPBZ/Content/Paks/~mods，~mods 已有 4 个成功先例）。
+// 控件树由引擎自己的序列化器反序列化——游戏加载任何 UI 资产的同一条原生路径，
+// 彻底绕开 1.2.0「运行时反射拼装控件 + ProcessEvent 新函数」的崩溃类。
+//
+// ProcessEvent 面收敛到两个新调用，都与实机验证过的 Kismet 静态函数同族：
+//   1) 资产加载：FSoftObjectPath::TryLoad（UEPseudo 原生，非 ProcessEvent；已确认从 UE4SS.dll 导出）
+//      备选 KismetSystemLibrary::LoadAsset_Blocking；2) WidgetBlueprintLibrary::Create（创建控件）。
+// 交互走 Slate 原生路由；C++ 与资产只通过 BP 变量对话（契约见 core/menu_bridge.h 头注释），
+// 变量读写全是属性直写（read_number/write_number），零额外 ProcessEvent。
+
+RC::Unreal::UObject* Ue4ssPort::wbp_live() const {
+    if (wbp_widget_ == nullptr || wbp_path_.empty()) return nullptr;
+    return UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, widen(wbp_path_).c_str());
+}
+
+void Ue4ssPort::wbp_drop() {
+    wbp_widget_ = nullptr;
+    wbp_path_.clear();
+    wbp_visibility_state_ = -1;
+    wbp_shown_ = false;
+}
+
+// 按路径加载 WidgetBlueprint 资产并取出生成类（WBP_PBZPhotoMenu_C）。
+// 必须在游戏线程调用（AssetRegistry / 同步加载都不是线程安全的；mod 只在引擎 Tick 里走这里）。
+RC::Unreal::UClass* Ue4ssPort::wbp_load_class() {
+    UObject* asset = nullptr;
+    // 通道 1：UEPseudo FSoftObjectPath::TryLoad（AssetRegistry GetAsset 路线，非 ProcessEvent）
+    try {
+        RC::Unreal::FSoftObjectPath path{};
+        path.SetPath(RC::Unreal::FString(widen(wbp_asset_path_).c_str()));
+        asset = path.TryLoad();
+        if (is_ok(asset)) wbp_channel_ = "TryLoad";
+    } catch (...) {
+        asset = nullptr;  // UE4SS 在非游戏线程会抛异常；兜到通道 2
+    }
+    // 通道 2：KismetSystemLibrary::LoadAsset_Blocking（BP 库的同步加载，TSoftObjectPtr 参数）
+    if (!is_ok(asset)) {
+        if (UObject* ksl = kismet_system_library(); is_ok(ksl)) {
+            if (UFunction* fn = find_function(ksl, "LoadAsset_Blocking"); fn != nullptr) {
+                ParamBlock params(fn);
+                FProperty* asset_prop = params.valid() ? params.prop({"Asset"}, 0) : nullptr;
+                void* slot = asset_prop != nullptr ? value_ptr(asset_prop, params.data()) : nullptr;
+                // 参数槽位大小必须等于 UEPseudo 的 FSoftObjectPath 布局（0x28），不等就跳过这条通道
+                if (slot != nullptr && asset_prop->GetSize() == static_cast<int32>(sizeof(RC::Unreal::FSoftObjectPath))) {
+                    RC::Unreal::FSoftObjectPath soft{};
+                    soft.SetPath(RC::Unreal::FString(widen(wbp_asset_path_).c_str()));
+                    std::memcpy(slot, &soft, sizeof(RC::Unreal::FSoftObjectPath));
+                    ksl->ProcessEvent(fn, params.data());
+                    read_object(params.prop({"ReturnValue"}, 0), params.data(), asset);
+                    if (is_ok(asset)) wbp_channel_ = "LoadAsset_Blocking";
+                }
+            }
+        }
+    }
+    if (!is_ok(asset)) return nullptr;
+    // Blueprint 对象 → GeneratedClass（WBP 资产本体是 WidgetBlueprint，生成类才是可创建的 UClass）
+    UObject* cls = nullptr;
+    if (!read_object(find_property(asset, "GeneratedClass"), asset, cls) || !is_ok(cls)) {
+        log(LogLevel::Warn, "WBP 菜单：资产已加载但读不到 GeneratedClass（menu_asset_path 指向的不是 WidgetBlueprint？）");
+        return nullptr;
+    }
+    return static_cast<RC::Unreal::UClass*>(cls);
+}
+
+bool Ue4ssPort::ensure_wbp_menu() {
+    if (wbp_class_ == nullptr) {
+        UClass* cls = wbp_load_class();
+        if (cls == nullptr) {
+            // 世界没就绪 → 暂时失败可重试；世界就绪还加载不到 = pak 没装，永久标记
+            if (is_ok(world())) {
+                if (!wbp_failed_logged_) {
+                    wbp_failed_logged_ = true;
+                    log(LogLevel::Warn, "WBP 菜单：资产加载失败（" + wbp_asset_path_ +
+                                            "）。确认 paks\\PBZPhotoMode_UI_P 三件套已在 "
+                                            "ProjectPBZ\\Content\\Paks\\~mods；回退文字面板");
+                }
+                wbp_unavailable_ = true;
+            }
+            return false;
+        }
+        wbp_class_ = cls;
+    }
+    UObject* wbl = find_object("/Script/UMG.Default__WidgetBlueprintLibrary");
+    if (!is_ok(wbl)) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn, "WBP 菜单：WidgetBlueprintLibrary 不存在，回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        return false;
+    }
+    UObject* scene = world();
+    if (!is_ok(scene)) return false;  // 世界没就绪：下帧再试
+    UFunction* create = find_function(wbl, "Create");
+    if (create == nullptr) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn, "WBP 菜单：WidgetBlueprintLibrary.Create 不存在，回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        return false;
+    }
+    ParamBlock params(create);
+    if (!params.valid()) {
+        wbp_unavailable_ = true;
+        return false;
+    }
+    write_object(params.prop({"WorldContextObject"}, 0), params.data(), scene);
+    if (!set_class(params.prop({"WidgetType", "Widget"}, 0), params.data(), wbp_class_)) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn, "WBP 菜单：WidgetType 参数写入失败，回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        return false;
+    }
+    if (UObject* pc = controller(); is_ok(pc)) {
+        write_object(params.prop({"OwningPlayer"}, 0), params.data(), pc);
+    }
+    wbl->ProcessEvent(create, params.data());
+    UObject* widget = nullptr;
+    read_object(params.prop({"ReturnValue"}, 0), params.data(), widget);
+    if (!is_ok(widget)) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn, "WBP 菜单：CreateWidget 返回空（资产版本与引擎不兼容？见 WBP_Dummy 校验行），回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        return false;
+    }
+    if (!invoke(widget, "AddToViewport", [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+        log(LogLevel::Warn, "WBP 菜单：AddToViewport 失败，回退文字面板");
+        wbp_unavailable_ = true;
+        return false;
+    }
+    wbp_widget_ = widget;
+    wbp_path_ = narrow(widget->GetFullName());
+    wbp_visibility_state_ = 0;
+    wbp_shown_ = true;
+    wbp_failed_logged_ = false;
+    if (!wbp_ready_logged_) {
+        wbp_ready_logged_ = true;
+        log(LogLevel::Info, "WBP 菜单已创建：" + wbp_path_ + "（资产 " + wbp_asset_path_ + "，加载通道 " + wbp_channel_ + "）");
+    }
+    return true;
+}
+
+bool Ue4ssPort::wbp_show() {
+    if (wbp_unavailable_ || wbp_asset_path_.empty()) return false;
+    if (wbp_live() == nullptr) {
+        const bool was_rebuild = wbp_widget_ != nullptr;
+        wbp_drop();
+        const double now = steady_seconds();
+        if (now - wbp_last_rebuild_ < 0.5) return false;
+        wbp_last_rebuild_ = now;
+        if (!ensure_wbp_menu()) return false;
+        if (was_rebuild) log(LogLevel::Info, "WBP 菜单：查活失败，已重建");
+    }
+    // 鼠标指针：拍照模式游戏会藏指针，菜单打开期间持续保持可见（纯属性写，无游戏代码执行）
+    if (UObject* pc = controller(); is_ok(pc)) {
+        write_bool(find_property(pc, "bShowMouseCursor"), pc, true);
+        wbp_cursor_shown_ = true;
+    }
+    // 每秒确认还在视口（换图清视口但控件还活着的情形）
+    const double now = steady_seconds();
+    if (now - wbp_vp_check_ >= 1.0) {
+        wbp_vp_check_ = now;
+        bool in_viewport = true;
+        invoke_bool(wbp_widget_, "IsInViewport", [](ParamBlock&) { return true; }, in_viewport);
+        if (!in_viewport && invoke(wbp_widget_, "AddToViewport",
+                                   [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+            wbp_visibility_state_ = 0;
+            log(LogLevel::Info, "WBP 菜单：发现不在视口，已重新 AddToViewport");
+        }
+    }
+    if (wbp_visibility_state_ != 0) {
+        UObject* live = wbp_live();
+        if (live != nullptr && set_widget_visibility(live, 0)) wbp_visibility_state_ = 0;
+    }
+    wbp_shown_ = true;
+    return true;
+}
+
+bool Ue4ssPort::wbp_read_number(UObject* widget, const char* name, double& out) const {
+    FProperty* prop = find_property(widget, name);
+    if (prop == nullptr) return false;
+    void* ptr = value_ptr(prop, widget);
+    if (ptr == nullptr) return false;
+    return read_number(prop, ptr, out);
+}
+
+void Ue4ssPort::wbp_read_vars(WbpVars& vars) {
+    vars = WbpVars{};
+    UObject* w = wbp_widget_;
+    if (!is_ok(w)) return;
+    double fov = 0.0;
+    double speed = 0.0;
+    double sens = 0.0;
+    double command = 0.0;
+    double dragging = 0.0;
+    const bool ok = wbp_read_number(w, "FovValue", fov) && wbp_read_number(w, "SpeedValue", speed) &&
+                    wbp_read_number(w, "SensValue", sens) && wbp_read_number(w, "Command", command) &&
+                    wbp_read_number(w, "bDragging", dragging);
+    if (!ok) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn,
+                "WBP 菜单：BP 变量缺失（需要 FovValue/SpeedValue/SensValue/Command/bDragging 五个），"
+                "资产与模组版本不匹配；回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        return;
+    }
+    vars.valid = true;
+    vars.fov = static_cast<float>(fov);
+    vars.speed = static_cast<float>(speed);
+    vars.sens = static_cast<float>(sens);
+    vars.command = static_cast<int>(command);
+    vars.dragging = dragging != 0.0;
+}
+
+void Ue4ssPort::wbp_apply(const WbpWriteBack& back) {
+    UObject* w = wbp_widget_;
+    if (!is_ok(w)) return;
+    const auto apply = [&](const char* name, double value) {
+        if (FProperty* prop = find_property(w, name)) write_number(prop, w, value);
+    };
+    if (back.write_fov) apply("FovValue", back.fov);
+    if (back.write_speed) apply("SpeedValue", back.speed);
+    if (back.write_sens) apply("SensValue", back.sens);
+    if (back.write_frozen) apply("Frozen", back.frozen ? 1.0 : 0.0);
+    if (back.write_status) apply("StatusId", static_cast<double>(back.status));
+    if (back.write_command) apply("Command", static_cast<double>(back.command));
+}
+
+void Ue4ssPort::wbp_hide() {
+    if (!wbp_shown_) return;
+    wbp_shown_ = false;
+    if (wbp_cursor_shown_) {
+        if (UObject* pc = controller(); is_ok(pc)) {
+            write_bool(find_property(pc, "bShowMouseCursor"), pc, false);
+        }
+        wbp_cursor_shown_ = false;
+    }
+    UObject* live = wbp_live();
+    if (live != nullptr && wbp_visibility_state_ != 1) {
+        if (set_widget_visibility(live, 1)) wbp_visibility_state_ = 1;  // Collapsed
+    }
+}
+
+void Ue4ssPort::wbp_set_asset_path(const std::string& path) {
+    if (path == wbp_asset_path_) return;
+    wbp_asset_path_ = path;
+    // 路径变了：类和控件都作废，下次 show 重新加载
+    wbp_drop();
+    wbp_class_ = nullptr;
+}
+
+bool Ue4ssPort::wbp_available() const { return !wbp_unavailable_; }
+
+std::string Ue4ssPort::wbp_state() const {
+    if (wbp_unavailable_) return "不可用";
+    if (wbp_widget_ == nullptr) return "未创建";
+    return wbp_shown_ ? "资产" : "隐藏";
 }
 
 }  // namespace pbzpm

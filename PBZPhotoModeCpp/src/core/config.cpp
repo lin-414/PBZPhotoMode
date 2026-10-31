@@ -165,6 +165,9 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
             else error = "freeze_mode 只能是 dilation 或 pause：" + value;
         } else if (key == "imgui_tab") set_bool(cfg.imgui_tab, value, error, key.c_str());
         else if (key == "hud_fallback") set_bool(cfg.hud_fallback, value, error, key.c_str());
+        else if (key == "menu_asset") set_bool(cfg.menu_asset, value, error, key.c_str());
+        else if (key == "menu_asset_path") set_string(cfg.menu_asset_path, value, error, key.c_str());
+        else if (key == "menu_pak_autocopy") set_bool(cfg.menu_pak_autocopy, value, error, key.c_str());
         else if (key == "log_level") {
             const std::string v = lower(value);
             if (v == "error") cfg.log_level = LogLevel::Error;
@@ -349,7 +352,13 @@ std::string default_config_text() {
         << "; UE4SS 控制台里的 ImGui 面板（需要 UE4SS 控制台窗口）\n"
         << "imgui_tab = true\n"
         << "; 没有 ImGui 时用文字菜单兜底\n"
-        << "hud_fallback = false\n\n"
+        << "hud_fallback = false\n"
+        << "; WBP 资产菜单：加载随模组分发的 WidgetBlueprint 图形菜单（失败自动落回文字面板）\n"
+        << "menu_asset = true\n"
+        << "; WBP 资产菜单的对象路径（在 UE 编辑器里制作，cook 进 pak）\n"
+        << "menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu\n"
+        << "; 启动时把 paks/ 里的三件套自动拷进游戏 ProjectPBZ\\Content\\Paks\\~mods\\\n"
+        << "menu_pak_autocopy = true\n\n"
         << "[misc]\n"
         << "log_level = " << log_level_name(c.log_level) << "\n"
         << "dry_run = false\n";

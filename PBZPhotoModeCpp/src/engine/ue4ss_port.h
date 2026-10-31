@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "core/engine_port.h"
+#include "core/menu_bridge.h"
 
 // 说明：本文件只在 PBZPM_WITH_UE4SS 下参与编译。
 // 所有 UE4SS/UE 反射调用都集中在 ue4ss_port.cpp，上层逻辑（core/）不接触引擎类型。
@@ -97,6 +98,21 @@ public:
     // Slate（逻辑）视口尺寸：UMG 锚点/偏移都按这个坐标系算，物理像素 = Slate × UI缩放。
     // 走 KismetSystemLibrary.GetViewportSize（与 KismetTextLibrary 同族的纯引擎静态工具）。
     bool umg2_viewport_size(float& w, float& h);
+    // ---- WBP 资产菜单（v1.3.0）：离线在 UE 编辑器里做好的 WidgetBlueprint，随 pak 三件套分发 ----
+    // 控件树由引擎自己的序列化器反序列化（游戏加载任何 UI 资产的同一条原生路径），交互走 Slate
+    // 原生路由；C++ 与资产只通过 BP 变量对话（契约见 core/menu_bridge.h 头注释）。
+    // 加载/创建/变量校验失败都会永久标记不可用，上层自动落回 UMG2 文本面板。
+    void wbp_set_asset_path(const std::string& path);
+    bool wbp_available() const;
+    // 首次调用会同步加载资产（AssetRegistry 路线，游戏线程）并 CreateWidget，之后每帧确保可见。
+    // 返回 false = 本帧不可用（世界未就绪可重试；资产缺失/创建失败已永久标记）。
+    bool wbp_show();
+    // 读 BP 变量快照。关键变量缺失会把菜单标记为不可用（资产与模组版本不匹配）。
+    void wbp_read_vars(WbpVars& vars);
+    // 应用桥的写回（属性直写，零 ProcessEvent）
+    void wbp_apply(const WbpWriteBack& back);
+    void wbp_hide();
+    std::string wbp_state() const;
     // 引擎侧鼠标输入：hook PlayerController::InputAxis，拿到引擎算好的真实增量
     using AxisSink = std::function<void(const std::string& key_name, double amount)>;
     bool hook_input_axis(AxisSink sink);
@@ -122,6 +138,12 @@ private:
     RC::Unreal::UObject* umg2_live() const;
     void umg2_drop();
     bool umg2_set_text(RC::Unreal::UObject* widget, const std::string& text);
+    // WBP 资产菜单
+    bool ensure_wbp_menu();
+    RC::Unreal::UObject* wbp_live() const;
+    void wbp_drop();
+    RC::Unreal::UClass* wbp_load_class();
+    bool wbp_read_number(RC::Unreal::UObject* widget, const char* name, double& out) const;
     RC::Unreal::UObject* controller() const;
     RC::Unreal::UObject* world() const;
     RC::Unreal::UObject* camera_manager() const;
@@ -206,6 +228,21 @@ private:
     bool umg2_prev_reset_{false};
     bool umg2_prev_exit_{false};
     int umg2_visibility_state_{-1};
+
+    // WBP 资产菜单状态（查活走 wbp_path_，与 umg2 同款防 GC 策略）
+    RC::Unreal::UObject* wbp_widget_{nullptr};
+    RC::Unreal::UClass* wbp_class_{nullptr};
+    std::string wbp_asset_path_;
+    std::string wbp_path_;
+    std::string wbp_channel_;  // 资产加载通道诊断（TryLoad / LoadAsset_Blocking）
+    bool wbp_unavailable_{false};
+    bool wbp_shown_{false};
+    bool wbp_ready_logged_{false};
+    bool wbp_failed_logged_{false};
+    bool wbp_cursor_shown_{false};
+    int wbp_visibility_state_{-1};
+    double wbp_last_rebuild_{0.0};
+    double wbp_vp_check_{0.0};
 
 };
 
