@@ -69,7 +69,7 @@ struct Config {
     // WBP 资产菜单（1.3.0）：离线在 UE 编辑器里做好的 WidgetBlueprint，打进 pak 随模组分发
     bool menu_asset{true};           // 加载 WBP 资产菜单（失败自动落回 UMG2 文本面板）
     std::string menu_asset_path{"/Game/PBZPhotoMode/WBP_PBZPhotoMenu"};  // 资产对象路径（不含 _C）
-    bool menu_pak_autocopy{true};    // 启动时把 assets/paks/ 的三件套自动拷进游戏 ~mods
+    bool menu_pak_autocopy{true};    // 开发者通道：把本模组 paks\\ 内的 pak 转拷进游戏 ~mods（图形资产来自独立模组 PBZPhotoModeUI，正常安装用不到）
 
     // ---- [misc] ----
     LogLevel log_level{LogLevel::Info};

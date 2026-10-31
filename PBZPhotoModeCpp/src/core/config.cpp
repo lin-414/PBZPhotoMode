@@ -360,7 +360,7 @@ std::string default_config_text() {
         << "menu_asset = true\n"
         << "; WBP 资产菜单的对象路径（在 UE 编辑器里制作，cook 进 pak）\n"
         << "menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu\n"
-        << "; 启动时把 paks/ 里的三件套自动拷进游戏 ProjectPBZ\\Content\\Paks\\~mods\\\n"
+        << "; 开发者通道：把本模组 paks/ 内的 pak 转拷进游戏 ~mods（图形资产来自独立模组 PBZPhotoModeUI）\n"
         << "menu_pak_autocopy = true\n\n"
         << "[misc]\n"
         << "log_level = " << log_level_name(c.log_level) << "\n"

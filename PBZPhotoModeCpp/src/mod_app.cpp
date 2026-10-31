@@ -183,8 +183,8 @@ void PhotoModeMod::on_unreal_init() {
     mode_ = std::make_unique<PhotoMode>(*port_, cfg_);
     port_->wbp_set_asset_path(cfg_.menu_asset_path);
 
-    // pak 自动安装（1.3.0）：WBP 资产必须放游戏 Paks\~mods 才会被挂载，
-    // 模组管理器只往 ue4ss\Mods\ 装——所以由 DLL 启动时把 paks\ 三件套拷过去
+    // pak 开发者通道（可选）：图形菜单资产已是独立模组 PBZPhotoModeUI（直接装 ~mods）。
+    // 只有当玩家把 pak 手动放进本模组 paks\ 目录时才会转拷，正常安装用不到。
     if (cfg_.menu_pak_autocopy) {
         ensure_pak_installed();
     }
@@ -659,16 +659,16 @@ void PhotoModeMod::apply_wbp_commands(const WbpCommands& commands) {
     }
 }
 
-// pak 自动安装（1.3.0）：模组管理器只把 zip 解到 ue4ss\Mods\PBZPhotoModeCpp\，
-// 而 WBP 资产 pak 必须在 <游戏>\ProjectPBZ\Content\Paks\~mods\ 才会被引擎挂载
-// （本机 ~mods 已有 4 个成功加载的先例）。启动时把 paks\ 三件套拷过去；失败只 Warn 不阻断。
+// pak 开发者通道（1.5.0 起降级）：WBP 资产已是独立模组 PBZPhotoModeUI（pak 由模组管理器或玩家
+// 直接装进 ProjectPBZ\Content\Paks\~mods\，与其它 pak mod 同模式）。本函数只在玩家把 pak 手动放进
+// 本模组 paks\ 目录时把它转拷到 ~mods——主要用于资产迭代调试；正常安装用不到它。
 void PhotoModeMod::ensure_pak_installed() {
     if (pak_copy_done_) return;
     pak_copy_done_ = true;
     namespace fs = std::filesystem;
     const fs::path src_dir = fs::path(mod_directory()) / "paks";
     if (!fs::exists(src_dir)) {
-        port_->log(LogLevel::Info, "pak 自动安装：模组目录没有 paks\\，跳过（资产菜单不可用时自动用文字面板）");
+        port_->log(LogLevel::Info, "pak 通道：模组目录没有 paks\\（正常；图形菜单资产来自独立模组 PBZPhotoModeUI）");
         return;
     }
     // 模组目录在 <游戏>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp，上溯 4 级到游戏根
@@ -676,8 +676,8 @@ void PhotoModeMod::ensure_pak_installed() {
     for (int i = 0; i < 4; ++i) game_root = game_root.parent_path();
     const fs::path mods_dir = game_root / "ProjectPBZ" / "Content" / "Paks" / "~mods";
     if (!fs::exists(mods_dir)) {
-        port_->log(LogLevel::Warn, "pak 自动安装：找不到 " + mods_dir.string() +
-                                       "；请手动把模组 paks\\ 里的三个文件拷进游戏 ProjectPBZ\\Content\\Paks\\~mods\\");
+        port_->log(LogLevel::Warn, "pak 通道：找不到 " + mods_dir.string() +
+                                       "；请手动把 paks\\ 里的文件拷进游戏 ProjectPBZ\\Content\\Paks\\~mods\\");
         return;
     }
     int copied = 0;
