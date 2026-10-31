@@ -22,6 +22,7 @@
 #include <cstring>
 #include <cmath>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <system_error>
 #include <vector>
@@ -298,7 +299,10 @@ class ParamBlock {
 public:
     explicit ParamBlock(UFunction* function) : function_(function) {
         const int32 size = function_ != nullptr ? function_->GetStructureSize() : 0;
-        if (size > 0) buffer_.assign(static_cast<size_t>(size), 0);
+        // 无参函数（如 Sequencer 的 Pause/Play）size 为 0：缓冲区为空会让 valid() 误判失败，
+        // 而 ProcessEvent 仍需要一个有效指针，所以至少留 1 字节
+        //（1.0.24 真机日志"命中 1，执行 0"的根因：Pause 调不出去）。
+        buffer_.assign(size > 0 ? static_cast<size_t>(size) : 1, 0);
     }
 
     [[nodiscard]] auto valid() const -> bool { return function_ != nullptr && !buffer_.empty(); }
@@ -411,6 +415,152 @@ auto find_object(const char* path) -> UObject* {
 
 auto gameplay_statics() -> UObject* {
     return find_object("/Script/Engine.Default__GameplayStatics");
+}
+
+auto lower_ascii(std::string text) -> std::string {
+    for (char& c : text) {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return text;
+}
+
+// Wwise 集成类都以 Ak 开头；游戏自己的音频/语音/对话类从名字里认
+auto is_audio_related_name(const std::string& name) -> bool {
+    if (name.rfind("Ak", 0) == 0) return true;
+    const std::string lower = lower_ascii(name);
+    return lower.find("audio") != std::string::npos || lower.find("sound") != std::string::npos ||
+           lower.find("voice") != std::string::npos || lower.find("dialog") != std::string::npos ||
+           lower.find("wwise") != std::string::npos;
+}
+
+// 把一个类里可疑的音频控制函数列出来（Stop/Pause/Mute/Volume/Voice/Dialog…）
+auto list_audio_functions(UObject* sample) -> std::string {
+    std::string out;
+    int listed = 0;
+    for (TFieldIterator<UFunction> it(sample->GetClassPrivate()); it; ++it) {
+        const std::string name = narrow(it->GetName());
+        const std::string lower = lower_ascii(name);
+        const bool interesting =
+            lower.find("stop") != std::string::npos || lower.find("pause") != std::string::npos ||
+            lower.find("mute") != std::string::npos || lower.find("silence") != std::string::npos ||
+            lower.find("volume") != std::string::npos || lower.find("suspend") != std::string::npos ||
+            lower.find("resume") != std::string::npos || lower.find("voice") != std::string::npos ||
+            lower.find("dialog") != std::string::npos || lower.find("talk") != std::string::npos ||
+            lower.find("audio") != std::string::npos || lower.find("sound") != std::string::npos;
+        if (!interesting) continue;
+        if (!out.empty()) out += ",";
+        out += name;
+        if (++listed >= 20) {
+            out += ",…";
+            break;
+        }
+    }
+    return out.empty() ? "无可疑控制函数" : out;
+}
+
+// 全量函数名（不筛关键词）：用于 AkGameplayStatics 这类“BP 入口”类
+auto list_all_functions(UObject* sample, int cap) -> std::string {
+    std::string out;
+    int listed = 0;
+    for (TFieldIterator<UFunction> it(sample->GetClassPrivate()); it; ++it) {
+        if (!out.empty()) out += ",";
+        out += narrow(it->GetName());
+        if (++listed >= cap) {
+            out += ",…";
+            break;
+        }
+    }
+    return out.empty() ? "无函数" : out;
+}
+
+// 带签名校验的单数值参数调用（如 AkComponent.SetOutputBusVolume(volume)、
+// PBZSoundFXSubsystem.PBZPausePlayingID(PlayingID)）：唯一参数必须是数值型
+//（float/double/int），出现其他参数直接放弃，宁可不调也不瞎传。
+auto invoke_set_number(UObject* target, const char* fn, double value) -> bool {
+    if (!is_ok(target)) return false;
+    UFunction* function = find_function(target, fn);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* ret = function->GetReturnProperty();
+    int numeric_params = 0;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == ret) continue;
+        const bool numeric = prop->IsA<FFloatProperty>() || prop->IsA<FDoubleProperty>() ||
+                             prop->IsA<FIntProperty>() || prop->IsA<FUInt32Property>();
+        if (!numeric) return false;
+        ++numeric_params;
+    }
+    if (numeric_params != 1) return false;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == ret) continue;
+        write_number(prop, params.data(), value);
+    }
+    target->ProcessEvent(function, params.data());
+    return true;
+}
+
+// 参数签名描述（类型:名），调用被签名校验拦下时打进日志，下一轮照抄真实签名
+auto describe_params(UFunction* function) -> std::string {
+    std::string out;
+    FProperty* ret = function != nullptr ? function->GetReturnProperty() : nullptr;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        const bool is_return = prop == ret;
+        std::string type = "other";
+        if (prop->IsA<FFloatProperty>()) type = "float";
+        else if (prop->IsA<FDoubleProperty>()) type = "double";
+        else if (prop->IsA<FIntProperty>()) type = "int32";
+        else if (prop->IsA<FUInt32Property>()) type = "uint32";
+        else if (prop->IsA<FByteProperty>()) type = "byte";
+        else if (prop->IsA<FBoolProperty>()) type = "bool";
+        else if (prop->IsA<FObjectProperty>()) type = "object";
+        else if (prop->IsA<FStrProperty>()) type = "string";
+        if (!out.empty()) out += ",";
+        out += type + ":" + narrow(prop->GetName());
+        if (is_return) out += "(ret)";
+    }
+    return out;
+}
+
+// 带签名校验的“按 ID 暂停/恢复”调用：真机签名已确认（1.0.34 日志）——
+// PBZPausePlayingID / PBZResumePlayingID = (int32:PlayingID, float:FadeTime)。
+// 名字含 playingid 填 ID、含 fade 填 FadeTime（0=立即）、含 worldcontext 填 world；
+// 其余参数直接放弃并返回 false。
+auto invoke_pause_id(UObject* target, const char* fn, int32_t id, double fade, UObject* world) -> bool {
+    if (!is_ok(target)) return false;
+    UFunction* function = find_function(target, fn);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* ret = function->GetReturnProperty();
+    bool filled_id = false;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == ret) continue;
+        const bool numeric = prop->IsA<FFloatProperty>() || prop->IsA<FDoubleProperty>() ||
+                             prop->IsA<FIntProperty>() || prop->IsA<FUInt32Property>();
+        const std::string name = lower_ascii(narrow(prop->GetName()));
+        if (numeric) {
+            if (name.find("playingid") != std::string::npos) {
+                write_number(prop, params.data(), static_cast<double>(id));
+                filled_id = true;
+            } else if (name.find("fade") != std::string::npos) {
+                write_number(prop, params.data(), fade);
+            } else {
+                return false;
+            }
+        } else if (prop->IsA<FObjectProperty>() && name.find("worldcontext") != std::string::npos) {
+            write_object(prop, params.data(), world);
+        } else {
+            return false;
+        }
+    }
+    if (!filled_id) return false;
+    target->ProcessEvent(function, params.data());
+    return true;
 }
 
 }  // namespace
@@ -1229,6 +1379,512 @@ bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
     return touched;
 }
 
+// ------------------------------------------------------------------ 敌人（怪物）血条
+
+namespace {
+
+// 头顶血条不在 W_FrontEndHUDLayout 子树下（1.0.12 的 dump 证据只覆盖屏幕 HUD），
+// SetHideUIForPV 也管不到它们——实机截图确认进摄影模式后小怪血条仍在。
+// exe 反射字符串扫描（1.6.0 同款取证）找到游戏侧唯一的总开关：用户设置
+// MonsterHealthBarMode（EPBZMonsterHealthBarMode：HideFullHealth/AlwaysShow/OnlyLockedTarget，
+// 带 Set/Get/SetPending/GetPending/OnChanged 一族，挂在游戏设置类上）。
+// 三档里 OnlyLockedTarget 压制最强：摄影模式下没有锁定目标 → 血条全部隐藏。
+
+// 枚举序数离线定不了（exe 字符串只有名字没有值）：运行时按名找 UEnum 对象。
+// 模块包名先按源码路径里的模块名猜，猜不中再全量扫 UEnum 按对象名过滤。
+auto find_bar_mode_enum() -> UObject* {
+    for (const char* path :
+         {"/Script/ProjectPBZ.EPBZMonsterHealthBarMode", "/Script/PBZ.EPBZMonsterHealthBarMode"}) {
+        if (UObject* enum_object = find_object(path); is_ok(enum_object)) return enum_object;
+    }
+    std::vector<UObject*> enums;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("UEnum"), enums);
+    for (UObject* enum_object : enums) {
+        if (!is_ok(enum_object)) continue;
+        if (narrow(enum_object->GetName()) == "EPBZMonsterHealthBarMode") return enum_object;
+    }
+    return nullptr;
+}
+
+// 名字表 → 序数：条目名可能是全名（EPBZMonsterHealthBarMode::OnlyLockedTarget）或裸名
+auto resolve_bar_mode_value(UObject* enum_object, const char* entry, int64_t& out_value) -> bool {
+    if (!is_ok(enum_object)) return false;
+    std::vector<std::pair<RC::Unreal::FName, int64_t>> names;
+    static_cast<RC::Unreal::UEnum*>(enum_object)->GetEnumNamesAsVector(names);
+    const std::string suffix = std::string("::") + entry;
+    for (const auto& item : names) {
+        const std::string name = narrow(item.first.ToString());
+        if (name == entry ||
+            (name.size() > suffix.size() && name.compare(name.size() - suffix.size(), suffix.size(), suffix) == 0)) {
+            out_value = item.second;
+            return true;
+        }
+    }
+    return false;
+}
+
+// 序数 → 名字（诊断日志用；查不到就打数字）
+auto bar_mode_display_name(UObject* enum_object, double value) -> std::string {
+    if (is_ok(enum_object)) {
+        std::vector<std::pair<RC::Unreal::FName, int64_t>> names;
+        static_cast<RC::Unreal::UEnum*>(enum_object)->GetEnumNamesAsVector(names);
+        for (const auto& item : names) {
+            if (static_cast<double>(item.second) == value) {
+                std::string name = narrow(item.first.ToString());
+                const size_t sep = name.rfind("::");
+                if (sep != std::string::npos) name = name.substr(sep + 2);
+                return name;
+            }
+        }
+    }
+    return std::to_string(static_cast<long long>(value));
+}
+
+// 设置项挂在哪个类离线确定不了，运行时按候选探测（1.6.0 交互提示开关同款）：
+// 第一个带 MonsterHealthBarMode 属性的实例就是它（跳过 CDO，优先活对象）。
+auto find_bar_mode_setting_owner() -> UObject* {
+    static const char* candidates[] = {
+        "PBZSettingsShared", "PBZGameUserSettings", "PBZCommonUserSettings", "PBZSettingsSubsystem",
+        "PBZUserSettings", "PBZSettings", "PBZUIManagerSubsystem", "BP_GameInstance_C", "GameUserSettings",
+    };
+    UObject* cdo_fallback = nullptr;
+    for (const char* name : candidates) {
+        std::vector<UObject*> found;
+        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
+        for (UObject* object : found) {
+            if (!is_ok(object)) continue;
+            if (find_property(object, "MonsterHealthBarMode") == nullptr) continue;
+            if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
+            if (cdo_fallback == nullptr) cdo_fallback = object;
+        }
+    }
+    return cdo_fallback;
+}
+
+// setter 参数名离线确认不了，按候选名试；全不中按声明顺序取第 0 个参数
+auto fill_bar_mode_param(ParamBlock& params, double value) -> bool {
+    return params.set_number_any({"Mode", "InMode", "NewMode", "InMonsterHealthBarMode",
+                                  "NewMonsterHealthBarMode", "Value"},
+                                 0, value);
+}
+
+}  // namespace
+
+bool Ue4ssPort::set_enemy_health_bars_visible(bool visible) {
+    bool touched = false;
+
+    if (!visible) {
+        UObject* owner = find_bar_mode_setting_owner();
+        if (!is_ok(owner)) {
+            if (!bars_setting_missing_logged_) {
+                bars_setting_missing_logged_ = true;
+                log(LogLevel::Warn, "候选对象里找不到怪物血条模式设置（MonsterHealthBarMode），敌人血条保持可见（把这条日志发回来）");
+            }
+            return false;
+        }
+
+        FProperty* property = find_property(owner, "MonsterHealthBarMode");
+        UObject* enum_object = find_bar_mode_enum();
+        int64_t target_value = 0;
+        if (!resolve_bar_mode_value(enum_object, "OnlyLockedTarget", target_value)) {
+            if (!bars_setting_missing_logged_) {
+                bars_setting_missing_logged_ = true;
+                log(LogLevel::Warn, "EPBZMonsterHealthBarMode 枚举表里没有 OnlyLockedTarget，敌人血条保持可见（把这条日志发回来）");
+            }
+            return false;
+        }
+
+        double original = 0.0;
+        if (read_number(property, owner, original)) {
+            bars_setting_saved_ = true;
+            bars_setting_original_ = original;
+            bars_setting_owner_ = owner;
+        }
+
+        bool set_ok = invoke(owner, "SetMonsterHealthBarMode",
+                             [&](ParamBlock& params) { return fill_bar_mode_param(params, static_cast<double>(target_value)); });
+        // setter 参数名对不上时直写属性（值本身一定在）；广播缺失只影响实时性，
+        // 血条系统若每帧读设置也能生效。
+        if (!set_ok) set_ok = write_number(property, owner, static_cast<double>(target_value));
+        if (set_ok) {
+            touched = true;
+            log(LogLevel::Info, "敌人血条显示模式已切到 OnlyLockedTarget（原模式=" +
+                                    bar_mode_display_name(enum_object, original) +
+                                    "，owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+        }
+        return touched;
+    }
+
+    if (bars_setting_saved_) {
+        bool restored = false;
+        if (is_ok(bars_setting_owner_)) {
+            restored = invoke(bars_setting_owner_, "SetMonsterHealthBarMode",
+                              [&](ParamBlock& params) { return fill_bar_mode_param(params, bars_setting_original_); });
+            if (!restored) {
+                restored = write_number(find_property(bars_setting_owner_, "MonsterHealthBarMode"),
+                                        bars_setting_owner_, bars_setting_original_);
+            }
+        }
+        bars_setting_saved_ = false;
+        bars_setting_owner_ = nullptr;
+        if (restored) {
+            touched = true;
+            log(LogLevel::Info, "敌人血条显示模式已还原");
+        }
+    }
+    return touched;
+}
+
+// ------------------------------------------------------------------ 对话字幕
+
+namespace {
+
+// 字幕显示走游戏内置的 GameSubtitles 插件（exe 源码路径
+// `Plugins/GameSubtitles/Source/Private/Widgets/SubtitleDisplay.cpp`，包名 /Script/GameSubtitles）：
+//   ① 游戏设置开关 bSubtitlesEnabled（SetSubtitlesEnabled/AreSubtitlesEnabled + Pending 对，
+//      名字表邻居是 RunHardwareBenchmark/MouseCaptureMode 等 GameUserSettings 家族函数）；
+//   ② 字幕显示控件 USubtitleDisplay（UMG）——freeze_mode=pause 下控件 Tick 冻住，
+//      光改设置对已经画出来的字幕不会立即生效，必须把控件本身 Collapsed。
+// SetSubtitlesEnabled 是设置总开关，只影响之后的新字幕；两路都用，退出都还原。
+
+// 类继承链里是否有指定名字的类（覆盖原生实例与 BP 子类两种情况）
+auto class_chain_contains(UClass* cls, const char* base_name) -> bool {
+    if (cls == nullptr) return false;
+    const RC::StringType target = widen(base_name);
+    for (UStruct* node = cls; node != nullptr; node = node->GetSuperStruct()) {
+        if (node->GetName() == target) return true;
+    }
+    return false;
+}
+
+
+
+// 字幕开关的真属性名：1.0.33 实机诊断确认设置类上是 **bEnableSubtitles**（此前一直找
+// bSubtitlesEnabled——那是引擎 GlobalUserParam 的名字，不在设置类属性链里，导致原值读取
+// 失败、还原只能按默认兜底）。两个名字都试，覆盖引擎实例路径。
+auto find_subtitle_flag_property(UObject* owner) -> FProperty* {
+    if (owner == nullptr) return nullptr;
+    if (FProperty* p = find_property(owner, "bEnableSubtitles"); p != nullptr) return p;
+    return find_property(owner, "bSubtitlesEnabled");
+}
+
+// 设置开关挂在哪个类离线确定不了（exe 里只有函数名），运行时按候选探测：
+// 第一个带 SetSubtitlesEnabled 函数或 bSubtitlesEnabled 属性的实例就是它（跳过 CDO，优先活对象）。
+// 1.0.30 实机：PBZSettingsShared 命中（只有 setter，属性在引擎 GlobalUserParam 上）。
+auto find_subtitle_setting_owner() -> UObject* {
+    static const char* candidates[] = {
+        "PBZGameUserSettings", "PBZSettingsShared", "PBZCommonUserSettings", "PBZSettingsSubsystem",
+        "PBZUserSettings", "PBZSettings", "GameUserSettings", "PBZUIManagerSubsystem", "BP_GameInstance_C",
+    };
+    UObject* cdo_fallback = nullptr;
+    for (const char* name : candidates) {
+        std::vector<UObject*> found;
+        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
+        for (UObject* object : found) {
+            if (!is_ok(object)) continue;
+            if (find_function(object, "SetSubtitlesEnabled") == nullptr &&
+                find_property(object, "bSubtitlesEnabled") == nullptr) {
+                continue;
+            }
+            if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
+            if (cdo_fallback == nullptr) cdo_fallback = object;
+        }
+    }
+    // 设置对象真不在时才退到引擎实例：bSubtitlesEnabled 是 UEngine 的 GlobalUserParam，
+    // 字幕显示控件读的就是它（bSubtitlesForcedOff 是它的强制关闭位）。
+    // 注意：必须在候选都没命中时才走这里，不能覆盖上面已经找到的设置对象。
+    if (cdo_fallback == nullptr) {
+        for (const char* name : {"GameEngine", "PBZGameEngine", "Engine"}) {
+            UObject* engine = RC::Unreal::UObjectGlobals::FindFirstOf(widen(name));
+            if (is_ok(engine) && find_property(engine, "bSubtitlesEnabled") != nullptr) return engine;
+        }
+    }
+    return cdo_fallback;
+}
+
+// 读当前字幕开关状态：设置类上没有 property 时走 AreSubtitlesEnabled（exe 扫描确认存在，
+// 与 SetSubtitlesEnabled 成对）；都没有才失败（调用方按 true 兜底）。
+auto read_subtitles_enabled_state(UObject* owner, FProperty* property, bool& out) -> bool {
+    double raw = 0.0;
+    if (read_number(property, owner, raw)) {
+        out = raw != 0.0;
+        return true;
+    }
+    bool getter_result = true;
+    if (invoke_bool(owner, "AreSubtitlesEnabled", [](ParamBlock&) { return true; }, getter_result)) {
+        out = getter_result;
+        return true;
+    }
+    return false;
+}
+
+// 设置开关 setter 的参数名离线确认不了，按候选名试；全不中由调用方直写属性。
+auto fill_subtitle_setting_param(ParamBlock& params, bool value) -> bool {
+    return params.set_bool("bEnabled", value) || params.set_bool("bInEnabled", value) ||
+           params.set_bool("bNewValue", value) || params.set_bool("bInSubtitlesEnabled", value) ||
+           params.set_bool("bNewEnabled", value) || params.set_bool("Value", value);
+}
+
+}  // namespace
+
+// 字幕显示控件收集。full_scan：全对象扫描（进入/退出各一次；顺带把发现的类名记进缓存，
+// 1.0.32 实机发现游戏自制控件 WBP_FlowSubTitle_C）；否则只按缓存类名 FindAllOf
+//（每秒重申用，类哈希查找微秒级，不拖帧）。匹配规则：USubtitleDisplay 继承链，
+// 或 UserWidget 派生且类名含 subtitle（游戏自制字幕控件）。
+void Ue4ssPort::collect_subtitle_widgets_impl(std::vector<UObject*>& out, bool full_scan) {
+    if (!full_scan) {
+        for (const std::string& name : subtitle_widget_class_names_) {
+            std::vector<UObject*> found;
+            RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
+            for (UObject* object : found) {
+                if (!is_ok(object)) continue;
+                if (narrow(object->GetFullName()).find("Default__") != std::string::npos) continue;
+                out.push_back(object);
+            }
+        }
+        return;
+    }
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        const std::string class_name = narrow(cls->GetName());
+        const std::string lower_name = lower_ascii(class_name);
+        const bool is_subtitle_display = class_chain_contains(cls, "SubtitleDisplay");
+        // 1.0.35 实机：bEnableSubtitles 回读=关 且 WBP_FlowSubTitle_C 已 Collapsed，字幕仍显示——
+        // 文本画在对话 UI 本体上（音频普查见 WBP_FlowDialog_C），把对话框一并纳入压制。
+        const bool is_subtitle_widget = class_chain_contains(cls, "UserWidget") &&
+                                        (lower_name.find("subtitle") != std::string::npos ||
+                                         lower_name.find("flowdialog") != std::string::npos);
+        if (!is_subtitle_display && !is_subtitle_widget) return RC::LoopAction::Continue;
+        if (narrow(object->GetFullName()).find("Default__") != std::string::npos) return RC::LoopAction::Continue;
+        if (std::find(subtitle_widget_class_names_.begin(), subtitle_widget_class_names_.end(), class_name) ==
+            subtitle_widget_class_names_.end()) {
+            subtitle_widget_class_names_.push_back(class_name);
+        }
+        out.push_back(object);
+        return RC::LoopAction::Continue;
+    });
+}
+
+// 诊断（每会话一次）：SetSubtitlesEnabled 的真实参数签名 + owner 上所有字幕相关成员。
+// 1.0.32 实机证明设置开关的行为与预期不符（写 false 对运行中的对话不生效），把它的真面目
+// 记下来，下一步才能换成正确的读回/写入通道。
+void Ue4ssPort::dump_subtitle_setting_diagnostics(RC::Unreal::UObject* owner) {
+    if (subtitle_diag_dumped_ || !is_ok(owner)) return;
+    subtitle_diag_dumped_ = true;
+    UFunction* setter = find_function(owner, "SetSubtitlesEnabled");
+    if (setter != nullptr) {
+        std::string params;
+        for (TFieldIterator<FProperty> it(setter); it; ++it) {
+            FProperty* p = *it;
+            if (p == nullptr) continue;
+            const bool bool_like = p->IsA<FBoolProperty>() || p->IsA<FEnumProperty>() || p->IsA<FByteProperty>();
+            params += (params.empty() ? "" : ", ") + narrow(p->GetName()) + (bool_like ? "(bool)" : "(非bool)");
+        }
+        log(LogLevel::Info, "SetSubtitlesEnabled 参数签名：" + (params.empty() ? std::string("（无参数）") : params));
+    }
+    std::string members;
+    for (TFieldIterator<FProperty> it(owner->GetClassPrivate()); it; ++it) {
+        FProperty* p = *it;
+        if (p == nullptr) continue;
+        const std::string name = narrow(p->GetName());
+        if (lower_ascii(name).find("subtitle") == std::string::npos) continue;
+        members += (members.empty() ? "" : ", ") + name;
+    }
+    for (TFieldIterator<UFunction> it(owner->GetClassPrivate()); it; ++it) {
+        UFunction* f = *it;
+        if (f == nullptr) continue;
+        const std::string name = narrow(f->GetName());
+        if (lower_ascii(name).find("subtitle") == std::string::npos) continue;
+        members += (members.empty() ? "" : ", ") + name + "()";
+    }
+    log(LogLevel::Info, "owner 字幕相关成员：" + (members.empty() ? std::string("（无）") : members));
+}
+
+// 诊断（每会话一次，压不住字幕时给下一轮指认元凶）：列出场上所有「可见的」UserWidget
+// 派生控件类（Visibility≠Collapsed，含数量）。字幕文本若不在已压制的控件里，真身必然在
+// 这份名单里。
+void Ue4ssPort::dump_visible_widgets_once() {
+    if (subtitle_visible_dumped_) return;
+    subtitle_visible_dumped_ = true;
+    std::map<std::string, int> visible;
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        if (!class_chain_contains(cls, "UserWidget")) return RC::LoopAction::Continue;
+        if (narrow(object->GetFullName()).find("Default__") != std::string::npos) return RC::LoopAction::Continue;
+        int visibility = 1;
+        if (!get_widget_visibility(object, visibility)) return RC::LoopAction::Continue;
+        if (visibility == 1) return RC::LoopAction::Continue;  // Collapsed = 不可见
+        ++visible[narrow(cls->GetName())];
+        return RC::LoopAction::Continue;
+    });
+    std::string names;
+    int listed = 0;
+    for (const auto& entry : visible) {
+        if (listed++ >= 40) { names += ", …"; break; }
+        names += (names.empty() ? "" : ", ") + entry.first + " x" + std::to_string(entry.second);
+    }
+    log(LogLevel::Info, "可见 UserWidget 清单：" + (names.empty() ? std::string("（无）") : names));
+}
+
+bool Ue4ssPort::set_subtitles_visible(bool visible) {
+    bool touched = false;
+
+    // ---- 路线 ①：游戏设置开关（管住之后新出的字幕）----
+    // 1.0.33 首版的结构 bug（实机日志钉死）：!visible && !touched_ / else if touched_ 的写法，
+    // 让每秒重申（visible=false 且 touched_=true）掉进还原分支 → 设置开关每秒 关/开 打摆。
+    // 必须把"隐藏"与"还原"按 visible 彻底分开；已在关状态时重申只跳过，不碰开关。
+    if (!visible) {
+        if (!subtitle_setting_touched_) {
+            UObject* owner = find_subtitle_setting_owner();
+            if (is_ok(owner)) {
+                dump_subtitle_setting_diagnostics(owner);
+                FProperty* property = find_subtitle_flag_property(owner);
+                bool captured = read_subtitles_enabled_state(owner, property, subtitle_setting_original_);
+                subtitle_setting_saved_ = captured;
+                subtitle_setting_touched_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+                subtitle_setting_owner_ = owner;
+                bool set_ok = invoke(owner, "SetSubtitlesEnabled",
+                                     [&](ParamBlock& params) { return fill_subtitle_setting_param(params, false); });
+                if (!set_ok) set_ok = write_bool(property, owner, false);
+                // 回读验证：bEnableSubtitles 在设置类上，读得到就核对真值；不匹配用属性强写一次
+                double actual = -1.0;
+                if (read_number(property, owner, actual)) {
+                    const bool actual_on = actual != 0.0;
+                    if (actual_on) {
+                        write_bool(property, owner, false);
+                        read_number(property, owner, actual);
+                        actual = actual != 0.0 ? 1.0 : 0.0;
+                    }
+                    log(LogLevel::Info, "字幕设置开关已关闭（owner=" +
+                                            narrow(owner->GetFullName()).substr(0, 140) + "，原值=" +
+                                            (subtitle_setting_original_ ? "开" : "关") + "，回读=" +
+                                            (actual != 0.0 ? "开-未生效!" : "关") + "）");
+                    touched = true;
+                } else {
+                    if (set_ok) {
+                        touched = true;
+                        log(LogLevel::Info, "字幕设置开关已关闭（owner=" +
+                                                narrow(owner->GetFullName()).substr(0, 140) + "，原值=" +
+                                                (subtitle_setting_original_ ? "开" : "关") +
+                                                "，属性读不到无法回读）");
+                    }
+                }
+            } else if (!subtitle_setting_missing_logged_) {
+                subtitle_setting_missing_logged_ = true;
+                log(LogLevel::Warn, "候选对象里找不到字幕设置开关（SetSubtitlesEnabled/bEnableSubtitles），退回只藏字幕控件");
+            }
+        }
+    } else if (subtitle_setting_touched_) {
+        bool restored = false;
+        if (is_ok(subtitle_setting_owner_)) {
+            FProperty* property = find_subtitle_flag_property(subtitle_setting_owner_);
+            restored = invoke(subtitle_setting_owner_, "SetSubtitlesEnabled",
+                              [&](ParamBlock& params) { return fill_subtitle_setting_param(params, subtitle_setting_original_); });
+            if (!restored) {
+                restored = write_bool(property, subtitle_setting_owner_, subtitle_setting_original_);
+            }
+        }
+        subtitle_setting_touched_ = false;
+        subtitle_setting_saved_ = false;
+        subtitle_setting_owner_ = nullptr;
+        if (restored) {
+            touched = true;
+            log(LogLevel::Info, "字幕设置开关已还原");
+        } else if (!subtitle_restore_failed_logged_) {
+            subtitle_restore_failed_logged_ = true;
+            log(LogLevel::Warn, "字幕设置开关还原失败（setter 与属性都写不进去），字幕可能保持隐藏——把这条日志发回来");
+        }
+    }
+
+    // ---- 路线 ②：字幕显示控件（管住此刻已经画出来的）----
+    // 进入后每秒重申：对话 UI 创建时才读设置，运行中的对话由游戏逐条把控件重新显示，
+    // 一次性的隐藏会被盖回去（1.0.32 实机：进模式后字幕不消失）。重申是幂等的：
+    // 已管的控件若被游戏改回可见就再压回去，新实例收编，设置开关不重复写。
+    // 每 10 次重申做一次全量扫描：对话中途新出现的控件类（新对话 UI）也能被收编。
+    bool full_scan = visible ? true : false;
+    if (!visible) {
+        if (!subtitle_scanned_ || subtitle_reassert_count_ % 10 == 0) full_scan = true;
+        ++subtitle_reassert_count_;
+    }
+    std::vector<UObject*> widgets;
+    collect_subtitle_widgets_impl(widgets, full_scan);
+    if (!visible && full_scan) subtitle_scanned_ = true;
+    if (!visible) dump_visible_widgets_once();
+
+    if (!visible) {
+        int hidden_count = 0;
+        int reasserted_count = 0;
+        std::string hidden_names;
+        for (UObject* widget : widgets) {
+            if (!is_ok(widget)) continue;
+            if (tracked_hud_widget(subtitle_widgets_, widget)) {
+                // 已在管：游戏每条字幕可能把控件重新 SetVisibility(Visible)，重申 Collapsed。
+                // 不重复记录原值——原值在首次收编时已存，退出时按它恢复。
+                int current = 1;
+                if (get_widget_visibility(widget, current) && current != 1) {
+                    if (set_widget_visibility(widget, 1)) ++reasserted_count;
+                }
+                continue;
+            }
+            int original = 0;
+            if (!get_widget_visibility(widget, original)) original = 0;  // 默认 Visible
+            if (set_widget_visibility(widget, 1)) {  // Collapsed
+                subtitle_widgets_.emplace_back(widget, original);
+                ++hidden_count;
+                if (is_ok(widget)) {
+                    hidden_names += (hidden_names.empty() ? "" : ", ") + narrow(widget->GetClassPrivate()->GetName());
+                }
+            }
+        }
+        if (hidden_count > 0) {
+            touched = true;
+            log(LogLevel::Info, "已隐藏字幕显示控件：数量=" + std::to_string(hidden_count) + "（" + hidden_names +
+                                    "），退出摄影模式时恢复原可见性");
+        } else if (reasserted_count > 0) {
+            touched = true;  // 每秒重申压制，保持返回值语义
+        } else if (widgets.empty() && !subtitle_widget_missing_logged_) {
+            subtitle_widget_missing_logged_ = true;
+            // 诊断：列出场内类名带 Subtitle 的控件类，游戏若用自制字幕控件，按这份名单改下一版
+            std::map<std::string, int> candidates;
+            RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+                if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+                UClass* cls = object->GetClassPrivate();
+                if (cls == nullptr) return RC::LoopAction::Continue;
+                std::string class_name = narrow(cls->GetName());
+                std::string lower = lower_ascii(class_name);
+                if (lower.find("subtitle") == std::string::npos) return RC::LoopAction::Continue;
+                candidates[class_name] += 1;
+                return RC::LoopAction::Continue;
+            });
+            std::string names;
+            for (const auto& entry : candidates) {
+                names += (names.empty() ? "" : ", ") + entry.first + " x" + std::to_string(entry.second);
+            }
+            log(LogLevel::Warn, "场上没有 USubtitleDisplay 控件" + (names.empty() ? std::string("，也没找到类名带 Subtitle 的控件") :
+                                                                         std::string("，类名带 Subtitle 的控件：") + names));
+        }
+    } else {
+        // 重新枚举做存活校验：换图/GC 后旧控件可能已销毁，不能直接解引用旧指针
+        int restored_count = 0;
+        for (const auto& entry : subtitle_widgets_) {
+            if (!pointer_in(widgets, entry.first)) continue;
+            if (set_widget_visibility(entry.first, entry.second)) ++restored_count;
+        }
+        if (restored_count > 0) {
+            touched = true;
+            log(LogLevel::Info, "已恢复字幕显示控件：数量=" + std::to_string(restored_count));
+        }
+        subtitle_widgets_.clear();
+        subtitle_scanned_ = false;  // 下次进入重新做一次全量扫描（新对话控件类可能不同）
+    }
+
+    return touched;
+}
+
 // ------------------------------------------------------------------ 超宽屏画幅解锁
 
 // 游戏把画幅锁在 16:9，超宽屏（21:9/32:9）两侧补黑边。UE 里这把锁最常挂在两处：
@@ -1534,6 +2190,353 @@ bool Ue4ssPort::set_paused(bool paused) {
             " | IsGamePaused=" + (actually_paused ? "true" : "false") +
             (paused ? "（bShouldPerformFullTickWhenPaused=true，相机仍可移动）" : ""));
     return ok;
+}
+
+bool Ue4ssPort::world_paused() {
+    UObject* statics = gameplay_statics();
+    UObject* scene = world();
+    if (!is_ok(statics) || !is_ok(scene)) return false;
+    UFunction* function = find_function(statics, "IsGamePaused");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    params.set_object("WorldContextObject", scene);
+    statics->ProcessEvent(function, params.data());
+    double value = 0.0;
+    return params.get_number("ReturnValue", value) && value != 0.0;
+}
+
+// 剧情过场（Sequencer）播放器：世界暂停与时间缩放拦不住剧情系统的自主更新
+// （画面像冻住了、动作和声音还在走），冻结时必须对 SequencePlayer 的 Pause/Play 单独下手。
+// FindAllOf 沿继承链匹配，LevelSequencePlayer 与游戏自定义派生播放器都能扫到。
+SequenceFreezeReport Ue4ssPort::pause_sequences(bool paused) {
+    SequenceFreezeReport report{};
+    report.ok = true;
+
+    std::vector<UObject*> players;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("MovieSceneSequencePlayer"), players);
+    const int direct_count = static_cast<int>(players.size());
+
+    // 兜底：过场 Actor（含游戏自定义派生类）身上的 SequencePlayer 属性
+    std::vector<UObject*> actors;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("LevelSequenceActor"), actors);
+    for (UObject* actor : actors) {
+        if (!is_ok(actor)) continue;
+        UObject* player = nullptr;
+        if (read_object(find_property(actor, "SequencePlayer"), actor, player) && player != nullptr) {
+            players.push_back(player);
+        }
+    }
+
+    std::sort(players.begin(), players.end());
+    players.erase(std::unique(players.begin(), players.end()), players.end());
+    report.found = static_cast<int>(players.size());
+
+    std::string matched_class;
+    for (UObject* player : players) {
+        if (!is_ok(player)) continue;
+        // 类默认对象（Default__...）不参与播放，显式排除避免脏命中
+        if (narrow(player->GetFullName()).find("Default__") != std::string::npos) continue;
+        // 暂停时找“正在播放”的；恢复时只恢复“处于暂停态”的（不去碰游戏自己停掉的）
+        bool in_state = false;
+        if (!invoke_bool(player, paused ? "IsPlaying" : "IsPaused", [&](ParamBlock&) { return true; }, in_state)) {
+            continue;
+        }
+        if (!in_state) continue;
+        ++report.matched;
+        if (matched_class.empty()) matched_class = narrow(player->GetClassPrivate()->GetName());
+        if (invoke(player, paused ? "Pause" : "Play", [&](ParamBlock&) { return true; })) {
+            ++report.acted;
+        }
+    }
+
+    // 剧情语音多半走 Wwise/普通 AudioComponent，暂停它们是另一条路；先记录游戏用哪种音频系统留证据
+    const bool wwise = find_object("/Script/AkAudio.Default__AkGameplayStatics") != nullptr ||
+                       find_object("/Script/Wwise.Default__AkGameplayStatics") != nullptr;
+    char buf[280]{};
+    std::snprintf(buf, sizeof(buf),
+                  "剧情播放器[%s]：扫描 %d（直扫 %d + Actor 兜底 %d），命中 %d，执行 %d，类=%s，Wwise=%s，Ak组件=%d",
+                  paused ? "暂停" : "恢复", report.found, direct_count, report.found - direct_count,
+                  report.matched, report.acted, matched_class.empty() ? "-" : matched_class.c_str(),
+                  wwise ? "有" : "无", wwise_component_count());
+    log(LogLevel::Info, buf);
+    if (paused && report.matched > report.acted) {
+        log(LogLevel::Warn, "存在命中的播放器执行失败，请把这行日志反馈给作者");
+    }
+    if (paused && report.found == 0) {
+        log(LogLevel::Info, "未发现 Sequencer 剧情播放器；若剧情中动作/声音仍继续，请带上 UE4SS.log 反馈");
+    }
+    return report;
+}
+
+// Wwise 音频组件：对话语音走 Wwise 时世界暂停拦不住。这里只做两件事：
+// 数量诊断（每次冻结顺带）与可选的一次性静音（stop_wwise_on_freeze，停止后不可恢复）。
+int Ue4ssPort::wwise_component_count() {
+    std::vector<UObject*> components;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("AkComponent"), components);
+    probe_wwise_components(components);
+    return static_cast<int>(components.size());
+}
+
+// 对话语音双保险（两层都做，静音不依赖任何单一通道）：
+//   第一层 截获的 PlayingID → 游戏自有 PBZPausePlayingID / PBZResumePlayingID
+//   （Wwise 原生暂停，解冻后当前句从原位置续播）；
+//   第二层 组件音量归零/恢复——盖住没截获到的声音（钩子装好前已在播的、
+//   绕过子系统直接走集成层的）。
+int Ue4ssPort::pause_wwise_voices(bool pause) {
+    int total = 0;
+    if (!playing_ids_.empty()) {
+        UObject* soundfx = nullptr;
+        {
+            std::vector<UObject*> subsystems;
+            RC::Unreal::UObjectGlobals::FindAllOf(STR("PBZSoundFXSubsystem"), subsystems);
+            for (UObject* candidate : subsystems) {
+                if (is_ok(candidate)) {
+                    soundfx = candidate;
+                    break;
+                }
+            }
+        }
+        if (soundfx != nullptr) {
+            const char* fn = pause ? "PBZPausePlayingID" : "PBZResumePlayingID";
+            UFunction* fn_ptr = find_function(soundfx, fn);
+            int acted = 0;
+            for (int32_t id : playing_ids_) {
+                if (invoke_pause_id(soundfx, fn, id, 0.0, world())) ++acted;  // FadeTime=0：立即暂停/立即恢复
+            }
+            if (acted == 0 && fn_ptr != nullptr && !pause_signature_logged_) {
+                pause_signature_logged_ = true;
+                log(LogLevel::Warn, std::string(fn) + " 参数签名=" + describe_params(fn_ptr) +
+                                        "（全部调用被签名校验拦下，回落音量兜底）");
+            }
+            log(LogLevel::Info, std::string(pause ? "对话语音暂停" : "对话语音恢复") + "（PlayingID）：截获 " +
+                                    std::to_string(playing_ids_.size()) + "，执行 " + std::to_string(acted));
+            total += acted;
+        }
+    }
+
+    // 第二层（兜底）：组件音量归零/恢复——盖住没截获到的声音
+    std::vector<UObject*> components;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("AkComponent"), components);
+    probe_wwise_components(components);
+    const double volume = pause ? 0.0 : 1.0;
+    int acted = 0;
+    for (UObject* component : components) {
+        if (!is_ok(component)) continue;
+        if (invoke_set_number(component, "SetOutputBusVolume", volume)) ++acted;
+    }
+    log(LogLevel::Info, std::string(pause ? "Wwise 组件静音（音量兜底）" : "Wwise 组件恢复（音量兜底）") +
+                            "：组件 " + std::to_string(components.size()) + "，执行 " + std::to_string(acted));
+    total += acted;
+    return total;
+}
+
+// 钩住 PBZSoundFXSubsystem 的 Post 系列函数：Wwise 每次播放都会从这里返回 PlayingID，
+// 记下来冻结时才能真暂停。游戏加载后尽早挂（mod_app 的引擎 tick 里每 2 秒重试）。
+bool Ue4ssPort::install_voice_hooks() {
+    if (voice_hooks_installed_) return true;
+    UObject* soundfx = nullptr;
+    {
+        std::vector<UObject*> subsystems;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("PBZSoundFXSubsystem"), subsystems);
+        for (UObject* candidate : subsystems) {
+            if (is_ok(candidate)) {
+                soundfx = candidate;
+                break;
+            }
+        }
+    }
+    if (soundfx == nullptr) return false;
+
+    int hooked = 0;
+    for (const char* name : {"PBZPostEventOnAkComponent", "PBZPostEventOnAkComponent_SoftRef",
+                             "PBZPostEventOnAkComponent_Animation", "PBZPostEventOnAkComponent_Animation_SoftRef",
+                             "PBZPostEventOnActor", "PBZPostEventOnActor_SoftRef", "PBZPostEventGlobal",
+                             "PBZPostEventGlobal_SoftRef", "PBZPostEventAtLocation", "PBZPostEventAtLocation_SoftRef",
+                             "PBZPostAssociatedEvent"}) {
+        UFunction* function = find_function(soundfx, name);
+        if (function == nullptr) continue;
+        const auto ids = RC::Unreal::UObjectGlobals::RegisterHook(
+            function,
+            nullptr,
+            [](RC::Unreal::UnrealScriptFunctionCallableContext& context, void* custom) {
+                auto* self = static_cast<Ue4ssPort*>(custom);
+                if (self != nullptr) self->on_voice_post(context.RESULT_DECL);
+            },
+            this);
+        if (ids.first >= 0 || ids.second >= 0) ++hooked;
+    }
+
+    // 集成层入口兜底：绕过游戏子系统、直接走 Wwise BP 的声音也截获
+    // （UAkGameplayStatics 的全局/按位置 post、UAkComponent 的成员 post——类级钩子对所有实例生效）
+    UObject* ak_statics = find_object("/Script/AkAudio.Default__AkGameplayStatics");
+    if (is_ok(ak_statics)) {
+        for (const char* name : {"PostEvent", "PostEventAtLocation", "PostAndWaitForEndOfEvent"}) {
+            UFunction* function = find_function(ak_statics, name);
+            if (function == nullptr) continue;
+            const auto ids = RC::Unreal::UObjectGlobals::RegisterHook(
+                function,
+                nullptr,
+                [](RC::Unreal::UnrealScriptFunctionCallableContext& context, void* custom) {
+                    auto* self = static_cast<Ue4ssPort*>(custom);
+                    if (self != nullptr) self->on_voice_post(context.RESULT_DECL);
+                },
+                this);
+            if (ids.first >= 0 || ids.second >= 0) ++hooked;
+        }
+    }
+    {
+        std::vector<UObject*> ak_components;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("AkComponent"), ak_components);
+        for (UObject* component : ak_components) {
+            if (!is_ok(component)) continue;
+            bool component_hooked = false;
+            for (const char* name : {"PostAkEvent", "PostAssociatedAkEvent"}) {
+                UFunction* function = find_function(component, name);
+                if (function == nullptr) continue;
+                const auto ids = RC::Unreal::UObjectGlobals::RegisterHook(
+                    function,
+                    nullptr,
+                    [](RC::Unreal::UnrealScriptFunctionCallableContext& context, void* custom) {
+                        auto* self = static_cast<Ue4ssPort*>(custom);
+                        if (self != nullptr) self->on_voice_post(context.RESULT_DECL);
+                    },
+                    this);
+                if (ids.first >= 0 || ids.second >= 0) {
+                    ++hooked;
+                    component_hooked = true;
+                }
+            }
+            if (component_hooked) break;  // 类级函数挂一次即覆盖所有实例
+        }
+    }
+
+    if (hooked == 0) return false;
+    voice_hooks_installed_ = true;
+    log(LogLevel::Info, "对话语音钩子已挂：" + std::to_string(hooked) + " 个 Post 函数（PBZSoundFXSubsystem），冻结将走真暂停");
+    // 顺手把暂停/恢复接口的真实参数签名打出来：调用被拦时不用再猜
+    for (const char* name : {"PBZPausePlayingID", "PBZResumePlayingID"}) {
+        if (UFunction* fn = find_function(soundfx, name)) {
+            log(LogLevel::Info, std::string(name) + " 参数签名=" + describe_params(fn));
+        }
+    }
+    return true;
+}
+
+void Ue4ssPort::on_voice_post(void* result_decl) {
+    if (result_decl == nullptr) return;
+    const int32_t id = *static_cast<const int32_t*>(result_decl);
+    // Wwise PlayingID 是从 1 递增的正数；过界值说明该函数返回的不是 PlayingID（如 bool），丢弃
+    if (id <= 0 || id > 10000000) return;
+    if (!playing_ids_seen_.insert(id).second) return;
+    playing_ids_.push_back(id);
+    if (playing_ids_.size() > 1024) {
+        // 只留最近 512 个：已结束的播放 ID 会被 Wwise 回收复用，截获列表要保持新鲜；
+        // 上限给足是让长命的环境/音乐循环也在名单里（发得早就被记下了）
+        const size_t keep = 512;
+        playing_ids_.erase(playing_ids_.begin(), playing_ids_.end() - static_cast<long>(keep));
+        playing_ids_seen_.clear();
+        for (int32_t id_kept : playing_ids_) playing_ids_seen_.insert(id_kept);
+    }
+}
+
+void Ue4ssPort::probe_wwise_components(const std::vector<UObject*>& components) {
+    if (wwise_probe_done_) return;
+    wwise_probe_done_ = true;
+    if (components.empty()) {
+        log(LogLevel::Info, "Wwise 组件诊断：当前场景没有 AkComponent 实例（仅探测一次）");
+        return;
+    }
+    std::string available;
+    for (const char* candidate : {"Stop", "AkStopAll", "AkStop", "StopAll", "Pause", "AkPause"}) {
+        bool exists = false;
+        for (UObject* component : components) {
+            if (is_ok(component) && find_function(component, candidate) != nullptr) {
+                exists = true;
+                break;
+            }
+        }
+        if (exists) available += available.empty() ? candidate : std::string(",") + candidate;
+    }
+    log(LogLevel::Info, "Wwise 组件诊断：AkComponent=" + std::to_string(components.size()) +
+                            "，可用函数=" + (available.empty() ? "无" : available) + "（仅探测一次）");
+    dump_audio_objects_once();
+}
+
+// 一次性音频对象普查：把场景里所有疑似音频/语音/对话相关的类找出来。
+// 背景：AkComponent 上的 Stop 只能拦“挂在组件上”的声音；对话经常是 Wwise 直接
+// post 在游戏对象上（没有组件），那部分要靠游戏自己的管理器类去停——这里把
+// 候选管理器和它们可用的控制函数列出来，给下一版做可恢复的音频暂停定目标。
+void Ue4ssPort::dump_audio_objects_once() {
+    if (audio_dump_done_) return;
+    audio_dump_done_ = true;
+
+    struct AudioClassInfo {
+        int count{0};
+        UObject* sample{nullptr};
+    };
+    std::map<std::string, AudioClassInfo> found;
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        const std::string class_name = narrow(cls->GetName());
+        if (!is_audio_related_name(class_name)) return RC::LoopAction::Continue;
+        AudioClassInfo& info = found[class_name];
+        ++info.count;
+        if (info.sample == nullptr) info.sample = object;
+        return RC::LoopAction::Continue;
+    });
+
+    if (found.empty()) {
+        log(LogLevel::Info, "音频对象普查：未发现 Ak/Audio/Sound/Voice/Dialog 相关类（仅一次）");
+        return;
+    }
+    for (const auto& entry : found) {
+        log(LogLevel::Info, "音频对象普查：" + entry.first + " x" + std::to_string(entry.second.count));
+    }
+    // 全局静态库（UAkGameplayStatics）：Wwise 的 BP 入口都在这，直接列全量函数
+    if (UObject* ak_statics = find_object("/Script/AkAudio.Default__AkGameplayStatics")) {
+        if (is_ok(ak_statics)) {
+            log(LogLevel::Info, "AkGameplayStatics 函数：" + list_all_functions(ak_statics, 80));
+        }
+    }
+
+    // 优先看“能管全局”的类：子系统 > 函数库 > 任务/对话图/导演 > 管理器/系统 > 组件形态
+    auto priority_of = [](const std::string& lower) -> int {
+        if (lower.find("subsystem") != std::string::npos) return 0;
+        if (lower.find("statics") != std::string::npos || lower.find("library") != std::string::npos) return 1;
+        if (lower.find("task") != std::string::npos || lower.find("graph") != std::string::npos ||
+            lower.find("director") != std::string::npos) {
+            return 2;
+        }
+        if (lower.find("manager") != std::string::npos || lower.find("controller") != std::string::npos ||
+            lower.find("system") != std::string::npos) {
+            return 3;
+        }
+        if (lower.find("component") != std::string::npos) return 4;
+        return 9;
+    };
+    std::vector<std::pair<int, const std::map<std::string, AudioClassInfo>::value_type*>> ranked;
+    for (const auto& entry : found) {
+        ranked.emplace_back(priority_of(lower_ascii(entry.first)), &entry);
+    }
+    std::stable_sort(ranked.begin(), ranked.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+    int dumped_classes = 0;
+    for (const auto& item : ranked) {
+        if (dumped_classes >= 12) break;
+        const AudioClassInfo& info = item.second->second;
+        if (info.sample == nullptr || !is_ok(info.sample)) continue;
+        if (item.first >= 9) continue;  // 形态不像“能管东西”的类（事件资产等）不转储
+        ++dumped_classes;
+        // 子系统/静态库用全量函数表（它们最可能藏着“按 ID 暂停/枚举播放”这类接口），
+        // 其余（任务/对话图/组件）仍按关键词筛
+        const bool full_list = item.first <= 1;
+        const std::string functions = full_list ? list_all_functions(info.sample, 120)
+                                                : list_audio_functions(info.sample);
+        log(LogLevel::Info, "音频类函数：" + item.second->first + " → " + functions);
+    }
 }
 
 bool Ue4ssPort::save_postfx() {

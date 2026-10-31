@@ -40,3 +40,9 @@ nul
 dist/
 *.webp
 _inspect*
+
+# ---- 会话垃圾 / 本地运行时（不纳入版本库）----
+%SystemDrive%/
+tmp-cns/
+buildtests_out.txt
+PBZPhotoModeCpp/Python/

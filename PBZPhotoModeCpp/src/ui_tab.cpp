@@ -54,6 +54,24 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
         mode.set_config(cfg);
     }
 
+    float slow_look = static_cast<float>(cfg.slow_look_mult);
+    if (ImGui::SliderFloat("Ctrl视角倍率", &slow_look, 0.01f, 1.0f, "%.2f")) {
+        cfg.slow_look_mult = static_cast<double>(slow_look);
+        mode.set_config(cfg);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("按住 Ctrl（手柄为按下右摇杆）时鼠标/右摇杆视角速度的倍率，越小越精细。");
+    }
+
+    float arrow_pan = static_cast<float>(cfg.arrow_pan_mult);
+    if (ImGui::SliderFloat("方向键平移倍率", &arrow_pan, 0.05f, 1.0f, "%.2f")) {
+        cfg.arrow_pan_mult = static_cast<double>(arrow_pan);
+        mode.set_config(cfg);
+    }
+    if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("方向键/十字键左右平移速度占 move_speed 的比例，不影响 WASD/左摇杆。");
+    }
+
     ImGui::Separator();
     ImGui::Text("位置：%.0f, %.0f, %.0f", mode.pose().loc.x, mode.pose().loc.y, mode.pose().loc.z);
     ImGui::Text("朝向：俯仰 %.1f   偏航 %.1f", mode.pose().rot.pitch, mode.pose().rot.yaw);
@@ -121,13 +139,16 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
 
     // 键位提示（游戏内无菜单，这里就是唯一的操作速查）
     ImGui::TextDisabled("ALT + 鼠标  自由转视角");
-    ImGui::TextDisabled("WASD 平移    Q/E 滚转    Shift/Ctrl 变速");
+    ImGui::TextDisabled("WASD 平移    方向键 左右平移/上下俯仰    Q/E 滚转    Shift/Ctrl 变速");
     ImGui::TextDisabled("滚轮 FOV    左键上移  右键下移");
     ImGui::TextDisabled("%s 重置相机视角（回到进入时）", vk_to_name(keys.reset).c_str());
     ImGui::TextDisabled("%s 冻结时间    %s 退出", vk_to_name(keys.freeze).c_str(), vk_to_name(keys.toggle).c_str());
     if (cfg.pad_enabled) {
         ImGui::TextDisabled("手柄 %s 进/出    左摇杆移动  右摇杆视角", pad_combo_name(keys.pad_toggle).c_str());
-        ImGui::TextDisabled("RT/LT 升降    L3/R3 变速    %s/%s FOV（按住连调）    %s 冻结  %s 重置",
+        ImGui::TextDisabled("RT/LT 升降    L3/R3 变速    %s/%s 俯仰  %s/%s 平移（按住连调）",
+                            pad_combo_name(keys.pad_pitch_up).c_str(), pad_combo_name(keys.pad_pitch_down).c_str(),
+                            pad_combo_name(keys.pad_pan_left).c_str(), pad_combo_name(keys.pad_pan_right).c_str());
+        ImGui::TextDisabled("%s/%s FOV（按住连调）    %s 冻结  %s 重置",
                             pad_combo_name(keys.pad_fov_up).c_str(), pad_combo_name(keys.pad_fov_down).c_str(),
                             pad_combo_name(keys.pad_freeze).c_str(), pad_combo_name(keys.pad_reset).c_str());
     }

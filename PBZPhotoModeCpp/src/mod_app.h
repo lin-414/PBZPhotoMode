@@ -69,6 +69,7 @@ private:
     double engine_peak_dy_{0.0};
     double axis_hook_retry_timer_{0.0};
     double diag_accum_{0.0};
+    double voice_hook_accum_{0.0};  // 对话语音钩子重试节流（每 2 秒试一次直到挂上）
     double last_tick_time_{0.0};
     bool pad_logged_connected_{false};  // 手柄连接状态只在与上次不同时打日志
     bool pad_scan_logged_{false};       // 启动 10 秒后报一次扫描状态，证明轮询管线活着

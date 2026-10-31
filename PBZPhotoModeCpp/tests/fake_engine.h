@@ -26,6 +26,8 @@ public:
     bool player_hidden{false};
     bool hud_visible{true};
     bool prompts_visible{true};
+    bool bars_visible{true};
+    bool subtitles_visible{true};
     int prompt_restore_count{0};
     bool postfx_saved{false};
     CameraPose last_pose{};
@@ -49,6 +51,8 @@ public:
     bool fail_hide_player{false};
     bool fail_hud{false};
     bool fail_prompts{false};
+    bool fail_bars{false};
+    bool fail_subtitles{false};
     bool fail_postfx{false};
     bool fail_pause{false};
     bool fail_time_dilation{false};
@@ -130,6 +134,18 @@ public:
         if (visible) ++prompt_restore_count;
         return true;
     }
+    bool set_enemy_health_bars_visible(bool visible) override {
+        calls.push_back(visible ? "bars_on" : "bars_off");
+        if (fail_bars && !visible) return false;
+        bars_visible = visible;
+        return true;
+    }
+    bool set_subtitles_visible(bool visible) override {
+        calls.push_back(visible ? "subs_on" : "subs_off");
+        if (fail_subtitles && !visible) return false;
+        subtitles_visible = visible;
+        return true;
+    }
     double get_time_dilation() override {
         calls.push_back("get_time_dilation");
         return dilation;
@@ -146,6 +162,38 @@ public:
         paused = value;
         return true;
     }
+    bool world_paused() override {
+        calls.push_back("world_paused");
+        return paused;
+    }
+
+    // 剧情播放器模拟：sequences_playing 同时表示“暂停时正在播放的数量”与“恢复时处于暂停态的数量”
+    int sequences_found{0};
+    int sequences_playing{0};
+    bool fail_sequences{false};
+    int sequence_calls{0};
+    SequenceFreezeReport pause_sequences(bool pause) override {
+        calls.push_back(pause ? "sequences_pause" : "sequences_resume");
+        ++sequence_calls;
+        SequenceFreezeReport report{};
+        report.ok = !fail_sequences;
+        report.found = sequences_found;
+        report.matched = fail_sequences ? 0 : sequences_playing;
+        report.acted = report.matched;
+        return report;
+    }
+
+    // Wwise 组件模拟：wwise_components 同时是“数量”与“暂停/恢复成功”的执行数
+    int wwise_components{0};
+    int wwise_component_count() override {
+        calls.push_back("wwise_count");
+        return wwise_components;
+    }
+    int pause_wwise_voices(bool pause) override {
+        calls.push_back(pause ? "wwise_pause" : "wwise_resume");
+        return wwise_components;
+    }
+
     bool save_postfx() override {
         calls.push_back("save_postfx");
         if (fail_postfx) return false;

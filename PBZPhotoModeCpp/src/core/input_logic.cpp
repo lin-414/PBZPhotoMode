@@ -37,6 +37,10 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.reset = resolve_key(cfg.key_reset, map.reset, "key_reset", warnings, map.all_resolved);
     map.fov_up = resolve_key(cfg.key_fov_up, map.fov_up, "key_fov_up", warnings, map.all_resolved);
     map.fov_down = resolve_key(cfg.key_fov_down, map.fov_down, "key_fov_down", warnings, map.all_resolved);
+    map.pitch_up = resolve_key(cfg.key_pitch_up, map.pitch_up, "key_pitch_up", warnings, map.all_resolved);
+    map.pitch_down = resolve_key(cfg.key_pitch_down, map.pitch_down, "key_pitch_down", warnings, map.all_resolved);
+    map.pan_left = resolve_key(cfg.key_pan_left, map.pan_left, "key_pan_left", warnings, map.all_resolved);
+    map.pan_right = resolve_key(cfg.key_pan_right, map.pan_right, "key_pan_right", warnings, map.all_resolved);
 
     const auto resolve_combo = [&](const std::string& text, const std::vector<PadButton>& fallback, const char* label) {
         const PadCombo parsed = parse_pad_combo(text, fallback, label, warnings);
@@ -48,6 +52,10 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.pad_reset = resolve_combo(cfg.pad_reset, map.pad_reset, "pad_reset");
     map.pad_fov_up = resolve_combo(cfg.pad_fov_up, map.pad_fov_up, "pad_fov_up");
     map.pad_fov_down = resolve_combo(cfg.pad_fov_down, map.pad_fov_down, "pad_fov_down");
+    map.pad_pitch_up = resolve_combo(cfg.pad_pitch_up, map.pad_pitch_up, "pad_pitch_up");
+    map.pad_pitch_down = resolve_combo(cfg.pad_pitch_down, map.pad_pitch_down, "pad_pitch_down");
+    map.pad_pan_left = resolve_combo(cfg.pad_pan_left, map.pad_pan_left, "pad_pan_left");
+    map.pad_pan_right = resolve_combo(cfg.pad_pan_right, map.pad_pan_right, "pad_pan_right");
     return map;
 }
 
@@ -136,8 +144,14 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
 
     out.move_forward = (key_held(kW) ? 1.0 : 0.0) - (key_held(kS) ? 1.0 : 0.0);
     out.move_right = (key_held(kD) ? 1.0 : 0.0) - (key_held(kA) ? 1.0 : 0.0);
+
+    // 方向键左右平移（与 A/D 同轴可叠加，速度按 arrow_pan_mult 折算，不影响 WASD）；方向键上下俯仰在 pitch_axis 里
+    out.move_right += ((key_held(keys.pan_right) ? 1.0 : 0.0) - (key_held(keys.pan_left) ? 1.0 : 0.0)) * cfg.arrow_pan_mult;
     // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给鼠标左右键与手柄 RT/LT
     out.roll = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
+
+    // Z/X 俯仰：按住持续转（+1 仰视 / -1 俯视），不受 free_look_requires_alt 限制
+    out.pitch_axis = (key_held(keys.pitch_up) ? 1.0 : 0.0) - (key_held(keys.pitch_down) ? 1.0 : 0.0);
 
     // 左右键：translate 模式下是上下平移，look 模式下是俯仰
     if (cfg.mouse_vertical_mode == MouseVerticalMode::Translate) {
@@ -187,6 +201,12 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
         // RT 上 / LT 下（模拟量）；RB/LB 滚转（与 Q/E 同向：RB 顺时针 / LB 逆时针）
         out.move_up += pad_.rt - pad_.lt;
         out.roll += (pad_held(pad_, PadButton::RB) ? 1.0 : 0.0) - (pad_held(pad_, PadButton::LB) ? 1.0 : 0.0);
+
+        // 十字键上/下俯仰（上 = 仰视 / 下 = 俯视）；左/右平移按 arrow_pan_mult 折算（FOV 已移到 A/B）
+        out.pitch_axis += pad_combo_down(pad_, keys.pad_pitch_up) ? 1.0 : 0.0;
+        out.pitch_axis -= pad_combo_down(pad_, keys.pad_pitch_down) ? 1.0 : 0.0;
+        out.move_right += pad_combo_down(pad_, keys.pad_pan_right) ? cfg.arrow_pan_mult : 0.0;
+        out.move_right -= pad_combo_down(pad_, keys.pad_pan_left) ? cfg.arrow_pan_mult : 0.0;
 
         // 变速原在 LB/RB，随滚转让位到摇杆按下：LS 加速 / RS 减速；
         // 两杆同时按住是进出模式组合键，此时不触发变速

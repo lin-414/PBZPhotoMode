@@ -105,11 +105,28 @@ void test_config_defaults_and_parse() {
     CHECK(!empty.cfg.hide_player);
     CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
     CHECK(empty.cfg.hide_interact_prompt);  // 默认隐藏交互提示（E 键图标）
+CHECK(empty.cfg.hide_enemy_health_bars);  // 默认隐藏敌人（怪物）血条
+CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
+    CHECK(empty.cfg.freeze_sequences);  // 默认冻结时同时暂停剧情播放器
+    CHECK(empty.cfg.stop_wwise_on_freeze);  // 默认冻结时静音 Wwise 组件（对话流程已冻结，可关）
     CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK_NEAR(empty.cfg.vertical_speed, 200.0, 1e-9);
     CHECK_NEAR(empty.cfg.roll_speed, 60.0, 1e-9);  // Q/E 滚转默认 60 度/秒
+    CHECK_NEAR(empty.cfg.pitch_speed, 30.0, 1e-9);  // 俯仰默认 30 度/秒（方向键与十字键上/下）
+    CHECK_NEAR(empty.cfg.slow_look_mult, 0.1, 1e-9);  // Ctrl/RS 按下时视角速度倍率（1.0.37 新增）
+    CHECK_NEAR(empty.cfg.arrow_pan_mult, 0.5, 1e-9);  // 方向键/十字键平移倍率（1.0.37 新增）
+    CHECK_STR(empty.cfg.key_pitch_up, "UP");    // 方向键上/下 = 俯仰（1.0.27 起从 Z/X 改来）
+    CHECK_STR(empty.cfg.key_pitch_down, "DOWN");
+    CHECK_STR(empty.cfg.key_pan_left, "LEFT");   // 方向键左/右 = 左右平移（1.0.27 新增）
+    CHECK_STR(empty.cfg.key_pan_right, "RIGHT");
+    CHECK_STR(empty.cfg.pad_pitch_up, "UP");    // 十字键上/下 = 俯仰
+    CHECK_STR(empty.cfg.pad_pitch_down, "DOWN");
+    CHECK_STR(empty.cfg.pad_pan_left, "LEFT");   // 十字键左/右 = 左右平移
+    CHECK_STR(empty.cfg.pad_pan_right, "RIGHT");
+    CHECK_STR(empty.cfg.pad_fov_up, "A");    // FOV 移到 A/B（十字键已全部让位给视角调节）
+    CHECK_STR(empty.cfg.pad_fov_down, "B");
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
 
     const std::string ini = R"(
@@ -119,16 +136,23 @@ void test_config_defaults_and_parse() {
 key_toggle = F9          ; 行尾注释
 key_freeze = "G"
 key_fov_up = OEM_PLUS
+key_pitch_up = C
+key_pitch_down = V
+key_pan_left = INSERT
+key_pan_right = DELETE
 
 [control]
 move_speed = 250.5
 boost_mult = 2
 slow_mult = 0.5
+slow_look_mult = 0.05
 invert_y = yes
 free_look_requires_alt = false
 mouse_vertical_mode = look
 vertical_speed = 350
 roll_speed = 120
+pitch_speed = 45
+arrow_pan_mult = 0.25
 
 [camera]
 fov_default = 75
@@ -138,6 +162,8 @@ ultrawide_unlock = false
 
 [effects]
 auto_pause_time = false
+freeze_sequences = false
+stop_wwise_on_freeze = true
 
 [misc]
 log_level = debug
@@ -148,6 +174,10 @@ dry_run = on
     CHECK_STR(parsed.cfg.key_toggle, "F9");
     CHECK_STR(parsed.cfg.key_freeze, "G");
     CHECK_STR(parsed.cfg.key_fov_up, "OEM_PLUS");
+    CHECK_STR(parsed.cfg.key_pitch_up, "C");
+    CHECK_STR(parsed.cfg.key_pitch_down, "V");
+    CHECK_STR(parsed.cfg.key_pan_left, "INSERT");
+    CHECK_STR(parsed.cfg.key_pan_right, "DELETE");
     CHECK_NEAR(parsed.cfg.move_speed, 250.5, 1e-9);
     CHECK_NEAR(parsed.cfg.boost_mult, 2.0, 1e-9);
     CHECK(parsed.cfg.invert_y);
@@ -155,9 +185,14 @@ dry_run = on
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Look);
     CHECK_NEAR(parsed.cfg.vertical_speed, 350.0, 1e-9);
     CHECK_NEAR(parsed.cfg.roll_speed, 120.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.pitch_speed, 45.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.slow_look_mult, 0.05, 1e-9);
+    CHECK_NEAR(parsed.cfg.arrow_pan_mult, 0.25, 1e-9);
     CHECK_NEAR(parsed.cfg.fov_default, 75.0, 1e-9);
     CHECK(!parsed.cfg.ultrawide_unlock);
     CHECK(!parsed.cfg.auto_pause_time);
+    CHECK(!parsed.cfg.freeze_sequences);
+    CHECK(parsed.cfg.stop_wwise_on_freeze);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
     CHECK(parsed.cfg.dry_run);
     CHECK_STR(parsed.source, "test.ini");
@@ -175,6 +210,9 @@ fov_min = 30
 fov_max = 10
 pitch_limit = 120
 roll_speed = 0
+pitch_speed = 0
+slow_look_mult = 0
+arrow_pan_mult = 9
 freeze_dilation = 0
 this line has no equals
 )";
@@ -186,6 +224,9 @@ this line has no equals
     CHECK_NEAR(parsed.cfg.fov_max, 150.0, 1e-9);
     CHECK_NEAR(parsed.cfg.pitch_limit, 89.0, 1e-9);
     CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);  // 非正值回退默认
+    CHECK_NEAR(parsed.cfg.pitch_speed, 30.0, 1e-9);  // 俯仰速度同规则
+    CHECK_NEAR(parsed.cfg.slow_look_mult, 0.1, 1e-9);   // 越界回退默认
+    CHECK_NEAR(parsed.cfg.arrow_pan_mult, 0.5, 1e-9);   // 越界回退默认
     CHECK_NEAR(parsed.cfg.freeze_dilation, 0.0001, 1e-12);
 
     // fov_default 落在范围外要被夹紧并告警
@@ -206,14 +247,28 @@ void test_config_default_text_roundtrip() {
     const std::string text = default_config_text();
     CHECK(text.find("key_toggle") != std::string::npos);
     CHECK(text.find("roll_speed") != std::string::npos);
+    CHECK(text.find("key_pitch_up") != std::string::npos);
+    CHECK(text.find("pad_pitch_up") != std::string::npos);
+    CHECK(text.find("pitch_speed") != std::string::npos);
+    CHECK(text.find("slow_look_mult") != std::string::npos);
+    CHECK(text.find("arrow_pan_mult") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
     CHECK_NEAR(parsed.cfg.fov_step, 2.0, 1e-9);
     CHECK(parsed.cfg.ultrawide_unlock);
     CHECK(parsed.cfg.auto_pause_time);
+    CHECK(parsed.cfg.freeze_sequences);
+    CHECK(parsed.cfg.stop_wwise_on_freeze);  // 默认文本同样开启
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.pitch_speed, 30.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.slow_look_mult, 0.1, 1e-9);
+    CHECK_NEAR(parsed.cfg.arrow_pan_mult, 0.5, 1e-9);
+    CHECK_STR(parsed.cfg.key_pitch_up, "UP");  // 默认文本里俯仰/平移键可被原样解析回来
+    CHECK_STR(parsed.cfg.key_pan_left, "LEFT");
+    CHECK_STR(parsed.cfg.pad_fov_up, "A");
+    CHECK_STR(parsed.cfg.pad_pan_right, "RIGHT");
 }
 
 // ---------------------------------------------------------------- 数学
@@ -270,6 +325,10 @@ void test_input_logic() {
     CHECK_INT(keys.toggle, 0x71);
     CHECK_INT(keys.freeze, 'F');
     CHECK_INT(keys.reset, 'R');
+    CHECK_INT(keys.pitch_up, 0x26);    // 默认方向键：上仰视 / 下俯视 / 左右平移（1.0.27 起）
+    CHECK_INT(keys.pitch_down, 0x28);
+    CHECK_INT(keys.pan_left, 0x25);
+    CHECK_INT(keys.pan_right, 0x27);
 
     InputLogic in;
     in.on_key('W', true);
@@ -366,6 +425,44 @@ void test_input_logic() {
     in.on_mouse_button(MouseButton::Left, false);
     in.reset();
 
+    // 方向键俯仰（1.0.27 起 Z/X 改方向键）：上 仰视（+1）/ 下 俯视（-1），同按抵消；与滚转互不影响
+    in.on_key(keys.pitch_up, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.pitch_axis, 1.0, 1e-9);
+    CHECK_NEAR(intent.roll, 0.0, 1e-9);
+    in.end_frame();
+    in.on_key(keys.pitch_up, false);
+    in.on_key(keys.pitch_down, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.pitch_axis, -1.0, 1e-9);
+    in.end_frame();
+    in.on_key(keys.pitch_up, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.pitch_axis, 0.0, 1e-9);  // 同按抵消
+    in.on_key(keys.pitch_up, false);
+    in.on_key(keys.pitch_down, false);
+    in.reset();
+
+    // 方向键左右平移（1.0.27 新增）：并入 move_right，速度按 arrow_pan_mult 折算（默认 0.5，不影响 A/D）
+    in.on_key(keys.pan_left, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.move_right, -cfg.arrow_pan_mult, 1e-9);
+    in.end_frame();
+    in.on_key(keys.pan_left, false);
+    in.on_key(keys.pan_right, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.move_right, cfg.arrow_pan_mult, 1e-9);
+    in.end_frame();
+    Config full_pan = cfg;
+    full_pan.arrow_pan_mult = 1.0;  // 倍率 1 时与 A/D 同速，反向可抵消
+    in.on_key('A', true);
+    in.on_key(keys.pan_right, true);
+    intent = in.build(full_pan, keys);
+    CHECK_NEAR(intent.move_right, 0.0, 1e-9);  // A(-1) + 方向键右(+1) 抵消
+    in.on_key('A', false);
+    in.on_key(keys.pan_right, false);
+    in.reset();
+
     // look 模式：左右键变俯仰，与 Q/E 滚转互不影响
     Config look_cfg = cfg;
     look_cfg.mouse_vertical_mode = MouseVerticalMode::Look;
@@ -433,8 +530,8 @@ void test_photo_mode_happy_path() {
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "hud_off", "prompt_off", "aspect_unlock", "save_postfx", "get_time_dilation", "apply_fov",
-                     "apply_pose", "pause_on"},
+                     "hud_off", "prompt_off", "bars_off", "subs_off", "aspect_unlock", "save_postfx",
+                     "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "sequences_pause", "wwise_pause"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -445,6 +542,8 @@ void test_photo_mode_happy_path() {
     CHECK(!fe.player_hidden);  // 默认不隐藏角色：摄影模式要能把自己拍进去
     CHECK(!fe.hud_visible);    // 默认隐藏游戏 HUD
     CHECK(!fe.prompts_visible);  // 默认隐藏交互提示
+    CHECK(!fe.bars_visible);     // 默认隐藏敌人血条
+    CHECK(!fe.subtitles_visible);  // 默认隐藏对话字幕
     CHECK_NEAR(mode.fov(), 88.0, 1e-9);
     CHECK_NEAR(mode.pose().rot.yaw, 45.0, 1e-9);
     CHECK(mode.frozen());  // 默认 auto_pause_time=true：进入即冻结
@@ -459,8 +558,9 @@ void test_photo_mode_happy_path() {
     fe.reset_calls();
     mode.leave("test");
     expect_sequence(fe,
-                    {"pause_off", "restore_postfx", "restore_aspect", "hud_on", "prompt_on", "block_input_off",
-                     "ignore_move_off", "restore_view", "destroy_camera"},
+                    {"sequences_resume", "pause_off", "wwise_resume", "restore_postfx", "restore_aspect",
+                     "hud_on", "prompt_on", "bars_on", "subs_on", "block_input_off", "ignore_move_off",
+                     "restore_view", "destroy_camera"},
                     "退出");
     CHECK(!mode.active());
     CHECK(!fe.paused);
@@ -471,6 +571,8 @@ void test_photo_mode_happy_path() {
     CHECK(!fe.player_hidden);
     CHECK(fe.hud_visible);  // 退出后恢复
     CHECK(fe.prompts_visible);  // 交互提示退出后恢复
+    CHECK(fe.bars_visible);     // 敌人血条退出后恢复
+    CHECK(fe.subtitles_visible);  // 对话字幕退出后恢复
     CHECK_NEAR(fe.dilation, 1.0, 1e-12);
 
     // 幂等：再退一次不应有任何调用
@@ -728,6 +830,50 @@ void test_photo_mode_tick() {
         spinner.leave();
     }
 
+    // Z/X 与十字键上/下俯仰（1.0.26）：pitch_speed 度/秒，正 = 仰视；变速/dt 上限/±pitch_limit 夹紧同滚转
+    {
+        FakeEngine fe_pitch;
+        Config cfg_pitch;
+        cfg_pitch.pitch_speed = 90.0;
+        PhotoMode pitcher(fe_pitch, cfg_pitch);
+        CHECK(pitcher.enter());
+
+        Intent pitch_up;
+        pitch_up.pitch_axis = 1.0;
+        pitcher.tick(pitch_up, 0.1);  // 90 * 0.1 = 9 度仰
+        CHECK_NEAR(pitcher.pose().rot.pitch, 9.0, 1e-9);
+
+        Intent pitch_dn;
+        pitch_dn.pitch_axis = -1.0;
+        pitcher.tick(pitch_dn, 0.1);
+        CHECK_NEAR(pitcher.pose().rot.pitch, 0.0, 1e-9);
+
+        pitch_dn.boost = true;
+        pitcher.tick(pitch_dn, 0.1);  // -90 * 4 * 0.1 = -36
+        CHECK_NEAR(pitcher.pose().rot.pitch, -36.0, 1e-9);
+
+        // invert_y 只管鼠标/摇杆 Y 轴，不影响俯仰按键的方向语义
+        Config inv_cfg = cfg_pitch;
+        inv_cfg.invert_y = true;
+        PhotoMode inverted(fe_pitch, inv_cfg);
+        CHECK(inverted.enter());
+        inverted.tick(pitch_up, 0.1);
+        CHECK_NEAR(inverted.pose().rot.pitch, 9.0, 1e-9);
+        inverted.leave();
+
+        // 夹紧：再快也不越过 ±pitch_limit（默认 89）
+        Config fast = cfg_pitch;
+        fast.pitch_speed = 3600.0;
+        PhotoMode clamper(fe_pitch, fast);
+        CHECK(clamper.enter());
+        clamper.tick(pitch_up, 5.0);  // dt 上限 0.25：+900 度顶到 +89
+        CHECK_NEAR(clamper.pose().rot.pitch, 89.0, 1e-9);
+        clamper.tick(pitch_dn, 5.0);  // -900 度顶到 -89
+        CHECK_NEAR(clamper.pose().rot.pitch, -89.0, 1e-9);
+        clamper.leave();
+        pitcher.leave();
+    }
+
     // 世界失效 -> 自动退出并还原
     fe.world_ok = false;
     fe.reset_calls();
@@ -874,10 +1020,27 @@ void test_photo_mode_auto_pause() {
         CHECK_NEAR(fe.dilation, 0.8, 1e-12);
     }
 
-    // 自动暂停失败不阻止进模式：只告警，状态保持未冻结
+    // 暂停被游戏拒绝（剧情等场景常见）：自动回退时间缩放，冻结照样生效
     {
         FakeEngine fe;
         fe.fail_pause = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.active());
+        CHECK(mode.frozen());
+        CHECK_NEAR(fe.dilation, 0.0001, 1e-12);
+        CHECK(fe.logs_contain("回退为时间缩放冻结"));
+        CHECK(!fe.logs_contain("冻结时间失败"));
+        mode.leave("test");
+        CHECK(!mode.active());
+        CHECK_NEAR(fe.dilation, 1.0, 1e-12);  // 退出还原进入时的倍率
+    }
+
+    // 暂停与时间缩放都失败：才真正保持未冻结并告警
+    {
+        FakeEngine fe;
+        fe.fail_pause = true;
+        fe.fail_time_dilation = true;
         PhotoMode mode(fe, Config{});
         CHECK(mode.enter());
         CHECK(mode.active());
@@ -900,6 +1063,155 @@ void test_photo_mode_auto_pause() {
         CHECK(!mode.frozen());
         CHECK(fe.logs_contain("冻结时间失败"));
         mode.leave("test");
+    }
+}
+
+void test_photo_mode_cutscene_freeze() {
+    section("PhotoMode 剧情冻结（Sequencer 播放器联动 + 冻结期校验）");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // tick 有掉帧保护（单帧最多 0.25s），四步才能跨过 1s 校验阈值
+    auto advance = [](PhotoMode& mode, int ticks) {
+        Intent none;
+        for (int i = 0; i < ticks; ++i) mode.tick(none, 0.25);
+    };
+
+    // 冻结时一并暂停剧情播放器，解冻/退出时恢复
+    {
+        FakeEngine fe;
+        fe.sequences_found = 2;
+        fe.sequences_playing = 1;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());  // auto_pause_time 默认开：进入即冻结
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("sequences_pause"), 1);
+        CHECK_INT(fe.count("sequences_resume"), 0);
+
+        Intent toggle;
+        toggle.toggle_freeze = true;
+        mode.tick(toggle, 0.016);  // F 解冻
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("sequences_resume"), 1);
+
+        mode.tick(toggle, 0.016);  // 再冻结
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("sequences_pause"), 2);
+
+        mode.leave("test");  // 冻结状态下退出：也要恢复播放器
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("sequences_resume"), 2);
+        CHECK(!fe.paused);
+    }
+
+    // freeze_sequences = false：完全不动剧情播放器
+    {
+        FakeEngine fe;
+        fe.sequences_playing = 1;
+        Config cfg;
+        cfg.freeze_sequences = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.sequence_calls, 0);
+        mode.leave("test");
+        CHECK_INT(fe.sequence_calls, 0);
+    }
+
+    // stop_wwise_on_freeze：冻结时音量归零（可恢复）；解冻/退出恢复音量
+    {
+        FakeEngine fe;
+        fe.wwise_components = 3;
+        Config cfg;
+        cfg.stop_wwise_on_freeze = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("wwise_resume"), 1);
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        Intent toggle;
+        toggle.toggle_freeze = true;
+        mode.tick(toggle, 0.016);
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("wwise_pause"), 2);  // 再冻结再静音一次
+        mode.leave("test");
+        CHECK_INT(fe.count("wwise_resume"), 2);  // 冻结状态下退出也恢复
+    }
+
+    // stop_wwise_on_freeze = false：不碰 Wwise 组件
+    {
+        FakeEngine fe;
+        fe.wwise_components = 2;
+        Config cfg;
+        cfg.stop_wwise_on_freeze = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("wwise_pause"), 0);
+        mode.leave("test");
+        CHECK_INT(fe.count("wwise_pause"), 0);
+        CHECK_INT(fe.count("wwise_resume"), 0);
+    }
+
+    // 冻结期被游戏解除暂停：每秒校验后重新暂停；连续 3 次压不住则放弃并告警
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+
+        fe.reset_calls();
+        fe.paused = false;  // 模拟剧情系统解除暂停
+        advance(mode, 4);
+        CHECK(mode.frozen());
+        CHECK(fe.paused);
+        CHECK_INT(fe.count("pause_on"), 1);
+        CHECK(fe.logs_contain("已重新暂停"));
+
+        for (int i = 0; i < 2; ++i) {  // 连续第 2、3 次压不住：第 3 次后放弃
+            fe.paused = false;
+            advance(mode, 4);
+        }
+        CHECK_INT(fe.count("pause_on"), 3);
+        CHECK(fe.logs_contain("已停止自动重试"));
+
+        fe.reset_calls();
+        fe.paused = false;
+        advance(mode, 8);
+        CHECK_INT(fe.count("pause_on"), 0);  // 放弃后不再每秒硬写
+
+        fe.paused = true;  // 过场结束、状态恢复正常：重新武装
+        advance(mode, 4);
+        fe.paused = false;
+        fe.reset_calls();
+        advance(mode, 4);
+        CHECK_INT(fe.count("pause_on"), 1);
+
+        mode.leave("test");
+        CHECK(!fe.paused);
+    }
+
+    // dilation 模式冻结期被游戏改回 1.0：校验后重新写 freeze_dilation
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.freeze_mode = FreezeMode::Dilation;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_NEAR(fe.dilation, cfg.freeze_dilation, 1e-12);
+
+        fe.reset_calls();
+        fe.dilation = 1.0;  // 模拟游戏改写时间缩放
+        advance(mode, 4);
+        CHECK_NEAR(fe.dilation, cfg.freeze_dilation, 1e-12);
+        CHECK_INT(fe.count("set_time_dilation"), 1);
+        CHECK(fe.logs_contain("已重新冻结"));
+        mode.leave("test");
+        CHECK_NEAR(fe.dilation, 1.0, 1e-12);  // 退出还原进入时的倍率
     }
 }
 
@@ -1031,6 +1343,104 @@ void test_photo_mode_interact_prompt() {
         CHECK(!fe.prompts_visible);  // 每秒重试后成功
         mode.leave();
         CHECK(fe.prompts_visible);
+    }
+}
+
+// ---------------------------------------------------------------- 敌人（怪物）血条
+
+void test_photo_mode_enemy_health_bars() {
+    section("PhotoMode 敌人血条隐藏");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 默认开启：进入隐藏、退出恢复，各只调一次
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(!fe.bars_visible);
+        mode.leave();
+        CHECK(fe.bars_visible);
+        CHECK_INT(fe.count("bars_off"), 1);
+        CHECK_INT(fe.count("bars_on"), 1);
+    }
+
+    // 配置关闭：进出都不碰血条
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.hide_enemy_health_bars = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(fe.bars_visible);
+        mode.leave();
+        CHECK_INT(fe.count("bars_off"), 0);
+        CHECK_INT(fe.count("bars_on"), 0);
+    }
+
+    // 设置晚就绪：进入时隐藏失败，tick 每秒重试，成功后退出仍能恢复
+    {
+        FakeEngine fe;
+        fe.fail_bars = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.bars_visible);  // 第一次隐藏失败
+        CHECK(fe.logs_contain("隐藏敌人血条失败"));
+        fe.fail_bars = false;
+        Intent none;
+        for (int i = 0; i < 5; ++i) mode.tick(none, 0.25);  // 累计 1.25 秒，跨过重试阈值
+        CHECK(!fe.bars_visible);  // 每秒重试后成功
+        mode.leave();
+        CHECK(fe.bars_visible);
+    }
+}
+
+// ---------------------------------------------------------------- 对话字幕
+
+void test_photo_mode_subtitles() {
+    section("PhotoMode 对话字幕隐藏");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 默认开启：进入隐藏、退出恢复，各只调一次
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(!fe.subtitles_visible);
+        mode.leave();
+        CHECK(fe.subtitles_visible);
+        CHECK_INT(fe.count("subs_off"), 1);
+        CHECK_INT(fe.count("subs_on"), 1);
+    }
+
+    // 配置关闭：进出都不碰字幕
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.hide_subtitles = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(fe.subtitles_visible);
+        mode.leave();
+        CHECK_INT(fe.count("subs_off"), 0);
+        CHECK_INT(fe.count("subs_on"), 0);
+    }
+
+    // 设置/控件晚就绪：进入时隐藏失败，tick 每秒重试，成功后退出仍能恢复
+    {
+        FakeEngine fe;
+        fe.fail_subtitles = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.subtitles_visible);  // 第一次隐藏失败
+        CHECK(fe.logs_contain("隐藏对话字幕失败"));
+        fe.fail_subtitles = false;
+        Intent none;
+        for (int i = 0; i < 5; ++i) mode.tick(none, 0.25);  // 累计 1.25 秒，跨过重试阈值
+        CHECK(!fe.subtitles_visible);  // 每秒重试后成功
+        mode.leave();
+        CHECK(fe.subtitles_visible);
     }
 }
 
@@ -1290,7 +1700,7 @@ void test_gamepad_parse_combo() {
     CHECK_INT((int)rt.warnings.size(), 0);
     CHECK_STR(rt.cfg.pad_toggle, "LS+RS");
     CHECK(rt.cfg.pad_enabled);
-    CHECK_NEAR(rt.cfg.pad_look_speed, 180.0, 1e-9);
+    CHECK_NEAR(rt.cfg.pad_look_speed, 60.0, 1e-9);
     CHECK_NEAR(rt.cfg.pad_deadzone, 0.15, 1e-9);
 }
 
@@ -1578,9 +1988,45 @@ void test_gamepad_input_logic() {
     input.end_frame();
     input.reset();
 
-    // FOV 步进：手柄十字键与键盘 FOV 键（此前键盘 FOV 键只解析未生效，现在一并接上）
+    // 十字键上/下俯仰（1.0.26 起接管上/下）：上 = 仰视 / 下 = 俯视，按住持续（电平语义无按下沿）
     PadState dpad;
     dpad.held[static_cast<int>(PadButton::Up)] = true;
+    input.on_gamepad(dpad);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.pitch_axis, 1.0, 1e-9);
+    CHECK_INT(in.fov_nudge, 0);  // 上键不再驱动 FOV
+    input.end_frame();
+    dpad = PadState{};
+    dpad.held[static_cast<int>(PadButton::Down)] = true;
+    input.on_gamepad(dpad);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.pitch_axis, -1.0, 1e-9);
+    input.end_frame();
+    input.on_gamepad(PadState{});
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.pitch_axis, 0.0, 1e-9);
+    input.end_frame();
+
+    // 十字键左/右平移（1.0.27 起）：左 = 左移 / 右 = 右移；FOV 移到 A/B
+    dpad = PadState{};
+    dpad.held[static_cast<int>(PadButton::Left)] = true;
+    input.on_gamepad(dpad);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.move_right, -cfg.arrow_pan_mult, 1e-9);  // 1.0.37 起按 arrow_pan_mult 折算
+    CHECK_INT(in.fov_nudge, 0);  // 左键不再驱动 FOV
+    input.end_frame();
+    dpad = PadState{};
+    dpad.held[static_cast<int>(PadButton::Right)] = true;
+    input.on_gamepad(dpad);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.move_right, cfg.arrow_pan_mult, 1e-9);
+    input.end_frame();
+    input.on_gamepad(PadState{});
+    input.end_frame();
+
+    // FOV 步进：A/B；键盘 FOV 键（此前只解析未生效，1.0.23 起一并接上）
+    dpad = PadState{};
+    dpad.held[static_cast<int>(PadButton::A)] = true;
     input.on_gamepad(dpad);
     in = input.build(cfg, keys);
     CHECK_INT(in.fov_nudge, 1);
@@ -1597,7 +2043,7 @@ void test_gamepad_input_logic() {
     in = input.build(cfg, keys, 0.0);
     input.end_frame();
     PadState pad_up;
-    pad_up.held[static_cast<int>(PadButton::Up)] = true;
+    pad_up.held[static_cast<int>(PadButton::A)] = true;  // 1.0.27 起 FOV 在 A/B
     input.on_gamepad(pad_up);
     in = input.build(cfg, keys, 0.10);
     CHECK_INT(in.fov_nudge, 1);
@@ -1755,6 +2201,60 @@ void test_photo_mode_gamepad() {
     }
 }
 
+// Ctrl（键盘）/按下右摇杆 RS（手柄）时视角精调：鼠标与右摇杆转速一起乘 slow_look_mult（1.0.37）
+void test_photo_mode_slow_look() {
+    section("PhotoMode Ctrl/RS 视角精调");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 鼠标视角：按住 Ctrl 后同样的位移只转 slow_look_mult 倍
+    {
+        FakeEngine fe;
+        Config cfg;  // look_sensitivity=0.1，slow_look_mult=0.1
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        Intent plain;
+        plain.look_dx = 10.0;  // 10 单位 × 0.1 度/单位 = +1.0 度
+        mode.tick(plain, 0.1);
+        CHECK_NEAR(mode.pose().rot.yaw, 1.0, 1e-9);
+        mode.leave();
+
+        FakeEngine fe2;
+        PhotoMode fine(fe2, cfg);
+        CHECK(fine.enter());
+        Intent slow;
+        slow.look_dx = 10.0;
+        slow.slow = true;  // Ctrl：+1.0 × 0.1 = +0.1 度
+        fine.tick(slow, 0.1);
+        CHECK_NEAR(fine.pose().rot.yaw, 0.1, 1e-9);
+        fine.leave();
+    }
+
+    // 右摇杆视角：RS 按下（slow 语义）时转速同样乘 slow_look_mult
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.pad_look_speed = 100.0;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        Intent plain;
+        plain.pad_look_dx = 100.0;  // 100 度/秒 × dt 夹紧 0.25 秒 = +25 度
+        mode.tick(plain, 1.0);
+        CHECK_NEAR(mode.pose().rot.yaw, 25.0, 1e-9);
+        mode.leave();
+
+        FakeEngine fe2;
+        PhotoMode fine(fe2, cfg);
+        CHECK(fine.enter());
+        Intent slow;
+        slow.pad_look_dx = 100.0;
+        slow.slow = true;  // +25 × 0.1 = +2.5 度
+        fine.tick(slow, 1.0);
+        CHECK_NEAR(fine.pose().rot.yaw, 2.5, 1e-9);
+        fine.leave();
+    }
+}
+
 
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
@@ -1770,17 +2270,21 @@ int main() {
     test_photo_mode_tick();
     test_photo_mode_freeze();
     test_photo_mode_auto_pause();
+    test_photo_mode_cutscene_freeze();
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
     test_photo_mode_live_toggles();
     test_photo_mode_ultrawide();
     test_photo_mode_interact_prompt();
+    test_photo_mode_enemy_health_bars();
+    test_photo_mode_subtitles();
     test_gamepad_names();
     test_gamepad_parse_combo();
     test_dinput_map();
     test_gamepad_deadzone();
     test_gamepad_input_logic();
     test_photo_mode_gamepad();
+    test_photo_mode_slow_look();
 
     std::printf("\n----------------------------------------\n");
     std::printf("检查 %d 项，失败 %d 项\n", g_checks, g_failures);

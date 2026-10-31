@@ -123,22 +123,33 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
         else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
         else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
+        else if (key == "key_pitch_up") set_string(cfg.key_pitch_up, value, error, key.c_str());
+        else if (key == "key_pitch_down") set_string(cfg.key_pitch_down, value, error, key.c_str());
+        else if (key == "key_pan_left") set_string(cfg.key_pan_left, value, error, key.c_str());
+        else if (key == "key_pan_right") set_string(cfg.key_pan_right, value, error, key.c_str());
         else if (key == "pad_enabled") set_bool(cfg.pad_enabled, value, error, key.c_str());
         else if (key == "pad_toggle") set_string(cfg.pad_toggle, value, error, key.c_str());
         else if (key == "pad_freeze") set_string(cfg.pad_freeze, value, error, key.c_str());
         else if (key == "pad_reset") set_string(cfg.pad_reset, value, error, key.c_str());
         else if (key == "pad_fov_up") set_string(cfg.pad_fov_up, value, error, key.c_str());
         else if (key == "pad_fov_down") set_string(cfg.pad_fov_down, value, error, key.c_str());
+        else if (key == "pad_pitch_up") set_string(cfg.pad_pitch_up, value, error, key.c_str());
+        else if (key == "pad_pitch_down") set_string(cfg.pad_pitch_down, value, error, key.c_str());
+        else if (key == "pad_pan_left") set_string(cfg.pad_pan_left, value, error, key.c_str());
+        else if (key == "pad_pan_right") set_string(cfg.pad_pan_right, value, error, key.c_str());
         else if (key == "pad_look_speed") set_double(cfg.pad_look_speed, value, error, key.c_str());
         else if (key == "pad_move_scale") set_double(cfg.pad_move_scale, value, error, key.c_str());
         else if (key == "pad_deadzone") set_double(cfg.pad_deadzone, value, error, key.c_str());
         else if (key == "move_speed") set_double(cfg.move_speed, value, error, key.c_str());
         else if (key == "boost_mult") set_double(cfg.boost_mult, value, error, key.c_str());
         else if (key == "slow_mult") set_double(cfg.slow_mult, value, error, key.c_str());
+        else if (key == "slow_look_mult") set_double(cfg.slow_look_mult, value, error, key.c_str());
         else if (key == "look_sensitivity") set_double(cfg.look_sensitivity, value, error, key.c_str());
         else if (key == "pitch_limit") set_double(cfg.pitch_limit, value, error, key.c_str());
         else if (key == "vertical_speed") set_double(cfg.vertical_speed, value, error, key.c_str());
         else if (key == "roll_speed") set_double(cfg.roll_speed, value, error, key.c_str());
+        else if (key == "pitch_speed") set_double(cfg.pitch_speed, value, error, key.c_str());
+        else if (key == "arrow_pan_mult") set_double(cfg.arrow_pan_mult, value, error, key.c_str());
         else if (key == "invert_y") set_bool(cfg.invert_y, value, error, key.c_str());
         else if (key == "free_look_requires_alt") set_bool(cfg.free_look_requires_alt, value, error, key.c_str());
         else if (key == "block_game_input") set_bool(cfg.block_game_input, value, error, key.c_str());
@@ -155,8 +166,12 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "hide_player") set_bool(cfg.hide_player, value, error, key.c_str());
         else if (key == "hide_game_hud") set_bool(cfg.hide_game_hud, value, error, key.c_str());
         else if (key == "hide_interact_prompt") set_bool(cfg.hide_interact_prompt, value, error, key.c_str());
+        else if (key == "hide_enemy_health_bars") set_bool(cfg.hide_enemy_health_bars, value, error, key.c_str());
+        else if (key == "hide_subtitles") set_bool(cfg.hide_subtitles, value, error, key.c_str());
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
         else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
+        else if (key == "freeze_sequences") set_bool(cfg.freeze_sequences, value, error, key.c_str());
+        else if (key == "stop_wwise_on_freeze") set_bool(cfg.stop_wwise_on_freeze, value, error, key.c_str());
         else if (key == "restore_fov_on_exit") set_bool(cfg.restore_fov_on_exit, value, error, key.c_str());
         else if (key == "restore_view_on_exit") set_bool(cfg.restore_view_on_exit, value, error, key.c_str());
         else if (key == "freeze_mode") {
@@ -242,13 +257,25 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         result.warnings.push_back("roll_speed 必须为正，已回退 60");
         result.cfg.roll_speed = 60.0;
     }
+    if (result.cfg.pitch_speed <= 0.0) {
+        result.warnings.push_back("pitch_speed 必须为正，已回退 30");
+        result.cfg.pitch_speed = 30.0;
+    }
+    if (result.cfg.slow_look_mult <= 0.0 || result.cfg.slow_look_mult > 1.0) {
+        result.warnings.push_back("slow_look_mult 应在 (0, 1]，已回退 0.1");
+        result.cfg.slow_look_mult = 0.1;
+    }
+    if (result.cfg.arrow_pan_mult < 0.0 || result.cfg.arrow_pan_mult > 3.0) {
+        result.warnings.push_back("arrow_pan_mult 应在 [0, 3]，已回退 0.5");
+        result.cfg.arrow_pan_mult = 0.5;
+    }
     if (result.cfg.freeze_dilation <= 0.0 || result.cfg.freeze_dilation > 1.0) {
         result.warnings.push_back("freeze_dilation 应在 (0, 1]，已回退 0.0001");
         result.cfg.freeze_dilation = 0.0001;
     }
     if (result.cfg.pad_look_speed < 10.0 || result.cfg.pad_look_speed > 720.0) {
-        result.warnings.push_back("pad_look_speed 应在 [10, 720]，已回退 180");
-        result.cfg.pad_look_speed = 180.0;
+        result.warnings.push_back("pad_look_speed 应在 [10, 720]，已回退 60");
+        result.cfg.pad_look_speed = 60.0;
     }
     if (result.cfg.pad_move_scale < 0.0 || result.cfg.pad_move_scale > 3.0) {
         result.warnings.push_back("pad_move_scale 应在 [0, 3]，已回退 1");
@@ -291,12 +318,20 @@ std::string default_config_text() {
         << "key_reset = " << c.key_reset << "\n"
         << "; FOV 加减（小键盘 +/-，也可写 OEM_PLUS / OEM_MINUS）\n"
         << "key_fov_up = " << c.key_fov_up << "\n"
-        << "key_fov_down = " << c.key_fov_down << "\n\n"
+        << "key_fov_down = " << c.key_fov_down << "\n"
+        << "; 俯仰（按住持续转）：方向键上 = 仰视 / 下 = 俯视\n"
+        << "key_pitch_up = " << c.key_pitch_up << "\n"
+        << "key_pitch_down = " << c.key_pitch_down << "\n"
+        << "; 左右平移（按住持续移，速度 = move_speed × arrow_pan_mult）：方向键左 / 右\n"
+        << "key_pan_left = " << c.key_pan_left << "\n"
+        << "key_pan_right = " << c.key_pan_right << "\n\n"
         << "[control]\n"
         << "; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速\n"
         << "move_speed = " << c.move_speed << "\n"
         << "boost_mult = " << c.boost_mult << "\n"
         << "slow_mult = " << c.slow_mult << "\n"
+        << "; 按住 Ctrl（手柄为按下右摇杆 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细\n"
+        << "slow_look_mult = " << c.slow_look_mult << "\n"
         << "; 每单位鼠标位移转多少度\n"
         << "look_sensitivity = " << c.look_sensitivity << "\n"
         << "pitch_limit = " << c.pitch_limit << "\n"
@@ -309,7 +344,11 @@ std::string default_config_text() {
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
         << "vertical_speed = " << c.vertical_speed << "\n"
         << "; Q/E 滚转相机速度（度/秒）：E 顺时针，Q 逆时针；Shift 加速 / Ctrl 减速同样生效\n"
-        << "roll_speed = " << c.roll_speed << "\n\n"
+        << "roll_speed = " << c.roll_speed << "\n"
+        << "; 方向键上/下（与手柄十字键上/下）俯仰速度（度/秒）；Shift 加速 / Ctrl 减速同样生效\n"
+        << "pitch_speed = " << c.pitch_speed << "\n"
+        << "; 方向键/十字键左右平移速度占 move_speed 的比例（1 = 与 WASD/左摇杆同速）\n"
+        << "arrow_pan_mult = " << c.arrow_pan_mult << "\n\n"
         << "[gamepad]\n"
         << "; 手柄支持总开关（false=不轮询手柄）\n"
         << "pad_enabled = " << (c.pad_enabled ? "true" : "false") << "\n"
@@ -322,9 +361,15 @@ std::string default_config_text() {
         << "pad_freeze = " << c.pad_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
         << "pad_reset = " << c.pad_reset << "\n"
-        << "; FOV 加减（十字键上/下；单击一格，按住先延迟约 0.35 秒再连发）\n"
+        << "; FOV 加减（A/B；十字键已全部让位给视角调节；单击一格，按住先延迟约 0.35 秒再连发）\n"
         << "pad_fov_up = " << c.pad_fov_up << "\n"
         << "pad_fov_down = " << c.pad_fov_down << "\n"
+        << "; 俯仰（按住持续转）：十字键上 = 仰视 / 下 = 俯视\n"
+        << "pad_pitch_up = " << c.pad_pitch_up << "\n"
+        << "pad_pitch_down = " << c.pad_pitch_down << "\n"
+        << "; 左右平移（按住持续移）：十字键左 / 右\n"
+        << "pad_pan_left = " << c.pad_pan_left << "\n"
+        << "pad_pan_right = " << c.pad_pan_right << "\n"
         << "; 右摇杆转视角速度（度/秒，全行程）\n"
         << "pad_look_speed = " << c.pad_look_speed << "\n"
         << "; 左摇杆移动速度占 move_speed 的比例\n"
@@ -344,11 +389,21 @@ std::string default_config_text() {
         << "hide_game_hud = true\n"
         << "; 进入摄影模式时隐藏交互提示（可互物体旁的 E 键图标，退出时恢复）\n"
         << "hide_interact_prompt = true\n"
+        << "; 进入摄影模式时隐藏敌人（怪物）血条（切到游戏自带\"仅锁定目标\"显示模式，退出时还原原模式）\n"
+        << "hide_enemy_health_bars = true\n"
+        << "; 进入摄影模式时隐藏对话字幕（关游戏字幕设置 + 藏字幕显示控件，退出时还原）\n"
+        << "hide_subtitles = true\n"
         << "; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）\n"
         << "auto_pause_time = " << (c.auto_pause_time ? "true" : "false") << "\n"
         << "; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停\n"
         << "freeze_mode = " << (c.freeze_mode == FreezeMode::Pause ? "pause" : "dilation") << "\n"
         << "freeze_dilation = " << c.freeze_dilation << "\n"
+        << "; 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻/退出时恢复。\n"
+        << "; 剧情系统常绕过世界暂停自顾自播（画面像冻住但动作声音还在走），默认开启\n"
+        << "freeze_sequences = " << (c.freeze_sequences ? "true" : "false") << "\n"
+        << "; 冻结时把所有 Wwise 音频组件的音量归零（对话/环境/音乐一并静音，可恢复）。\n"
+        << "; 声音在冻结期间继续无声播放，解冻恢复音量后当前句从原处继续\n"
+        << "stop_wwise_on_freeze = " << (c.stop_wwise_on_freeze ? "true" : "false") << "\n"
         << "restore_fov_on_exit = true\n"
         << "restore_view_on_exit = true\n\n"
         << "[ui]\n"

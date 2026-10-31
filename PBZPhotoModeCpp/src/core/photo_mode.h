@@ -66,15 +66,27 @@ private:
     bool player_hidden_{false};
     bool hud_hidden_{false};
     bool prompt_hidden_{false};
+    bool bars_hidden_{false};
+    bool subtitles_hidden_{false};
     bool aspect_unlocked_{false};
     bool postfx_saved_{false};
 
     double prev_dilation_{1.0};
     // 冻结时实际使用的模式：配置在冻结中途被热重载改掉时，解冻仍按进入时的模式还原
     bool frozen_with_pause_{false};
+    // 冻结时一并暂停了剧情播放器（解冻/退出时要恢复）
+    bool sequences_paused_{false};
+    // 冻结时把 Wwise 组件音量归零了（解冻/退出时要恢复，声音是可恢复静音）
+    bool wwise_paused_{false};
+    // 冻结期每秒校验暂停/时间缩放是否被游戏改写；连续 3 次失守后停止对抗并告警
+    double freeze_check_accum_{0.0};
+    int freeze_reassert_count_{0};
+    bool freeze_reassert_gave_up_{false};
     double reassert_accum_{0.0};
     double hud_retry_accum_{0.0};
     double prompt_retry_accum_{0.0};
+    double bars_retry_accum_{0.0};
+    double subtitles_retry_accum_{0.0};
     bool pose_dirty_{false};
     bool pov_fallback_used_{false};
     std::string last_error_{};

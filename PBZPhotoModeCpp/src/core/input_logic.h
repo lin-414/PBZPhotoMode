@@ -19,12 +19,20 @@ struct KeyMap {
     int reset{'R'};
     int fov_up{0x6B};    // ADD
     int fov_down{0x6D};  // SUBTRACT
+    int pitch_up{0x26};    // 仰视（抬头）：方向键上
+    int pitch_down{0x28};  // 俯视（低头）：方向键下
+    int pan_left{0x25};    // 左平移：方向键左
+    int pan_right{0x27};   // 右平移：方向键右
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
     std::vector<PadButton> pad_toggle{PadButton::LS, PadButton::RS};  // 默认：左右摇杆同时按下
     std::vector<PadButton> pad_freeze{PadButton::X};
     std::vector<PadButton> pad_reset{PadButton::Y};
-    std::vector<PadButton> pad_fov_up{PadButton::Up};
-    std::vector<PadButton> pad_fov_down{PadButton::Down};
+    std::vector<PadButton> pad_fov_up{PadButton::A};         // A = 增大 FOV（十字键已全部让位给视角调节）
+    std::vector<PadButton> pad_fov_down{PadButton::B};       // B = 缩小 FOV
+    std::vector<PadButton> pad_pitch_up{PadButton::Up};      // 十字键上 = 仰视
+    std::vector<PadButton> pad_pitch_down{PadButton::Down};  // 十字键下 = 俯视
+    std::vector<PadButton> pad_pan_left{PadButton::Left};    // 十字键左 = 左平移
+    std::vector<PadButton> pad_pan_right{PadButton::Right};  // 十字键右 = 右平移
     bool all_resolved{true};
 };
 
@@ -39,6 +47,7 @@ struct Intent {
     double move_right{};    // D/A  -> +1/-1
     double move_up{};       // 左右键（translate 模式）+ 手柄 RT/LT
     double roll{};          // Q/E 滚转：E=+1 顺时针 / Q=-1 逆时针
+    double pitch_axis{};    // 俯仰：+1 仰视 / -1 俯视（Z/X 或十字键上/下按住；tick 里乘 pitch_speed × dt）
     bool pitch_up_click{};  // look 模式：左键
     bool pitch_down_click{};// look 模式：右键
     bool boost{};           // Shift

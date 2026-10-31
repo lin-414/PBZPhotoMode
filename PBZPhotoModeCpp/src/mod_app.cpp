@@ -291,6 +291,14 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     if (dt > 0.25) dt = 0.25;  // 卡帧保护，避免相机瞬移
     (void)delta_seconds;
 
+    // 对话语音钩子：游戏加载后尽早挂到 PBZSoundFXSubsystem 的 Post 函数上，
+    // 才能截获之后所有 PlayingID（冻结时的真暂停靠这份名单）
+    voice_hook_accum_ += dt;
+    if (voice_hook_accum_ >= 2.0) {
+        voice_hook_accum_ = 0.0;
+        port_->install_voice_hooks();
+    }
+
     if (input_source_ != nullptr) {
         input_source_->poll(input_, cfg_.pad_enabled);
         // DInput 后端的一次性诊断（接入成功/初始化失败时各产出一条）

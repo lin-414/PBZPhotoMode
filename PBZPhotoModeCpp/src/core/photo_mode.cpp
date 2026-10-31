@@ -90,6 +90,14 @@ bool PhotoMode::enter() {
         prompt_hidden_ = engine_.set_interact_prompts_visible(false);
         if (!prompt_hidden_) log(LogLevel::Warn, "隐藏交互提示失败");
     }
+    if (cfg_.hide_enemy_health_bars) {
+        bars_hidden_ = engine_.set_enemy_health_bars_visible(false);
+        if (!bars_hidden_) log(LogLevel::Warn, "隐藏敌人血条失败");
+    }
+    if (cfg_.hide_subtitles) {
+        subtitles_hidden_ = engine_.set_subtitles_visible(false);
+        if (!subtitles_hidden_) log(LogLevel::Warn, "隐藏对话字幕失败");
+    }
     if (cfg_.ultrawide_unlock) {
         aspect_unlocked_ = engine_.unlock_aspect_ratio();
         if (!aspect_unlocked_) log(LogLevel::Warn, "画幅解锁失败：超宽屏（21:9/32:9）两侧黑边可能不会消除");
@@ -106,10 +114,16 @@ bool PhotoMode::enter() {
 
     active_ = true;
     frozen_ = false;
+    sequences_paused_ = false;
+    freeze_check_accum_ = 0.0;
+    freeze_reassert_count_ = 0;
+    freeze_reassert_gave_up_ = false;
     pose_dirty_ = false;
     reassert_accum_ = 0.0;
     hud_retry_accum_ = 0.0;
     prompt_retry_accum_ = 0.0;
+    bars_retry_accum_ = 0.0;
+    subtitles_retry_accum_ = 0.0;
 
     char buf[160]{};
     std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
@@ -125,15 +139,24 @@ bool PhotoMode::enter() {
 
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
-        !hud_hidden_ && !prompt_hidden_ && !aspect_unlocked_ && !postfx_saved_) {
+        !hud_hidden_ && !prompt_hidden_ && !bars_hidden_ && !subtitles_hidden_ && !aspect_unlocked_ &&
+        !postfx_saved_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
     if (frozen_) {
+        if (sequences_paused_) {
+            engine_.pause_sequences(false);
+            sequences_paused_ = false;
+        }
         if (frozen_with_pause_) {
             engine_.set_paused(false);
         } else {
             engine_.set_time_dilation(prev_dilation_);
+        }
+        if (wwise_paused_) {
+            engine_.pause_wwise_voices(false);
+            wwise_paused_ = false;
         }
         frozen_ = false;
     }
@@ -152,6 +175,14 @@ void PhotoMode::leave(const char* reason) {
     if (prompt_hidden_) {
         engine_.set_interact_prompts_visible(true);
         prompt_hidden_ = false;
+    }
+    if (bars_hidden_) {
+        engine_.set_enemy_health_bars_visible(true);
+        bars_hidden_ = false;
+    }
+    if (subtitles_hidden_) {
+        engine_.set_subtitles_visible(true);
+        subtitles_hidden_ = false;
     }
     if (player_hidden_) {
         engine_.set_player_hidden(false);
@@ -205,7 +236,13 @@ void PhotoMode::toggle_freeze() {
         use_pause = cfg_.freeze_mode == FreezeMode::Pause;
         if (use_pause) {
             ok = engine_.set_paused(true);
-        } else {
+            if (!ok) {
+                // 剧情等流程里 SetPause 可能被游戏拒绝：回退时间缩放，冻结总得有一个能生效
+                log(LogLevel::Warn, "游戏暂停失败，回退为时间缩放冻结");
+                use_pause = false;
+            }
+        }
+        if (!use_pause) {
             const double prev = engine_.get_time_dilation();
             if (prev > 0.0 && prev <= 10.0) prev_dilation_ = prev;
             ok = engine_.set_time_dilation(cfg_.freeze_dilation);
@@ -222,6 +259,26 @@ void PhotoMode::toggle_freeze() {
     }
     frozen_ = want;
     frozen_with_pause_ = want && use_pause;
+    freeze_check_accum_ = 0.0;
+    freeze_reassert_count_ = 0;
+    freeze_reassert_gave_up_ = false;
+
+    // 剧情播放器一并处理：剧情系统常绕过世界暂停与时间缩放（画面像冻住、动作声音还在走）
+    if (cfg_.freeze_sequences) {
+        const SequenceFreezeReport report = engine_.pause_sequences(want);
+        sequences_paused_ = want && report.ok;
+    }
+
+    // 对话语音真暂停：截获的 PlayingID 走游戏自有 PBZPausePlayingID（Wwise 原生暂停），
+    // 解冻 PBZResumePlayingID 后当前句从原位置继续；无 ID 时回落组件音量兜底
+    if (want && cfg_.stop_wwise_on_freeze) {
+        engine_.pause_wwise_voices(true);
+        wwise_paused_ = true;
+    } else if (!want && wwise_paused_) {
+        engine_.pause_wwise_voices(false);
+        wwise_paused_ = false;
+    }
+
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
 }
 
@@ -304,25 +361,27 @@ void PhotoMode::tick(const Intent& intent, double dt) {
 
 
     const double sens = cfg_.look_sensitivity;
+    // 按住 Ctrl（键盘）/按下右摇杆 RS（手柄）时视角精调：鼠标与右摇杆转速一起乘 slow_look_mult
+    const double look_mult = intent.slow ? cfg_.slow_look_mult : 1.0;
     if (intent.look_dx != 0.0) {
-        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.look_dx * sens);
+        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.look_dx * sens * look_mult);
         pose_dirty_ = true;
     }
     if (intent.look_dy != 0.0) {
         const double dy = cfg_.invert_y ? -intent.look_dy : intent.look_dy;
-        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - dy * sens, cfg_.pitch_limit);
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - dy * sens * look_mult, cfg_.pitch_limit);
         pose_dirty_ = true;
     }
 
     // 手柄右摇杆：pad_look_* 已是度/秒（含灵敏度与死区），乘 dt 转成角度。
-    // 不受 free_look_requires_alt 限制——手柄上没有 Alt 可按。
+    // 不受 free_look_requires_alt 限制——手柄上没有 Alt 可按；RS 按下（slow）时同样乘 slow_look_mult。
     if (intent.pad_look_dx != 0.0) {
-        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.pad_look_dx * dt);
+        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.pad_look_dx * dt * look_mult);
         pose_dirty_ = true;
     }
     if (intent.pad_look_dy != 0.0) {
         const double pad_dy = cfg_.invert_y ? -intent.pad_look_dy : intent.pad_look_dy;
-        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - pad_dy * dt, cfg_.pitch_limit);
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch - pad_dy * dt * look_mult, cfg_.pitch_limit);
         pose_dirty_ = true;
     }
 
@@ -373,6 +432,13 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         pose_dirty_ = true;
     }
 
+    // 方向键上/下与十字键上/下俯仰：pitch_speed 度/秒，正 = 仰视；Shift/Ctrl 变速与滚转同规则。
+    // 方向是明确的按钮语义，不做 invert_y（那只管鼠标/摇杆的 Y 轴）。
+    if (intent.pitch_axis != 0.0) {
+        pose_.rot.pitch = clamp_pitch(pose_.rot.pitch + intent.pitch_axis * cfg_.pitch_speed * mult * dt, cfg_.pitch_limit);
+        pose_dirty_ = true;
+    }
+
     // Q/E 滚转：roll_speed 度/秒，正 = 顺时针；Shift 加速 / Ctrl 减速照常生效
     if (intent.roll != 0.0) {
         pose_.rot.roll = wrap_angle_180(pose_.rot.roll + intent.roll * cfg_.roll_speed * mult * dt);
@@ -404,12 +470,63 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         }
     }
 
+    // 敌人血条同理：设置对象/枚举可能比摄影模式晚就绪，每秒重试直到成功
+    if (cfg_.hide_enemy_health_bars && !bars_hidden_) {
+        bars_retry_accum_ += dt;
+        if (bars_retry_accum_ >= 1.0) {
+            bars_retry_accum_ = 0.0;
+            bars_hidden_ = engine_.set_enemy_health_bars_visible(false);
+            if (bars_hidden_) log(LogLevel::Info, "敌人血条延迟隐藏成功");
+        }
+    }
+
+    // 字幕：进入时藏一次，之后每秒重申——对话 UI 创建时才读设置，运行中的对话由游戏
+    // 逐条把控件重新显示，一次性隐藏会被盖回去（1.0.32 实机：进模式后字幕不消失）。
+    // 引擎侧幂等：设置开关只在首跳写一次（有未知副作用），控件每秒收编新实例/再压被改回的。
+    if (cfg_.hide_subtitles) {
+        subtitles_retry_accum_ += dt;
+        if (subtitles_retry_accum_ >= 1.0) {
+            subtitles_retry_accum_ = 0.0;
+            const bool hidden = engine_.set_subtitles_visible(false);
+            if (!subtitles_hidden_ && hidden) {
+                subtitles_hidden_ = true;
+                log(LogLevel::Info, "对话字幕延迟隐藏成功");
+            }
+        }
+    }
+
     // 每 1 秒重新确认一次 ViewTarget：防止游戏里某些流程（过场、重生）把视角抢回去
     reassert_accum_ += dt;
     if (reassert_accum_ >= 1.0) {
         reassert_accum_ = 0.0;
         if (!engine_.attach_view()) {
             leave("ViewTarget 失效");
+        }
+    }
+
+    // 冻结期每秒校验：剧情/游戏系统可能擅自解除暂停或改写时间缩放（画面像冻住但世界还在走）。
+    // 连续 3 次重新冻结都压不住就停止对抗，只留告警——继续每秒硬写会和剧情系统打摆。
+    if (frozen_) {
+        freeze_check_accum_ += dt;
+        if (freeze_check_accum_ >= 1.0) {
+            freeze_check_accum_ = 0.0;
+            const bool lost = frozen_with_pause_ ? !engine_.world_paused()
+                                                 : engine_.get_time_dilation() > cfg_.freeze_dilation + 0.001;
+            if (!lost) {
+                freeze_reassert_count_ = 0;
+                freeze_reassert_gave_up_ = false;
+            } else if (!freeze_reassert_gave_up_) {
+                const bool reok = frozen_with_pause_ ? engine_.set_paused(true)
+                                                     : engine_.set_time_dilation(cfg_.freeze_dilation);
+                ++freeze_reassert_count_;
+                if (freeze_reassert_count_ >= 3) {
+                    freeze_reassert_gave_up_ = true;
+                    log(LogLevel::Warn, "游戏/剧情系统持续改写时间状态，冻结压不住，已停止自动重试（可退出后重进或按 F 重新冻结）");
+                } else {
+                    log(reok ? LogLevel::Info : LogLevel::Warn,
+                        frozen_with_pause_ ? "检测到暂停被游戏解除，已重新暂停" : "检测到时间缩放被游戏改写，已重新冻结");
+                }
+            }
         }
     }
 }

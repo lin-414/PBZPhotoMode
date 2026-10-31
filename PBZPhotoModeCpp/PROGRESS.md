@@ -4,8 +4,8 @@
 
 ## 一句话状态
 
-**C++ 版 1.0.23 已编译**（1.0.22 手柄滚转之上：**FOV 按住连发**——十字键上/下与键盘 FOV 键单击一格不变，按住约 0.35 秒后按 0.08 秒间隔连发，松开即停；摄影功能全量保留——冻结/隐藏 HUD/交互提示隐藏/超宽屏/手柄/时间控制）。
-核心层 **521 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。
+**C++ 版 1.0.37 已编译**（1.0.36 之上：**输入手感减速**——方向键/十字键平移乘 `arrow_pan_mult` 默认 0.5、俯仰 `pitch_speed` 60→30；按住 Ctrl（手柄 RS 按下）时鼠标/右摇杆视角乘 `slow_look_mult` 默认 0.1；`pad_look_speed` 180→60。此前版本线：语音静音双保险、字幕压制、敌人血条/交互提示隐藏、超宽屏、DInput 手柄、FOV 连发、滚转等全量保留）。
+核心层 **686 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.37 待实机验证**：方向键/十字键平移与俯仰的新手感；Ctrl+鼠标 与 RS 按下+右摇杆的精调转速；旧 config.ini 显式写了 pitch_speed/pad_look_speed 的要手动同步。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -1216,6 +1216,69 @@ OFL 许可跟着资产走。
 - **顺手修正**：手柄帮助文案「LB/RB 变速」是 1.0.22 之前的残留，改为 L3/R3 变速；键盘 FOV 键与十字键同享按住连发。
 - **测试**：新增 12 项断言——按下沿、延迟窗口内不连发、过延迟补格、一帧补多格、松开即停、键盘通道、按住时 `reset` 不误发。核心层 **521 项全绿**；版本 1.0.23-cpp；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.23-cpp.zip`。
 
+### 1.0.24-cpp：剧情冻结修复（Sequencer 播放器联动 + 冻结期自检）
+
+- **问题**（用户报告）：游戏处于剧情时开启摄影模式，自动冻结时间不生效——画面像冻住了，但角色动作和声音还在继续。1.0.11 的游戏暂停只在普通游玩下真机验证过，剧情没验证过。
+- **根因分析**：剧情（过场）系统不走普通玩法 tick——世界暂停/全局时间缩放拦不住 Sequencer 播放器的自主更新与剧情音频；另外部分流程会拒绝 `SetPause`（GameMode/`bPauseable` 之外的拒绝路径），旧版只告警不回退，冻结直接落空。
+- **修复（三层）**：
+  1. **剧情播放器联动**：冻结时 `FindAllOf(MovieSceneSequencePlayer)`（沿继承链匹配，LevelSequencePlayer 及游戏派生类都能扫到）+ `FindAllOf(LevelSequenceActor)` 读 `SequencePlayer` 属性兜底，对「正在播放」的播放器调 `Pause()`；解冻/退出只恢复「处于暂停态」的（`IsPaused` → `Play()`），不碰游戏自己停掉的。新配置 `freeze_sequences`（`[effects]`，默认 `true`）。
+  2. **暂停失败回退**：`toggle_freeze` 里 `set_paused` 失败时自动回退时间缩放（`freeze_dilation`），解冻按实际使用的模式还原；两者都失败才报「冻结时间失败」。
+  3. **冻结期自检**：冻结中每秒回读（pause 模式查 `IsGamePaused`，dilation 模式查生效倍率），发现被游戏改写就重新冻结；连续 3 次压不住则停止对抗并告警（避免和剧情系统每秒打摆），状态恢复正常后自动重新武装。手动再冻结会清零计数。
+- **诊断**：引擎层每次冻结/解冻打一行「剧情播放器[暂停/恢复]：扫描 N（直扫 X + Actor 兜底 Y），命中 M，执行 K，Wwise=有/无」；扫描到 0 个时提示剧情可能不走 LevelSequence，请带日志反馈。Wwise 探测（`/Script/AkAudio|Wwise.Default__AkGameplayStatics`）为后续处理剧情语音留证据——**已知边界：剧情语音走 Wwise/AudioComponent 时，播放器暂停拦不住它，若实机确认再单独处理**。
+- **测试**：核心层 521 → **565 项全绿**——新增剧情联动（冻结暂停/解冻恢复/冻结退出恢复/开关关闭不动）、暂停失败回退、双失败告警、暂停被解除的重新暂停、连续 3 次放弃与重新武装、dilation 被改写重压；进入/退出严格序列断言同步更新。
+- 版本 1.0.24-cpp；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.24-cpp.zip`。**待实机验证**。
+
+### 1.0.25-cpp：真机日志修复（无参函数参数块 + Wwise 音频）
+
+- **1.0.24 实机日志分析**（UE4SS.log 2026-10-31 20:22~20:47）：
+  - 每次冻结「游戏暂停成功 IsGamePaused=true」，**动作一直能冻结**（用户确认）；
+  - 「剧情播放器」多数扫描 0，20:47 起场景里有 1~2 个实例，多次出现 **「命中 1，执行 0」**——找到了正在播放的 SequencePlayer，`IsPlaying` 读得通（有返回值，参数块 size>0），但 `Pause` 调不出去；
+  - `Wwise=有`：游戏用 Wwise，UE 混音/SoundClass 管不到它。
+- **根因 1（「命中不执行」）**：`Pause()`/`Play()` 是无参 UFUNCTION，`UFunction::GetStructureSize()` 为 0，ParamBlock 缓冲区为空 → `valid()` 恒 false → `invoke` 在 ProcessEvent 之前就返回 false。潜伏 bug：之前调用过的函数全带参数，从未暴露。
+  - **修复**：参数块缓冲区至少留 1 字节（`buffer_.assign(size > 0 ? size : 1, 0)`），无参函数的 ProcessEvent 照常执行。
+- **根因 2（对话语音时有时无）**：对话语音一部分由场景序列（SequencePlayer 音轨）驱动——被上面的 bug 挡住，修好即随世界一起停；另一部分是 Wwise 直接 post（与组件/序列无关），世界暂停拦不住。**“有时能拦住”= 序列音轨那部分，“拦不住”= Wwise post 那部分。**
+- **实现**：
+  1. ParamBlock 无参函数修复（见上）；
+  2. `pause_sequences` 跳过 Default__ 类默认对象；日志加「类=」（首个命中播放器的类名）与「Ak组件=」计数；命中大于执行时告警一行；
+  3. 新增 Wwise 组件诊断（每会话只探测一次）：AkComponent 数量 + 类上存在的控制函数（候选 Stop/AkStopAll/AkStop/StopAll/Pause/AkPause）；
+  4. 新配置 `stop_wwise_on_freeze`（默认 **false**）：冻结时对每个 AkComponent 调用第一个存在的停止函数（Stop/AkStopAll/AkStop/StopAll）——**停止不可恢复**，解冻后由游戏自行重播；语音实在压不住时再开。
+- **测试**：核心层 565 → **580 项全绿**（新增 stop_wwise_on_freeze 开/关、解冻不恢复、配置解析与默认文本）。
+- 版本 1.0.25-cpp；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.25-cpp.zip`。**待实机验证**：
+  1. 剧情/对话中冻结，声音是否跟着停（序列音轨部分应已修好）；
+  2. 「Wwise 组件诊断」一行探测出什么可用函数——若存在 Pause/AkPause 之类，下一版可做可恢复的音频暂停；
+  3. 若语音仍压不住且组件函数只有 Stop 系，可试开 `stop_wwise_on_freeze = true`。
+
+### 1.0.25 并入：进入摄影模式隐藏敌人（怪物）血条
+
+**触发**：用户需求「进入相机模式时隐藏敌人血条 HUD」。1.0.12 的整体 HUD 隐藏（`SetHideUIForPV` + `W_FrontEndHUDLayout_C` Collapsed）覆盖不到它们——头顶血条不在 HUD 布局子树下，也不订阅 PV 事件。
+
+### 离线情报（PBZ.exe 反射字符串扫描，1.6.0 交互提示同款取证）
+
+- 游戏侧唯一的怪物血条总开关：用户设置 **`MonsterHealthBarMode`**（`EPBZMonsterHealthBarMode`：`HideFullHealth` / `AlwaysShow` / `OnlyLockedTarget`），带 `Set/GetMonsterHealthBarMode` + `Set/GetPendingMonsterHealthBarMode` + `OnMonsterHealthBarModeChanged` 一族；名字表邻居是亮度/监视器/动态模糊等设置函数 → 挂在游戏设置类上。
+- **没有「总是隐藏」档**：三档里 `OnlyLockedTarget` 压制最强——摄影模式下没有锁定目标 → 血条全部隐藏。
+- Boss 血条是另一套（`RegisterBossHPBar` 等挂在 HUD Actor），已被 1.0.12 的 HUD 布局隐藏覆盖，不重复处理。
+- `SetHideHud` 属于 Sequencer 播放设置（剧情路径），与血条无关，排除。
+
+### 实现
+
+- **`engine/ue4ss_port.*` 新增 `set_enemy_health_bars_visible(visible)`**（镜像 1.6.0 设置开关路线）：
+  - 运行时按候选类探测第一个带 `MonsterHealthBarMode` 属性的实例（跳过 CDO，与 `bSceneInteractPromptVisible` 同款候选名单）；
+  - **枚举序数离线定不了**（exe 字符串只有名字没有值）：运行时按名找 `EPBZMonsterHealthBarMode` 的 UEnum 对象（先猜 `/Script/ProjectPBZ.*` 路径，再 `FindAllOf(UEnum)` 兜底），读名字表（UEPseudo `GetEnumNamesAsVector`，UE5.7 走 FNameData 并行数组）按条目名解析 `OnlyLockedTarget` 的数值——不硬编码序数；
+  - 隐藏：进模式时 `read_number` 存原模式值 → `SetMonsterHealthBarMode`（参数名按候选试，全不中按第 0 参数兜底）→ 失败直写属性；日志带原模式名（诊断用，按名字表反查）；
+  - 还原：退出时按存下的原值走同一对通道写回。
+- **`core/photo_mode.*`**：与 HUD/交互提示同款——`hide_enemy_health_bars` 配置（默认 `true`）、enter 尝试 + 每秒重试（`bars_retry_accum_`）、leave 按 `bars_hidden_` 记账还原、幂等退出条件加 `!bars_hidden_`。
+- **配置**：`[effects] hide_enemy_health_bars = true`（config.h/.cpp/default_config_text/config.ini.example/dist config 同步）。
+- **测试**：FakeEngine 新增 `set_enemy_health_bars_visible`（bars_off/bars_on + `fail_bars`）；happy path 进退序列加 `bars_off`/`bars_on`；新增 `test_photo_mode_enemy_health_bars`（默认进退/配置关闭/失败重试三组）。
+- 版本号不变（并入 1.0.25-cpp 同一个包）；核心层 580 → **597 项全绿**；DLL 增量重编链接通过；`dist/PBZPhotoModeCpp_1.0.25-cpp.zip` 重打（含参数块修复 + Wwise + 敌人血条三个功能）。
+
+### 敌人血条实机验证要点
+
+1. 有怪在场上（血条可见）时按 F2：血条应消失；日志应有 `敌人血条显示模式已切到 OnlyLockedTarget（原模式=...，owner=...）`。
+2. F2 退出：血条按进入前的模式恢复；日志 `敌人血条显示模式已还原`。
+3. `hide_enemy_health_bars = false` 时进出：血条全程不动。
+4. 若出现「候选对象里找不到怪物血条模式设置」或「枚举表里没有 OnlyLockedTarget」的 Warn：把日志发回来，候选类名/枚举路径按实机改死。
+5. 已知边界：进入瞬间若还锁着一个目标，该目标血条会保留（`OnlyLockedTarget` 语义如此）；下一轮可再加控件级隐藏。
+
 ### 1.5.0 资产 pak 第二轮（IoStore 三件套）+ 交付纪律重申
 
 - **第 1 轮实机失败**（12:38 日志）：经典单 `.pak` 在 ~mods 里存在，但 `WBP 菜单：资产加载失败`——本作是
@@ -1230,3 +1293,255 @@ OFL 许可跟着资产走。
   + README + OFL）。**待用户第 2 轮实机验证**：确认 IoStore 格式能被挂载、WBP_Dummy 出 "PAK OK"。
 - 已知欠账：147MB 太肥（含引擎启动内容，且理论上有 /Engine 包 ID 与游戏自带内容重名的风险）——格式确认后
   下一轮做瘦身容器（只含 /Game/PBZPhotoMode 三包，目标 ~8MB）。
+
+### 1.0.26-cpp：俯仰视角调节（键盘 Z/X + 手柄十字键上/下）
+
+- **需求**：新增仰俯视角调节——手柄用十字键的上/下键作为快捷键，键盘用 Z 和 X。
+- **设计**：与 Q/E 滚转同款的**连续轴**——按住持续转、松开即停（`Intent.pitch_axis`：+1 仰视 / -1 俯视），无按下沿/连发状态机（无状态，`reset()` 无需照顾）。默认 **Z = 仰视 / X = 俯视**（与需求句序"上下 / z和x"平行对应），键位可在 config 里互换。
+- **实现**：
+  - `Intent.pitch_axis`（input_logic.h/.cpp）：键盘 `keys.pitch_up/pitch_down`（电平）+ 手柄 `pad_combo_down(pad_pitch_up/pad_pitch_down)`（默认 UP/DOWN）相加，与鼠标/右摇杆俯仰可同帧叠加。
+  - `PhotoMode::tick`：`pitch_axis * pitch_speed * mult * dt`（`mult` = Shift 加速/Ctrl 减速，与滚转同规则），`clamp_pitch` 夹在 ±`pitch_limit`；**不做 `invert_y`**——那是鼠标/摇杆 Y 轴的方向偏好，俯仰按键方向是明确语义（测试锁定）。
+  - 配置：`[keys] key_pitch_up = Z / key_pitch_down = X`；`[gamepad] pad_pitch_up = UP / pad_pitch_down = DOWN`；`[control] pitch_speed = 60`（非正回退默认并告警，与 roll_speed 同规则）；config.h/.cpp/default_config_text/config.ini.example/dist config 同步。
+  - **十字键 FOV 让位**：`pad_fov_up/pad_fov_down` 默认 UP/DOWN → **LEFT/RIGHT**（FOV 按住连发机制不变，键盘小键盘 +/- 照旧）。旧 config.ini 若仍写 `UP/DOWN`，十字键上下会同时驱动俯仰与 FOV——新包 config.ini 已改好，README 有说明。
+  - `ui_tab` 键位速查加 Z/X 与十字键俯仰。
+- **测试**：核心层 597 → **633 项全绿**（默认键位/解析/告警回退/默认文本往返、Z/X intent 与同按抵消、十字键上下俯仰 + 左右 FOV、FOV 连发通道换到十字键左、tick 积分/变速/dt 上限/±89 夹紧/invert_y 语义）。
+- 版本 1.0.26-cpp；产物 `build-dll/PBZPhotoModeCpp.dll`（670,720 B）；包 `dist/PBZPhotoModeCpp_1.0.26-cpp.zip`（362,307 B：dlls/config.ini/enabled.txt/README.md）。
+- **待实机验证**：1) Z/X 按住抬头/低头方向与手感（默认 60 度/秒，嫌慢改 `pitch_speed`）；2) 十字键上/下俯仰、左/右 FOV；3) 俯仰顶到 ±89 度不应翻越；4) 顺带回归 1.0.25 的剧情冻结/Wwise/敌人血条项。
+
+### 1.0.27-cpp：左右视角平移（方向键左/右 + 十字键左/右）+ 键盘俯仰改方向键
+
+- **需求**：① 新增左右视角平移——手柄十字键左/右、键盘左/右箭头；② 键盘俯仰快捷键从 Z/X 改为上/下箭头。
+- **设计**：平移**并入现成 `Intent.move_right` 横移轴**（沿相机右向、`move_speed` 速度、Shift/Ctrl 变速、对角归一化全部自动继承），与 A/D、左摇杆同轴可叠加；俯仰沿用 1.0.26 的 `pitch_axis` 连续轴，只换默认键。
+- **键位变化**：
+  - 键盘：方向键 `上`=仰视 / `下`=俯视（原 `Z`/`X` 让位闲置）；方向键 `左`/`右`=左/右平移（新增）。四键组成完整视角调节簇。
+  - 手柄：十字键 `上/`下`=俯仰（不变）、`左`/`右`=左/右平移（新增）——十字键全部用于视角调节；**FOV 从十字键左/右让位到 `A`/`B`**（`pad_fov_up=A`/`pad_fov_down=B`，按住连发机制不变）。
+- **实现**：
+  - `KeyMap`：`pitch_up/pitch_down` 默认 VK 改 0x26/0x28，新增 `pan_left/pan_right`（0x25/0x27）；方向键名 LEFT/UP/RIGHT/DOWN 在 vk 表里本就有，`vk.cpp` 零改动。新增 `pad_pan_left/pad_pan_right`（默认 LEFT/RIGHT）。
+  - `InputLogic::build`：键盘 `out.move_right += pan_right - pan_left`；手柄块 `+= pad_combo_down(pad_pan_right) - pad_combo_down(pad_pan_left)`。
+  - 配置：`[keys] key_pan_left/key_pan_right`、`[gamepad] pad_pan_left/pad_pan_right`；`key_pitch_up=UP`/`key_pitch_down=DOWN`；`pad_fov_up=A`/`pad_fov_down=B`。config.h/.cpp/default_config_text/config.ini.example/dist config 同步。
+  - `ui_tab` 键位速查同步。
+  - **旧 config 兼容提示**：旧 config.ini 里 `pad_fov_up=LEFT/pad_fov_down=RIGHT` 仍会生效 → 十字键左右同时驱动平移与 FOV；装新包 config.ini 或手动改这两行。
+- **测试**：核心层 633 → **649 项全绿**（默认键位/解析/roundtrip、方向键俯仰与同按抵消、方向键平移与 A/D 叠加、十字键左右平移、A/B FOV 与连发通道换键）。
+- 版本 1.0.27-cpp；产物 `build-dll/PBZPhotoModeCpp.dll`；包 `dist/PBZPhotoModeCpp_1.0.27-cpp.zip`（363,594 B）。
+- **待实机验证**：1) 方向键四簇（左右平移 + 上下俯仰）方向与手感；2) 十字键左/右平移、上/下俯仰；3) A/B 调 FOV（按住连发）；4) 顺带回归 1.0.25/1.0.26 的剧情冻结/Wwise/血条/俯仰项。
+
+### 1.0.28-cpp：音频对象普查（语音压不住的第二轮取证）
+
+- **1.0.27 实机日志**（22:26）：`Wwise 组件诊断：AkComponent=20，可用函数=Stop`——场景里确实有 20 个 Wwise 组件，类上只有一个可用的 `Stop`（无 Pause/AkStop 系）；游戏目录 config 里 `stop_wwise_on_freeze` 仍是默认 **false**，本轮「语音压不住」是在开关没开的情况下测的（开着也只能拦挂在组件上的那部分）。
+- **判断**：`UAkComponent::Stop` 停的是组件自己注册的 Wwise 游戏对象；对话语音常由 `UAkGameplayStatics::PostEvent` 直接 post 在**角色 Actor 的游戏对象**上（无组件），组件级 Stop 够不着。UE 侧混音/SoundClass 对 Wwise 无效；全局 Suspend 不走反射。要可恢复地压住语音，得找到游戏自己的音频/对话管理器。
+- **实现**：首次冻结时（跟在 Wwise 组件诊断后）做一次**全对象数组普查**（`ForEachUObject` + `IsValidObjectForFindXOf` 守护）——按类名聚合 Ak/Audio/Sound/Voice/Dialog 相关类并打「音频对象普查：<类> x<数>」；对 Manager/Subsystem/Controller/Component/System/Director 形态的类，列出可疑控制函数（stop/pause/mute/silence/volume/suspend/resume/voice/dialog/talk/audio/sound）打「音频类函数：<类> → …」。每会话仅一次。
+- 顺带：`ParamBlock` 无参函数修复沿用 1.0.25；本轮无核心层改动。核心层测试 649 项全绿；DLL 增量重编链接通过。
+- 版本 1.0.28-cpp；产物 `dist/PBZPhotoModeCpp_1.0.28-cpp.zip`。**待实机验证**：
+  1. 把 `stop_wwise_on_freeze` 改成 `true` 冻结一次，看组件上的声音（环境/音乐/部分对话）是否静音；
+  2. 把冻结后新增的「音频对象普查」全部行发回来——据此锁定游戏自己的语音/对话管理器与可用函数，下一版做可恢复的音频暂停（或针对性调用管理器停止对话）。
+
+### 1.0.29/1.0.30-cpp：对话语音压住（普查转储 + 游戏自有停止接口）
+
+- **1.0.28 普查回传**（22:41 前后）：对话系统形态确认——Flow 图 `DialogueGraphNew_C x397`/`DialogueNode_C x102`、`STTask_PlayDialogue_C`、BP 函数库 `PlayAudio_C`/`StopAudio_C`、`FromActor_Dialogue_C`；音频子系统 `PBZMRQWwiseAudioSubsystem`/`PBZPersistentAudioSubsystem`/`MapAudioSubsystem`/`PBZSoundFXSubsystem` 各 x1；但转储 cap=4 只轮到 4 个 Ak 组件类。
+- **1.0.29 修正转储**：子系统/静态库优先并打全量函数表；新增 `AkGameplayStatics`（Wwise BP 入口）全量函数——确认有 `StopAllAmbientSounds/StartAllAmbientSounds/StopActor/StopAll/GetAkComponent/PostEvent` 等，无全局暂停。
+- **1.0.30 实机日志**：`PBZSoundFXSubsystem` 全量函数露出 **`PBZStopAkComponent`/`PBZStopAllSoundsOnActor`/`PBZStopPlayingID`/`PBZPausePlayingID`/`PBZResumePlayingID`/`PBZStopAllSoundsOnActor`**——游戏自己就有按组件/按 Actor/按播放 ID 的停止与暂停恢复接口。
+- **用户关键观察**：冻结时若一句话已说完，下一句不会触发；若冻结时一句话正在播，播完后也不会有下一句——**对话推进（Flow 图）已随世界冻结**，残留问题只有「当前正在播的这一句」。单向 Stop 在此场景下不丢内容（当前句停掉；解冻后 Flow 等的是句子结束回调，Wwise Stop 会触发 EndOfEvent，流程继续下一句）。
+- **实现（1.0.30）**：
+  1. `stop_wwise_on_freeze` 默认改为 **true**（对话框场景实测需要；不想静音可关）；
+  2. 冻结静音路径升级：优先调用游戏自有 `PBZSoundFXSubsystem.PBZStopAkComponent`（新增 `invoke_game_stop` 带签名校验——所有参数必须都是对象属性，按名填 component/worldcontext，其余宁可不调），失败回落组件自带 `Stop`；日志带「游戏接口执行 N」；
+  3. 普查转储：子系统/静态库类改打全量函数表（cap 120），cap 提到 12。
+- **测试**：核心层 649 → **666 项全绿**（默认值翻转的断言同步 + 进入序列含 wwise_stop）。
+- 版本 1.0.30-cpp；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.30-cpp.zip`。**待实机验证**：冻结时对话当前句是否立即停住；解冻后对话是否正常继续下一句；环境音解冻后是否回来自行重播（不回来就把 `stop_wwise_on_freeze` 关掉并反馈）。
+
+### 1.0.30 并入：进入摄影模式隐藏对话字幕
+
+**触发**：用户需求「进入相机模式时隐藏对话字幕」。`SetHideUIForPV` 不管字幕。
+
+### 离线情报（PBZ.exe 反射字符串扫描）
+
+- 游戏字幕显示走**内置 GameSubtitles 插件**（exe 源码路径 `Plugins/GameSubtitles/.../SubtitleDisplay.cpp`，包 `/Script/GameSubtitles`，UMG 控件 `USubtitleDisplay`）；设置侧有 `bSubtitlesEnabled`（`SetSubtitlesEnabled`/`AreSubtitlesEnabled` + Pending 对，名字表邻居是 `RunHardwareBenchmark`/`MouseCaptureMode` 等 GameUserSettings 家族函数）。
+- `bSubtitlesEnabled`/`bSubtitlesForcedOff` 同时是 **UEngine 的 GlobalUserParam**（名字表邻居 NearClipPlane/CustomTimeStep 等）——设置对象不在时可退到引擎实例直写。
+- `SetSuppressSubtitles` 属 Media/MovieScene 字幕节（视频播放路径），与对话字幕无关，排除。
+
+### 实现
+
+- **`engine/ue4ss_port.*` 新增 `set_subtitles_visible(visible)`，双路径（1.6.0 同构）**：
+  - 路线①（设置开关，管住之后新出的字幕）：运行时按候选探测第一个带 `SetSubtitlesEnabled` 函数或 `bSubtitlesEnabled` 属性的实例（跳过 CDO）——存原值 → 调 setter（参数名候选试，失败直写属性）→ 退出还原；设置对象全不在时退到引擎实例（`FindFirstOf(GameEngine/PBZGameEngine/Engine)`）直写 `bSubtitlesEnabled`。
+  - 路线②（字幕控件，管住此刻已画出来的）：`ForEachUObject` + **类继承链匹配**（`class_chain_contains`，覆盖原生实例与 BP 子类）收集 `USubtitleDisplay` 实例，记录原 `ESlateVisibility` 后 Collapsed，退出时重新枚举做存活校验后按原值恢复——freeze_mode=pause 下控件 Tick 冻住，光改设置对已显示的字幕不会立即生效，必须藏控件本身。
+  - 场上找不到字幕控件时打一次性 Warn 并**列出类名带 Subtitle 的控件类**（游戏若用自制字幕控件，按这份名单改下一版）。
+- **`core/photo_mode.*`**：`hide_subtitles` 配置（默认 `true`）+ enter 尝试 + 每秒重试（`subtitles_retry_accum_`）+ leave 按 `subtitles_hidden_` 记账还原 + 幂等退出条件。
+- **配置**：`[effects] hide_subtitles = true`（config.h/.cpp/default_config_text/config.ini.example/dist config 同步）。
+- **测试**：FakeEngine 新增 `set_subtitles_visible`（subs_off/subs_on + `fail_subtitles`）；happy path 进退序列加 `subs_off`/`subs_on`；新增 `test_photo_mode_subtitles`（默认进退/配置关闭/失败重试三组）。
+- 版本号不变（并入 1.0.30-cpp 同一个包）；核心层 **666 项全绿**（含本功能字幕用例与 wwise 默认值翻转断言）；DLL 重编链接通过；`dist/PBZPhotoModeCpp_1.0.30-cpp.zip` 重打（对话语音停止 + 字幕隐藏同一包）。
+
+### 对话字幕实机验证要点
+
+1. 对话进行中（字幕可见）按 F2：字幕应立即消失；日志应有 `字幕设置开关已关闭（owner=...）` 与 `已隐藏字幕显示控件：数量=...`。
+2. F2 退出：字幕设置还原 + 控件按原可见性恢复；日志 `字幕设置开关已还原` / `已恢复字幕显示控件：数量=...`。
+3. `hide_subtitles = false` 时进出：字幕全程不动。
+4. 若出现「场上没有 USubtitleDisplay 控件」的 Warn 且后面列出了别的 Subtitle 控件类名，把日志发回来——下一版把藏控件的类名改死。
+5. 已知边界：冻结中对话框流程已停（1.0.30 语音观察），字幕本就不会再更新；本功能主要管「进模式瞬间还挂着的字幕」与「不冻结（live）状态下继续播的对话」。
+
+### 1.0.31-cpp：字幕退出后不恢复（1.0.30 实机 bug 修复）
+
+**实机现象**（UE4SS.log 23:25-23:26，9 个进出周期）：进模式字幕消失 ✅，退出后字幕**永久消失** ❌。日志证据：9 次「字幕设置开关已关闭（owner=PBZSettingsShared）」、**0 次「字幕设置开关已还原」**、0 次「隐藏对话字幕失败」、0 次重试——enter 调用返回 true、`subtitles_hidden_` 正常，leave 走了还原分支但**静默失败**。
+
+### 根因（两处，同一趟实机暴露）
+
+1. **还原被 `saved_` 门误杀（主因）**：`PBZSettingsShared` 上只有 `SetSubtitlesEnabled` **函数**、没有 `bSubtitlesEnabled` **属性**（该属性在 UEngine 上是 GlobalUserParam，不在设置类属性链）。旧代码只在「属性读原值成功」时才置 `subtitle_setting_saved_=true` → 开关被翻转但**原值从未记录** → 退出时还原分支整个跳过、且不打任何日志。多轮进出还会把「当前已是关」当成原值再存一次，错误被固化。
+2. **字幕控件路线打空**：场上根本没有 USubtitleDisplay 实例——游戏用的是自制字幕控件 **`GAA_Subtitles_C`**（x1，UserWidget 派生、类名含 Subtitle；诊断 Warn 正好把它列了出来）。1.0.30 的控件收集只认 GameSubtitles 插件类，全程没藏过任何控件。
+
+### 修复
+
+- **`engine/ue4ss_port.*`**：
+  - 原值读取改为 `read_subtitles_enabled_state()`：先试属性（引擎实例路径），失败走 **`AreSubtitlesEnabled`**（exe 扫描确认与 setter 成对存在的 getter，`invoke_bool` 读 ReturnValue）；都失败按 **true 兜底**（字幕默认开的语义）。
+  - 还原门从 `saved_` 改为 **`touched_`**：只要动过开关就必须还原，与「原值是否读成功」解耦；**还原失败打一次性 Warn**（不再静默——这次的排障成本就来自静默失败）。
+  - 关闭日志带原值与「getter/属性都读不到」提示；`find_subtitle_setting_owner()` 的引擎兜底加 `cdo_fallback==nullptr` 门（候选命中时不得被引擎实例覆盖）。
+  - 控件收集扩为：USubtitleDisplay 继承链 **或** 「UserWidget 派生 + 类名含 subtitle」（大小写不敏感）——`GAA_Subtitles_C` 从此被覆盖；字幕子系统/资产类不是 UserWidget，不会误收。隐藏日志带控件类名。
+- 版本 1.0.31-cpp；核心层测试 666 项全绿（核心逻辑未变，engine 层 bug 无法离线复现）；DLL 重编链接通过；包 `dist/PBZPhotoModeCpp_1.0.31-cpp.zip`。
+
+### 实机验证要点
+
+1. **先恢复现场**：被 1.0.30 卡住的字幕开关需要在游戏设置里手动开回「字幕 开」一次（旧包写坏的状态修复版救不回来），然后进/出一次摄影模式确认不再翻坏。
+2. 对话中按 F2：字幕立即消失，日志 `字幕设置开关已关闭（...原值=开）` + `已隐藏字幕显示控件：数量=1（GAA_Subtitles_C）`。
+3. F2 退出：字幕恢复，日志 `字幕设置开关已还原` + `已恢复字幕显示控件：数量=1`。
+4. 反复进出多轮（旧 bug 要多轮才固化），确认每一轮都有成对的 关闭/还原 日志。
+5. 游戏设置里把字幕关掉再进/出摄影模式：退出后字幕应保持关（还原原值而不是被强开）。
+
+### 1.0.32-cpp：对话静音改可恢复音量归零（1.0.30 实机 bug）
+
+- **1.0.30 实机反馈**：冻结时当前句立即停住 ✅；但**退出相机模式后当前句不继续、处于静音状态**——组件 `Stop` 是单向的，句子被杀掉不会从原处续（对话流程等的是句子结束信号，Stop 之后信号语义不受控）。
+- **方案（可恢复静音）**：冻结时把所有 AkComponent 的 `SetOutputBusVolume` 归零——**声音继续无声播放，Wwise 生命周期与句子结束回调完全正常**；解冻/退出恢复音量后，当前句从原处继续（短句已自然播完则流程直接续下一句）。组件类没有该函数时才回落一次性 `Stop`（1.0.30 行为）。
+- **实现**：`invoke_game_stop`（1.0.30 的游戏接口签名校验，真机 `via_game=0` 从未命中）替换为 `invoke_set_number`（唯一 float/double 参数校验）+ `silence_wwise_components(bool mute)`（mute=true→音量 0，false→音量 1.0）；核心 `wwise_muted_` 记账，解冻/退出在 `pause_off` 之后恢复；`stop_wwise_on_freeze` 语义从「停止」改为「可恢复静音」，默认仍 true。
+- 已知边界：音量恢复统一到 1.0（Wwise 默认；游戏若给个别组件设过自定义输出音量，退出后会被重置为 1.0，环境音层次可能略变——实机如发现再改「进入时读原值」方案）。
+- **测试**：核心层 666 → **668 项全绿**（静音/恢复成对、冻结退出恢复、关闭开关不碰组件、序列断言 `wwise_mute`/`wwise_restore`）。
+- 版本 1.0.32-cpp（1.0.31 为并行字幕修复包，已发布）；DLL 重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.32-cpp.zip`。**待实机验证**：冻结静音、解冻当前句从原处继续、解冻后下一句正常触发。
+
+### 1.0.33-cpp：对话语音真暂停（PlayingID 截获 + 游戏自有暂停接口）
+
+- **1.0.32 实机反馈**：①冻结期间声音只是**变小声**、仍在播（组件 `SetOutputBusVolume(0)` 的语义没吃透——调用全部执行成功但没到完全静音）；②退出时当前句已无声播完，只能从**下一句**出声。音量路线两头都不达标。
+- **方案（真暂停）**：`PBZSoundFXSubsystem` 全量函数表里有 `PBZPausePlayingID`/`PBZResumePlayingID`/`PBZSeekOnPlayingID`/`GetAkComponentByPlayingID`——游戏自己就在用 PlayingID 管音频。缺的只是 ID 清单：**钩住 Post 系列函数截获返回值**（UE4SS `RegisterHook(UFunction*, pre, post, custom)`，与 InputAxis 钩子同一 API）。
+- **实现**：
+  1. `install_voice_hooks()`：钩 `PBZPostEventOnAkComponent(_SoftRef/_Animation/_Animation_SoftRef)`、`PBZPostEventOnActor(_SoftRef)`、`PBZPostEventGlobal(_SoftRef)`、`PBZPostEventAtLocation(_SoftRef)`、`PBZPostAssociatedEvent` 共 11 个函数的 **post 回调**，从 `RESULT_DECL` 读 int32 PlayingID（>0 且 <1000 万的边界校验，bool 返回值会被过滤）；mod_app 引擎 tick 每 2 秒重试直到挂上（日志「对话语音钩子已挂：N 个 Post 函数」）；截获列表去重、留最近 256 个（Wwise 会回收复用 ID）。
+  2. `pause_wwise_voices(bool pause)`（替换 `silence_wwise_components`）：冻结→对每个截获 ID 调 `PBZPausePlayingID`；解冻/退出→`PBZResumePlayingID`——**Wwise 原生暂停，解冻当前句从原位置续播**。`invoke_set_number` 的数值签名校验放宽到 int（暂停接口参数是 PlayingID）。
+  3. 没截获到 ID 时回落 1.0.32 的组件音量兜底。
+- **测试**：核心层 668 项全绿（断言改名 `wwise_pause`/`wwise_resume`，语义不变）。
+- 版本 1.0.33-cpp；DLL 重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.33-cpp.zip`。**待实机验证**：
+  1. 日志出现「对话语音钩子已挂：N 个 Post 函数」；
+  2. 冻结时当前句**完全静音**（不是变小声）；
+  3. 退出后当前句**从停住的位置继续出声**（不是只从下一句开始）；
+  4. 若仍不达标，把「对话语音暂停/恢复（PlayingID）」两行发回——看截获数与执行数。
+
+### 1.0.33 并入：字幕隐藏改持续压制（1.0.32 实机第二轮反馈）
+
+**实机现象**（UE4SS.log v1.0.32 会话，4 个进出周期）：进游戏字幕就没了（1.0.30 写坏的设置被游戏存盘，遗留状态）→ 进出一次摄影模式后字幕**出现**（退出还原 `SetSubtitlesEnabled(true)` 把遗留的关状态打开）→ 再进摄影模式字幕**一直不消失**。日志侧 1.0.31 的记账已完全成对（4 组关闭/还原、控件 `WBP_FlowSubTitle_C` 藏/恢复各 4 次）——机制没坏，坏的是**一次性隐藏挡不住游戏逐条刷新**。
+
+### 判读
+
+- 对话 UI（Flow 图的 `WBP_FlowSubTitle_C`，1.0.31 诊断发现）只在**创建时**读一次字幕设置；运行中的对话由游戏逐条把控件重新显示。我们进入时藏一次，游戏下一条字幕就把控件改回 Visible/换新实例——一次性隐藏失效。
+- `PBZSettingsShared` 上既没有 `bSubtitlesEnabled` 属性也没有 `AreSubtitlesEnabled`（两者都在别处），设置开关写下去的真实语义仍未知 → 加一次性签名诊断（`SetSubtitlesEnabled` 参数名/类型 + owner 全部字幕相关成员），下一版换正确通道。
+
+### 修复（持续压制）
+
+- **进入后每秒重申**（`photo_mode.tick` 不再只在未成功时重试）：引擎侧幂等——
+  - 设置开关只在进入首跳写一次（每秒重写同一个 setter 可能有未知副作用），重申时跳过；
+  - 控件每秒重申：已管控件被游戏改回 Visible 就再压回 Collapsed（不重复记原值），新实例（对话 UI 重建）收编并记原值。
+- **收集分两档**：全量 ForEachUObject 扫描只在进入/退出各做一次（顺带把发现的字幕控件类名记入缓存，如 `WBP_FlowSubTitle_C`）；每秒重申只按缓存类名 `FindAllOf`（类哈希查找，微秒级，不拖帧）。
+- **一次性诊断**：`SetSubtitlesEnabled 参数签名：…` + `owner 字幕相关成员：…`（每会话首次进入时打）。
+- 版本号不变（并入 1.0.33 同一个包）；核心层 668 项全绿；DLL 重编链接通过；`dist/PBZPhotoModeCpp_1.0.33-cpp.zip` 重打（语音暂停钩子 + 字幕持续压制同一包）。
+
+### 字幕第二轮实机验证要点
+
+1. **先在游戏设置里把字幕开回来**（1.0.30 遗留的关状态；开回来后「进游戏字幕就没了」应消失）。
+2. 对话进行中按 F2：字幕消失；日志 `SetSubtitlesEnabled 参数签名：…` 与 `owner 字幕相关成员：…`（每会话一次）+ `已隐藏字幕显示控件：数量=1（WBP_FlowSubTitle_C）`。
+3. 对话继续播（不退出摄影模式）：下一条字幕出现后 ≤1 秒内应被压回去（重申生效）。
+4. F2 退出：字幕恢复（`字幕设置开关已还原` + `已恢复字幕显示控件：数量=1`）。
+5. 若仍不消失：把 `SetSubtitlesEnabled 参数签名` 与 `owner 字幕相关成员` 两行发回来——按真实参数名/成员换下一版通道。
+
+### 1.0.34-cpp：真暂停调用被签名校验拦下（1.0.33 实机：截获 37 执行 0）
+
+- **1.0.33 实机日志**：钩子挂上 ✓（11 个 Post 函数）、截获 37 个 PlayingID ✓、**执行 0** ✗——`invoke_set_number` 只认「唯一 int 参数」，而 `PBZPausePlayingID`/`PBZResumePlayingID` 的实参不止一个裸 int（子系统 BP 函数几乎必带 `WorldContextObject`），37 发全部被签名校验拦下，整轮静音落空（回落也没触发：执行 0 时直接 return 了）。
+- **实现**：
+  1. `invoke_pause_id`（自适应填参）：数值参数填 PlayingID（只允许一个）；对象参数名字含 `worldcontext` 的填 world；其余参数（bool/string/非 worldcontext 对象）才放弃；
+  2. 执行 0 时打一次 `PBZPausePlayingID 参数签名=…`（`describe_params`：类型:名 全列），然后**继续走音量兜底**——不再让静音落空；
+  3. 挂钩成功时顺手把两个暂停接口的真实签名打进日志（每会话一次），下一轮不用猜。
+- **测试**：核心层 668 项全绿（核心逻辑未变）。
+- 版本 1.0.34-cpp；DLL 重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.34-cpp.zip`。**待实机验证**：冻结静音 + 解冻原位置续播；若「参数签名」行显示的形态出乎意料（比如带 bool/enum），照签名定制下一版填参。
+
+### 1.0.34 并入：字幕设置开关每秒打摆（1.0.33 重申逻辑的结构 bug，实机日志钉死）
+
+**实机现象**：字幕仍不消失。日志证据（v1.0.33 会话，单次摄影模式内）：`关闭(33.614) → 还原(34.622) → 关闭(35.628) → 还原(36.649) → 关闭(37.663)` ——**精确每秒交替**，与 tick 的 1 秒重申周期完全吻合。
+
+### 根因
+
+- **结构 bug（主因）**：路线①的门写成 `if (!visible && !subtitle_setting_touched_) {…} else if (subtitle_setting_touched_) {还原}`——每秒重申以 `visible=false` 进入且此时 `touched_=true`，两个条件都不满足的意图（跳过）落空，掉进 **else if 的还原分支**：重申第一次反而把开关还原，下次重申再关闭……设置开关每秒 关/开 打摆，字幕自然一直显示。还原分支必须只在 `visible==true` 时可达。
+- **诊断落地**（1.0.33 加的签名诊断立功）：`SetSubtitlesEnabled 参数签名：Value(bool)`（我们的参数填充一直写对了）；**设置类上的真属性名是 `bEnableSubtitles`**（此前找的 `bSubtitlesEnabled` 是引擎 GlobalUserParam 的名字，不在设置类属性链——原值读取失败、只能按默认兜底的根因）。
+
+### 修复
+
+- **`engine/ue4ss_port.cpp`**：隐藏与还原按 `visible` 彻底分开（`if (!visible) { if (!touched_) {关闭} }` / `else if (visible && touched_) {还原}`）——重申落在隐藏分支内时开关保持关闭不动；新增 `find_subtitle_flag_property()`（先 `bEnableSubtitles` 后 `bSubtitlesEnabled`）；原值读取与还原都走真属性；**写后回读验证**：关闭后读 `bEnableSubtitles`，若仍是开就用属性强写一次，日志带 `回读=关/开-未生效!`。
+- 版本号不变（并入 1.0.34 同一个包）；核心层 668 项全绿；DLL 重编链接通过；`dist/PBZPhotoModeCpp_1.0.34-cpp.zip` 重打（语音填参自适应 + 字幕打摆修复）。
+
+### 字幕第三轮实机验证要点
+
+1. 对话中按 F2：字幕消失；日志 `字幕设置开关已关闭（…原值=…，回读=关）`——**回读=关** 是本轮的判据（若出现 `回读=开-未生效!`，说明 setter 写的是 pending/别的通道，把那行发回来）。
+2. 对话继续播：后续字幕 ≤1 秒内被压回（重申生效）。
+3. F2 退出：字幕恢复，且**只出现一次** `字幕设置开关已还原`（不再有周期内的还原/关闭交替）。
+4. 游戏设置里字幕开关本身应保持玩家进入前的状态（真属性读原值已生效）。
+
+### 1.0.35-cpp：真暂停按真实签名填参（1.0.34 签名诊断落地）
+
+- **1.0.34 实机日志**：`PBZPausePlayingID 参数签名=int32:PlayingID,float:FadeTime`、`PBZResumePlayingID 参数签名=int32:PlayingID,float:FadeTime`（每会话一行，1.0.34 加的签名打印立功）——两个数值参数，1.0.34 的填参只允许一个，全部被拦（截获 50 执行 0），冻结只走了音量兜底（用户实测「变小声继续播」）。
+- **实现**：`invoke_pause_id` 按真实签名填参——名字含 `playingid` 填截获 ID、含 `fade` 填 FadeTime（**0=立即暂停/立即恢复**，冻结/解冻都要即时）、含 `worldcontext` 填 world；其余参数才放弃。调用处传 `fade=0.0`。执行 0 回落音量兜底的逻辑保留。
+- 版本 1.0.35-cpp；核心层 668 项全绿；DLL 重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.35-cpp.zip`。**待实机验证**：冻结时当前句完全静音（真暂停）+ 退出后当前句从停住的位置原样续播。
+
+### 1.0.35 并入：字幕压制扩到对话 UI 本体 + 可见控件清单诊断
+
+**1.0.34 实机日志（好消息+新谜题）**：`字幕设置开关已关闭（…原值=开，回读=关）`——打摆修复生效、开关真值验证通过；`WBP_FlowSubTitle_C` 也已 Collapsed——**但字幕仍显示**。结论：用户看到的字幕文本不画在已压制的控件里。结合音频普查时的 `WBP_FlowDialog_C`（对话 Flow 图 UI 本体，x2），文本大概率画在对话框本体上。
+
+### 修复（1.0.35 并入）
+
+- **压制范围扩到对话 UI 家族**：控件匹配规则在「USubtitleDisplay 继承链 / UserWidget+类名含 subtitle」基础上，加 **UserWidget+类名含 `flowdialog`**（`WBP_FlowDialog_C` 即对话 UI 本体：对话框+说话人+文本都随它隐藏；摄影模式屏蔽输入，本就不需要交互）。缓存类名机制照旧（快速重申覆盖）。
+- **每 10 次重申做一次全量扫描**：对话中途新出现的控件类（新对话 UI）也能被收编（此前只有进入时一次全量，中途出现的新类要等下次进出才被管）。
+- **一次性「可见 UserWidget 清单」诊断**：进入后列出场上所有 Visibility≠Collapsed 的 UserWidget 派生类（每类带数量，cap 40）。若对话框压制后字幕仍显示，真身必然在这份名单里——下一轮直接指认，不再猜类名。
+- 版本号不变（并入 1.0.35 同一个包）；核心层 668 项全绿；DLL 重编链接通过；`dist/PBZPhotoModeCpp_1.0.35-cpp.zip` 重打（语音签名填参 + 字幕对话 UI 压制）。
+
+### 字幕第四轮实机验证要点
+
+1. 对话中按 F2：**整个对话 UI（对话框+字幕）应消失**；日志 `已隐藏字幕显示控件：数量=N（…WBP_FlowDialog_C…WBP_FlowSubTitle_C…）`。
+2. 对话继续播：后续字幕保持消失（重申收编）。
+3. F2 退出：对话 UI 与字幕恢复原状。
+4. 若仍显示：把一次性日志「可见 UserWidget 清单：…」整行发回来——从清单指认真正的文本控件类，下一版按名压制。
+
+### ✅ 字幕隐藏实机验证通过（2026-11-01 00:59 日志，用户确认「功能正常」，v1.0.36 包）
+
+- 判据全绿：`字幕设置开关已关闭（…原值=开，回读=关）`；`已隐藏字幕显示控件：数量=N（WBP_FlowDialog_C ×多 + WBP_FlowSubTitle_C）`——FlowDialog 判定坐实（对话 UI 本体有多达 5-6 个实例，全部收编）；退出成对还原且数量严格匹配（还原 N=隐藏 N）。
+- 打摆/永久消失两代 bug 均不再复现；「可见 UserWidget 清单」诊断未触发（首战成功，留作后备）。
+- 演化小结：1.0.30 设置翻转（无原值记录→永久消失）→ 1.0.31 真属性+回读门（打摆暴露）→ 1.0.33 重申机制（门写法又打摆）→ 1.0.34 visible 分离+回读验证（打摆灭，但文本在对话框本体）→ 1.0.35 扩到 FlowDialog 家族 ✅。
+
+### 1.0.36-cpp：语音静音双保险（覆盖面封死）
+
+- **用户疑问**：「通过 ID 来暂停声音的话，那别的角色不还是没效果吗」——钩子挂在游戏音频总入口 `PBZSoundFXSubsystem` 上，**所有**角色的声音（枪声/脚步/环境点声/各角色语音）的 ID 都会被截获、冻结时一起暂停，并非只管对话。但疑问指出了两个真实缺口：①钩子装好前（启动头 2 秒）已发出的声音（如开局音乐）不在名单；②绕过子系统直接走 Wwise 集成层的声音抓不到。
+- **封堵**：
+  1. **加挂集成层入口**：`UAkGameplayStatics::PostEvent/PostEventAtLocation/PostAndWaitForEndOfEvent` + `UAkComponent::PostAkEvent/PostAssociatedAkEvent`（类级钩子一次覆盖所有实例，与子系统钩子同一 RegisterHook API）；同一 ID 多入口重复截获由去重集吸收；
+  2. **ID 名单上限 256→1024**（保留最近 512），开局音乐这类长命循环不脱名单；
+  3. **两层同开**：`pause_wwise_voices` 改为每次冻结同时执行「ID 真暂停 + 组件音量归零」，解冻同时「ID 恢复 + 音量还原」——静音不依赖任何单一通道，没截获到的声音由音量层压住。
+- 版本 1.0.36-cpp；核心层 668 项全绿；DLL 重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.36-cpp.zip`。
+- **✅ 实机验证通过（2026-11-01 00:59 日志，用户确认「功能正常」）**：钩子 16 个全挂（子系统 11 + 集成层 5）；冻结「对话语音暂停（PlayingID）：截获 38，执行 38」+「组件静音（音量兜底）：38/38」；解冻成对恢复（38/38 + 38/38）。全场景静音与原位置续播均达标。遗留边界（未反馈异常，保持观察）：音量兜底恢复统一 1.0、PlayingID 复用错停的理论风险（未观察到）。
+
+### 1.0.37-cpp：方向键/十字键与视角减速（2026-11-01 用户需求）
+
+需求原文：降低键盘按住上下左右箭头的移动速度与手柄按住十字键上下左右的移动速度，大幅降低键盘按住 Ctrl 的视角移动速度与手柄按住右摇杆的视角移动速度。
+
+改动（全部在核心层，引擎层未动）：
+- **方向键/十字键平移减速**：此前方向键左右与十字键左右把 ±1.0 并入 `move_right`，与 WASD/左摇杆同用 `move_speed`。新增 `arrow_pan_mult`（默认 **0.5**），在 `InputLogic::build` 里只对方向键/十字键的平移分量折算——WASD/左摇杆速度不变。范围保护 [0, 3]，越界回退 0.5。
+- **方向键/十字键俯仰减速**：`pitch_speed` 默认 60 → **30 度/秒**（该速度现在只有方向键上/下与十字键上/下在用，Z/X 已在 1.0.27 移除）。
+- **Ctrl/RS 视角精调**：此前 `slow_mult` 只作用于移动/垂直/俯仰/滚转，**鼠标视角与右摇杆视角完全不受 Ctrl 影响**。新增 `slow_look_mult`（默认 **0.1**），`PhotoMode::tick` 里 `intent.slow` 为真时鼠标 look 与手柄 `pad_look_*` 一并乘该倍率——键盘按住 Ctrl、手柄按下右摇杆 RS（slow 语义，LS+RS 组合键除外）都生效。范围保护 (0, 1]，越界回退 0.1。
+- **右摇杆基础转速**：`pad_look_speed` 默认 180 → **60 度/秒**（全行程；范围保护 [10, 720] 不变，回退文案同步改）。
+- **UI**：UE4SS 诊断面板（`ui_tab.cpp`）新增「Ctrl视角倍率」「方向键平移倍率」滑条；手柄视角速度滑条 [30,540] 保持兼容。
+- **配置文本**：`config.h` 默认值、`config.cpp` 解析/范围保护/`default_config_text`、`config.ini.example`、`dist/PBZPhotoModeCpp/config.ini` 全部同步；README（根 + dist）键位表与说明更新。
+- **测试**：核心层 668 → **686 项全绿**。新增/修改：默认值断言（30/0.1/0.5/60）、解析与越界回退、默认文本往返、方向键平移折算（±arrow_pan_mult）、十字键平移折算、新增 `test_photo_mode_slow_look`（Ctrl 下鼠标视角 1.0→0.1 度、RS 按下下右摇杆 25→2.5 度）。注意 `pad_look_speed` 默认值断言在两处（parse_combo 的往返段里也有一份）。
+- 版本 1.0.37-cpp；DLL 重编链接通过（735,744 B）；产物 `dist/PBZPhotoModeCpp_1.0.37-cpp.zip`（382,140 B，只出包未部署）。
+
+### 1.0.37 实机验证要点
+
+1. 方向键左右平移应明显慢于 WASD（半速）；十字键左右同理（左摇杆不变）。
+2. 方向键上/下、十字键上/下俯仰速度约为原来一半。
+3. 按住 Ctrl 移动鼠标（Alt+鼠标）：视角应只有约 1/10 转速，松开恢复；手柄按下右摇杆 RS 不松、再拨右摇杆同理。
+4. 右摇杆正常视角转速约为原来的 1/3（180→60 度/秒）。
+5. **若用户现有 config.ini 显式写了 `pitch_speed = 60` 或 `pad_look_speed = 180`，需手动改成 30/60 或删掉这两行**——显式值会盖过新默认。
