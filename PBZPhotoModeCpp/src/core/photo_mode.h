@@ -34,6 +34,12 @@ public:
     void set_config(const Config& cfg) { cfg_ = cfg; }
     const Config& config() const { return cfg_; }
 
+    // ---- 图形菜单的实时开关：更新配置 + 立即作用于引擎，退出时按最终状态还原 ----
+    // 与 enter() 里的同一套 *_hidden_ 记账联动，保证 leave() 的回滚仍然正确
+    void set_hide_player_live(bool visible);
+    void set_block_game_input_live(bool blocked);
+    void set_hide_game_hud_live(bool hidden);
+
     const std::string& last_error() const { return last_error_; }
     bool pov_fallback_used() const { return pov_fallback_used_; }
     double reassert_interval() const { return 1.0; }

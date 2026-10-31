@@ -1,12 +1,17 @@
-# 进度存档（2026-10-30 更新）
+# 进度存档（2026-10-31 更新）
 
 接着做的入口：读这份文件 → 看「下一步」→ 直接干。
 
 ## 一句话状态
 
-**C++ 版 v1.0.15 已编译、已打包**：
-`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.0.15-cpp.zip`。
-核心层 **393 项测试全绿**；v1.0.11 F 键冻结已实机验证；v1.0.12 新增 HUD 自动隐藏；v1.0.14 进入摄影模式自动暂停时间；**v1.0.15 新增手柄支持（默认 LS+RS 进出，键位可在 [gamepad] 段改）**。
+**C++ 版 v1.2.3 已编译、已打包**（修 1.2.2 实机问题：命中区仍偏——UI 缩放改由引擎 Slate 视口求真值（物理客户区÷Slate），不再用 Windows DPI 推算；加未命中诊断日志、放宽命中矩形，待实机验证）：
+`build-dll/PBZPhotoModeCpp.dll` → `dist/PBZPhotoModeCpp_1.2.3-cpp.zip`。
+核心层 **415 项测试全绿**；**v1.1.0 图形化菜单（ImGui + D3D11/12 交换链钩子）v1.1.1 重排时序后待实机验证**；v1.0.20 修了 UMG 文字菜单右下角被裁（现降级为图形菜单失败时的兜底）；v1.0.11 F 键冻结已实机验证；v1.0.12 HUD 自动隐藏；v1.0.14 进入自动暂停时间；v1.0.15-1.0.18 手柄支持（默认 LS+RS 进出，键位可在 [gamepad] 段改）。
+
+## 交付流程（2026-10-31 起固定）
+
+- **只出包，不部署**：构建完成后把产物打进 `dist/PBZPhotoModeCpp_<版本>-cpp.zip`（结构：`PBZPhotoModeCpp/{dlls/PBZPhotoModeCpp.dll, config.ini, enabled.txt, README.md}`），**不要**把 DLL/README/config 覆盖到游戏目录——用户用模组管理器自行安装 zip。
+- 游戏目录 `platform\steam\ue4ss\Mods\PBZPhotoModeCpp\` 当前留着 1.0.19 那份（供本次实机验证），之后构建/交付流程不再碰它。
 
 ## 已完成
 
@@ -449,3 +454,249 @@ AHUD Actor 上没有可绘制组件，所以这个开关看起来没有效果。
 - FOV 88→126 连续变化且 `滚轮事件=0` → FOV 步进通道（手柄十字键/键盘 FOV 键）首次实机生效 ✅
 
 给 README 排障补一条 Steam Input 的说明（虚拟手柄用户大概率踩同一个坑）。
+
+## 1.0.19-cpp（2026-10-31 01:2x：游戏内菜单改用 UMG 控件）
+
+### 为什么旧菜单永远显示不出来（根因，铁证）
+
+右下角菜单旧实现有两条路，在 PBZ 里**都是死路**：
+
+1. **HUD Canvas 路径**：等 ProcessEvent(ReceiveDrawHUD/DrawHUD) 回调再用 AHUD::DrawText 画。但 BP_PBZHud_C 是纯 UMG，AHUD 原生绘制管线从不执行——1.0.4 到 1.0.8 每次实机日志都是 HUD绘制=0，钩子等不到那个永远不来的回调。强制 bShowHUD=true 也没用（游戏根本不调 DrawHUD）。
+2. **PrintString 兜底**：PBZ.exe 是 511 MB 的 UE5 Shipping 单体包，UKismetSystemLibrary::PrintString 的函数体被 #if !UE_BUILD_SHIPPING 整体裁掉——反射调用“成功”（UFunction/参数元数据还在），实际什么都不画。1.0.1 实机已验证；1.0.8 修好 duration 参数名 + 强制 bEnableOnScreenDebugMessages 后依然不显示（用户 2026-10-31 00:15 再次报障“一直显示不出菜单界面”）。1.0.8 注释里“早期原型已证明可用”是未验证假设——_legacy/PBZPhotoMode/测试清单.md 一项都没勾。
+3. 两条路都“返回成功”，update_overlay 还会打 游戏内菜单已显示——日志看着正常、屏幕什么都没有，这就是“日志没报错但菜单出不来”的原因。
+
+### UMG 实现（全部反射，不引入新依赖）
+
+src/engine/ue4ss_port.cpp 重写 overlay 部分：
+
+- 动态拼装：UObjectGlobals::NewObject（内部走游戏的 StaticConstructObject，原生构造函数会执行）创建 UserWidget（outer=UWorld）→ WidgetTree（构造器没建就补）→ CanvasPanel（根）+ TextBlock（都 outer 到 WidgetTree，符合 UMG 归属约定）。
+- CanvasPanel.AddChildToCanvas(TextBlock) 拿 CanvasPanelSlot，布局右下角：SetAnchors(1,1) + SetAlignment(1,1) + SetPosition(-24,-24) + SetAutoSize(true)——锚点+对齐让定位与文本实际像素尺寸无关。FAnchor 两层嵌套用新的 write_anchor 反射写入。
+- FText：KismetTextLibrary::Conv_StringToText 生成，返回值按字节“所有权移交”到 SetText 参数（ParamBlock 裸字节数组释放时不调 FText 析构，目标属性持有引用，无泄漏无悬垂）。
+- 生命周期：AddToViewport(ZOrder=10000) **常驻**，显示/隐藏走 SetVisibility(Visible/Collapsed)（umg_visibility_state_ 记状态避免每帧重复调用）；文本变化才 SetText。**退出模式不销毁控件**；换图/GC 后按创建时记录的 GetFullName() 重新查活（umg_live()，不解引用悬垂指针），查不到就重建；每秒 IsInViewport 校验，被游戏清出视口就重新 Add。
+- 失败逐步打日志（“UMG 菜单：…”，同类只打一次），真机排障能定位卡在哪一步。
+- 删掉了旧的 ensure_overlay_hook / on_process_event / draw_overlay / overlay_via_print_string / build_print_menu_text / ensure_screen_messages_enabled 与相关成员；诊断行 HUD回调=%u 改为 菜单=%s（umg_menu_state：未创建/显示/隐藏）。
+
+版本 1.0.19-cpp（1.0.18 已被手柄修复占用）；产物 644,096 B（含 1.0.18 的 System32 XInput 修复，是超集）；核心层 **393 项测试全绿**；包 dist/PBZPhotoModeCpp_1.0.19-cpp.zip；游戏目录已覆盖最后一次（1.0.19 起交付流程改为只出包，见顶部「交付流程」）。
+
+### 1.0.19 实机验证要点
+
+1. 进游戏按 F2：日志应出现“UMG 菜单已创建：/…”，随后“游戏内菜单已显示（UMG 控件）”。
+2. 屏幕右下角应出现琥珀色 ASCII 菜单（默认 Roboto 字体，比旧 PrintString 版大一些）。
+3. T 隐藏/显示；F2 退出后菜单消失（Collapsed）；再进不重建日志不刷屏。
+4. 每秒诊断行应出现 菜单=显示。若出现“UMG 菜单：…”的 Warn，按提示的步骤名定位。
+5. 手柄（1.0.18 已验收）行为不应回归。
+
+### 构建环境备忘（新）
+
+DSH 起的 shell 里 **ProgramFiles / ProgramFiles(x86) 环境变量是空的**，build_dll_offline.bat 靠它们找 vcvars64 会报 “vcvars64.bat not found”。子进程 env 补上这两个变量再跑 bat 即可（编译器在 C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools，ninja 用 VS 自带的）。
+
+## 1.0.19 实机结果（2026-10-31 01:29 UE4SS.log + 截图）
+
+- **UMG 菜单链路实机打通** ✅：`UMG 菜单已创建：UserWidget /Game/Maps/B02/PBZ_Xigu_WP.PBZ_Xigu_WP:UserWidget_2147469865`；每次进模式 `游戏内菜单已显示（UMG 控件）`；控件跨进出复用（无重复创建）；截图里右下角能看到琥珀色菜单文字（NewObject/CreateWidget 式动态 UMG 在本作 Shipping 包可用）。
+- 遗留问题：日志 `UMG 菜单：槽位布局没写全`——四个 Set*（SetAnchors/SetAlignment/SetPosition/SetAutoSize）至少一个没生效，菜单文字块顶左角落在屏幕右下角、向右下溢出被裁（截图只看到标题前几个字符和 STATE 行的开头）。
+- 本局其余全部正常：F2 进出、暂停/恢复、HUD 隐藏/恢复、Alt+鼠标视角、滚轮 FOV（90→98→66→58→74）、手柄槽位=-1（未插）。
+- `UMG 菜单：查活失败，已重建控件` 只在首次创建时打了一次（措辞误导，1.0.20 改为只在真重建时打）。
+
+## 1.0.20-cpp（2026-10-31 01:4x：槽位布局直写 + 回读诊断）
+
+- 布局改为**双保险**：先走四个 Set* UFunction，再**直接写 UCanvasPanelSlot.LayoutData**（FAnchorData{Anchors,Offsets,Alignment}）与 bAutoSize 属性——不依赖 UFunction 参数名。全部发生在 AddToViewport 之前，Slate 槽位在 TakeWidget 时才从 LayoutData 构建，直写必然生效。
+- 新增**回读日志** `UMG 槽位回读：anchors=(...) pos=(...) align=(...) auto=...（读取 11111）`——真机一眼核对每个字段；再加一次性 `槽位属性: ...` dump，字段名对不上时直接可见。
+- setter/直写分组打 √/×（`槽位布局 setter(锚√/对齐√/位置√/自动×) 直写(...)`）；`查活失败，已重建` 只在真重建时打。
+- 按 2026-10-31 起的交付流程：**只出包不部署**。版本 1.0.20-cpp；产物 648,704 B；核心层 393 项全绿；包 `dist/PBZPhotoModeCpp_1.0.20-cpp.zip`（用户用模组管理器自行安装）。
+
+### 1.0.20 实机验证要点
+
+1. 装 zip 进游戏按 F2：看 `UMG 槽位回读` 一行——期望 `anchors=(1,1)-(1,1) pos=(-24,-24) align=(1,1) auto=1`。
+2. 屏幕右下角：菜单应完整显示、距边缘 24px。若回读全对但仍被裁，把 `槽位属性: ...` 和截图发回来（下一步改用 GetDesiredSize 绝对定位）。
+3. 若出现 `槽位布局 setter(...) 直写(...)` 的 Warn，把那行发回来。
+
+## 1.1.0-cpp（2026-10-31 05:0x：图形化菜单 = ImGui + D3D 交换链钩子）
+
+用户看过多版文字菜单后要 PhotoMode（powerof3）那种**图形化、可交互、可分页**的菜单：滑条调 FOV/移动速度、分页展示快捷键。评估结论：UMG 反射路线做交互控件在 Shipping 下不确定性最大；UE4SS 3.0.1 自带 GUI 只有 DX11/OpenGL 后端且挂在调试控制台里（本作 DX12 画不出来）；所以走 **自建 D3D 钩子 + 独立 ImGui context**（与 powerof3/PhotoMode 同架构，其源码在 `_ref/photomode-src` 可参考）。
+
+### 实现（全部自带依赖，离线构建不受影响）
+
+- **third_party/imgui**：从 `build-dll/_deps/imgui-src`（UE4SS FetchContent 的 1.92.1）拷贝 imgui 核心 + DX11/DX12/Win32 三个后端；CMake 新增 `pbzpm_imgui` 静态库，放在 UE4SS 前面链接（两边各有一份 ImGui，链接顺序保证符号用我们这份）；`IMGUI_IMPL_WIN32_DISABLE_GAMEPAD` 显式禁掉 win32 后端的 XInput（1.0.18 教训：绝不能隐式加载 System32 的 XInput 代理 DLL）。
+- **src/engine/imgui_overlay.h/.cpp**（新）：
+  - 钩子：`start()` 造 dummy D3D11/D3D12 设备+交换链+命令队列拿 vtable，补丁 `IDXGISwapChain::Present`(槽 8) 与 `ID3D12CommandQueue::ExecuteCommandLists`(槽 10)；DX11/DX12 的 Present 若同地址只补一处（`g_present_hook_shared`）。运行时先试 DX12（UE5 默认，队列从 ECL 钩子捕获）再试 DX11。
+  - 渲染：Present 钩子里 NewFrame→`render_game_menu`→Render→DX11 直接 RenderDrawData；DX12 自管 RTV（typeless 格式映射）+命令列表，在捕获的队列上 Execute。每帧只画主窗口（UnrealWindow 优先）的交换链。
+  - 输入：不走 WndProc 消息——渲染线程每帧 GetCursorPos/GetAsyncKeyState 直读 + 滚轮由引擎线程转交（`cursor_in_menu()` 判定落在菜单上才转，滚轮不再调 FOV）；UI 捕获鼠标时引擎侧视角/俯仰输入静音。手柄导航：ImGui 快照喂 dpad/A/B/摇杆事件（`InputLogic::gamepad()` 新增只读快照）。
+  - 光标常显：ShowCursor 计数按线程算，渲染线程管不到游戏窗口 → 子类化游戏 WndProc，渲染线程投递自定义消息让窗口线程自己 `ShowCursor(TRUE)`+`ClipCursor(nullptr)`。
+  - 失败降级：钩子装不上 / 后端初始化连续 240 帧失败 / 菜单打开 3 秒收不到渲染回调（交换链类型不匹配）→ `failed_`，上层自动退回 UMG 文字菜单（v1.0.20 那套保留为兜底）。
+  - 线程模型：引擎 Tick 线程 publish(MenuView 快照)/drain(MenuActions)；渲染线程只碰快照，交换走 `view_mutex_`；`ui_menu` 的 ini 写盘禁用（io.IniFilename=nullptr）。
+- **src/game_menu.h/.cpp**（新）：三页菜单（相机：状态+FOV/速度/灵敏度滑条+位置朝向+冻结/重置/退出按钮；快捷键：hints 列表；选项：五个开关+手柄参数），中英双份文案（系统 msyh.ttc 加载失败时退英文+ImGui 默认字体）。
+- **src/core/menu_view.h**（新）：`MenuView`/`MenuActions` 纯数据桥，引擎线程↔渲染线程的唯一通道。
+- **src/core/photo_mode.h/.cpp**：新增 `set_hide_player_live` / `set_block_game_input_live` / `set_hide_game_hud_live`——菜单里中途切开关：改 cfg + 立即作用于引擎 + 与 enter/leave 的 `*_hidden_` 记账联动（回滚正确性有测试）。
+- **src/mod_app.cpp/.h**：`on_unreal_init` 里 `overlay_->start()`；T/START 切菜单（`available()` 时图形优先）；ESC 关菜单（渲染线程边沿）；滚轮路由与鼠标互斥；`publish_menu_snapshot()`/`apply_menu_actions()`（动作→set_fov/set_config/live setters/toggle_freeze/reset_view 注入/exit）；诊断行加 `图形=开/关/无`；进模式自动开菜单、退出自动关。
+- 版本 `1.1.0-cpp`；产物 **796,160 B**；核心层 **415 项全绿**（新增 22 项实时开关测试）；包 `dist/PBZPhotoModeCpp_1.1.0-cpp.zip`（412,914 B，sha256 8CB2891D...61AC6）。
+
+### 1.1.0 实机验证要点
+
+1. 加载日志：`图形菜单已就绪：钩子已安装（DX11+DX12，运行时自动探测游戏后端）`；失败则 `图形菜单初始化失败...`（此时只验证文字菜单）。
+2. 进摄影模式：菜单应**自动弹出**；按 T / ESC / 手柄 START 可开关；每秒诊断行 `图形=开`。
+3. 几秒内应出现 `图形菜单：DX11 后端已初始化` 或 `DX12 后端已初始化`（PBZ 大概率 DX12）。若出现 `打开 3 秒未收到渲染回调` 的 Warn，菜单自动退回文字版——把日志发回来。
+4. 鼠标应能看到光标；拖 FOV/速度滑条应实时生效；滚轮在菜单上滚动=操作 UI、在菜单外滚动=调 FOV；滑条拖动时按住 Alt 转视角应被抑制，光标移出菜单后恢复。
+5. 「选项」页切 隐藏角色/屏蔽输入/隐藏 HUD 应即时生效；退出摄影模式后一切还原。
+6. 手柄：START 开菜单后，十字键移动焦点、A 确认、B 返回；调滑条用 A 选中后左右拨十字键。
+7. 若菜单能显示但花屏/闪烁，把截图和 `图形菜单：...` 日志行发回来（下一步排查 RTV 格式/多交换链）。
+
+## 1.1.0 实机结果（2026-10-31 05:09）：启动闪退 ❌ → 1.1.1 修复
+
+现象：装 1.1.0 后游戏启动即闪退。日志证据：`图形菜单：钩子已安装（DX11+DX12）`→`图形菜单已就绪`→`加载完成 v1.1.0-cpp`（05:09:26.553）之后**戛然而止**（正常应继续 Lua 模组加载）；无 WER 事件、无 dump（本机 WER 静默）。
+
+定位：崩溃发生在我们 `start()` 完成**之后**、游戏 D3D12 RHI 初始化/首帧窗口——1.1.0 在 `on_unreal_init`（UE4SS 初始化线程、游戏 RHI 还没起来）就创建了 dummy D3D11+D3D12 设备并补了 vtable，与游戏自身的 RHI 初始化撞车。1.0.20 能正常启动，说明只要这个阶段不碰 D3D 就没事。
+
+### 1.1.1 修法（三重防御）
+
+1. **时序延迟**：钩子安装从 `on_unreal_init` 移到 `ensure_overlay_started()`——首次进入摄影模式时在游戏线程上执行（RHI 已就绪）。按 F2 之前进程行为与 1.0.20 完全一致。
+2. **导入表清零**：不再链 d3d11/d3d12/dxgi（CMake 移除；PE 导入表已验证无 d3d12/dxgi），D3D11CreateDevice/D3D12CreateDevice/CreateDXGIFactory 改 `LoadLibraryW`+`GetProcAddress` 运行时加载——模组加载阶段对进程零干扰。
+3. **可观测 + 逃生门**：`start()` 拆 `start_impl` 包 try/catch；安装过程五步日志（`[1/5] dummy 窗口`→`[5/5] 钩子已安装`），再崩也能定位到步；mod 目录放 `no_imgui_menu.txt` 彻底禁用图形菜单（回退 UMG 文字菜单）。
+
+版本 `1.1.1-cpp`；产物 **801,280 B**；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.1.1-cpp.zip`（414,967 B，sha256 6D0837B8...BB059）。
+
+### 1.1.1 实机验证要点
+
+1. **启动**：应能正常进游戏；加载日志只有 `图形菜单：延迟初始化（首次进入摄影模式时安装钩子）`，没有任何 D3D 相关动作。
+2. 按 F2 进入摄影模式：这里才开始安装——应看到 `图形菜单：[1/5]` 到 `[5/5]` 五步日志（任何一步崩/卡住，把最后一行发回来即可定位）。
+3. 五步全过 → 菜单自动弹出（ImGui 浮窗）；之后按 1.1.0 的验证清单（滑条/分页/手柄导航/退出还原）。
+4. 若 F2 后仍闪退：改放 `no_imgui_menu.txt` 进 mod 目录确认游戏恢复稳定，然后带 `[1/5]...` 之前后的日志回来——需要换钩子安装方式（MinHook 式 trampoline 或复用 UE4SS 的 PolyHook）。
+5. 万一整个过程顺利：删掉本节顶部「待实机验证」字样，记录 DX11 还是 DX12 后端。
+
+## 1.1.1 实机结果（2026-10-31 05:17 dump + log）：F2 卡死 ❌ → 1.1.2 修复
+
+时序（日志）：启动正常（延迟化生效✅），F2 后摄影模式全链路正常（相机/暂停/HUD隐藏✅），钩子 [1/5]~[5/5] 全部 OK✅，`已锁定游戏主窗口`、`DX12 后端已初始化`✅——然后卡死，UE4SS 崩溃处理器写了两个 dump（05:17:40.079 / .877，即卡死后 ~1.2s）。两份 dump 质量差（一份缺线程上下文，一份抓到的是写 dump 的线程），但行为证据足够。
+
+**根因（读 1.92 后端源码坐实）**：`imgui_impl_dx12.cpp` 的纹理上传路径在首帧把 CJK 字体纹理用 **我们传给它的队列**（= ECL 钩子捕获的游戏渲染队列）`ExecuteCommandLists` + `Signal`，然后 `WaitForSingleObject(event, INFINITE)` **无限期等 GPU**。而这个调用发生在我们卡住游戏渲染线程的 Present 钩子里——游戏队列被帧工作排满（本作还开着 **FSR3 帧生成** `amd_fidelityfx_framegeneration_dx12.dll` + NVIDIA Streamline，多队列交叉依赖），等待永不完成 → 渲染线程卡死 = 整卡死。
+
+### 1.1.2 修法（三件套）
+
+1. **纹理上传专用队列**：`init_backend_dx12` 自己 `CreateCommandQueue(DIRECT)` 一个空闲队列传给 `ImGui_ImplDX12_InitInfo.CommandQueue`——后端的上传+Signal+等待在这个队列上立即完成；上传的纹理是 device 级资源，游戏队列照常采样。游戏队列只用于我们的 UI 命令列表提交（只 enqueue、从不等待，无死锁可能）。
+2. **Present 防重入**：本作带 FSR3 帧生成，Present 可能来自帧生成线程；`render_if_needed` 入口 `in_frame_.exchange` 抢占 + `FrameGuard` 释放，保证同一时刻只有一个线程碰 ImGui。
+3. **命令分配器三帧轮换**：原来单分配器每帧 Reset，上一帧还在 GPU 执行时 Reset 非法；改为 3 个轮换。
+
+版本 `1.1.2-cpp`；产物 801,280 B；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.1.2-cpp.zip`（415,166 B，sha256 40725E8E...D7410）。
+
+### 1.1.2 实机验证要点
+
+1. 启动 + F2 流程与 1.1.1 相同（[1/5]~[5/5] 全 OK）；差异在之后：菜单应直接弹出（首帧有 ~0.5-1s 中文字体构建卡顿，属预期）。
+2. 若仍卡死：这次日志末尾还是停在 `DX12 后端已初始化` 附近 → 说明卡点在游戏队列提交侧（换思路：我们的 UI 列表也改提交到专用队列 + 等 GPU 完成 fence），把日志发回来。
+3. 若菜单弹出但看不见/花屏：FSR3 帧生成可能插手了交换链，把截图 + 日志发回来（下一步试 DX11 后端或绕过帧生成层）。
+4. 若一切正常：删「待实机验证」并记录后端（大概率 DX12）。
+
+## 1.1.2 实机结果（2026-10-31 05:25 dump×2）：仍然卡死 ❌ → 1.1.3 判定帧生成插件冲突，稳定优先
+
+日志签名与 1.1.1 完全一致：五步安装全 OK → `已锁定游戏主窗口` → `DX12 后端已初始化` → **20ms 后进程僵死**（253 线程全部停在 ntdll 等待），两份 dump。自写 `deepdump.py`（支持 Memory64List、修正 MINIDUMP_THREAD 偏移）解析：
+
+- 异常线程在 `KERNELBASE+0xc408a` raise **异常码 0x8000**（两份 dump 完全一致）；栈向上：`PBZ.exe+0x1b9e0a60`（游戏代码）← UE4SS 框架帧——**游戏 RHI 的致命路径**（设备移除/RHI fatal 后引擎自爆），不是我们 DLL 里的访问违例。
+- 本作同时加载 **FSR3 帧生成（amd_fidelityfx_framegeneration_dx12）+ NVIDIA Streamline（sl.interposer）+ XeSS（libxess）+ DLSS**：这些插件包装交换链并管住 back buffer 的资源状态，我们注入的 `PRESENT→RENDER_TARGET` barrier 与它们的状态机冲突 → D3D12 设备移除 → 游戏 RHI fatal。1.1.2 修的上传队列死锁依然成立且已修，但底下还压着这一层。
+
+### 1.1.3 决策：稳定优先，帧生成环境下自动停用图形菜单
+
+1. **帧生成/插帧插件自动检测**（`amd_fidelityfx_framegeneration_dx12` / `nvngx_dlssg` / `sl.interposer` / `libxess` 任一已加载即判定）：命中时图形菜单不启用，日志 Warn 写明插件名，**回退 UMG 文字菜单**（1.0.20 定位已修、完全稳定）。强行尝试：游戏设置关掉帧生成 + mod 目录放 `imgui_dx12_force.txt`。
+2. **字体图集预构建**：`init_imgui()`（中文 TTF 解析+光栅化 ~1s）从首次 Present（渲染线程）挪到 `start()`（游戏线程、F2 时刻），并显式 `io.Fonts->Build()`——渲染线程不再被卡 1 秒。
+3. **设备移除护栏**：DX12 每帧渲染后 `GetDeviceRemovedReason()`，FAILED 即 `fail()` 永久退回文字菜单——即使将来再遇设备冲突，也是优雅降级而不是拖崩游戏。
+
+版本 `1.1.3-cpp`；产物 804,352 B；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.1.3-cpp.zip`（416,766 B，sha256 A429AB8C...B49D4）。
+
+### 1.1.3 实机验证要点
+
+1. 启动 + F2 一切照旧；进摄影模式日志应出现 `检测到帧生成/插帧插件（...），图形菜单与它冲突，已自动停用` → 屏幕是文字菜单，**游戏必须完全不卡**。
+2. 想试图形菜单：游戏设置关掉帧生成（若有）→ mod 目录放 `imgui_dx12_force.txt` → 重启再 F2。若不卡且菜单弹出 → 帧生成是唯一冲突源，后续可做「感知帧生成开关」的运行时方案。
+3. 图形菜单在本作的最终去留取决于 2 的结果：关帧生成能跑 → 保留为进阶功能；仍不行 → 本作标记图形菜单不可用，文字菜单保留。
+
+## 1.1.3 实机结果（2026-10-31 07:43 log + 截图）✅：游戏稳定，文字菜单按设计回退
+
+日志确认：`检测到帧生成/插帧插件（amd_fidelityfx_framegeneration_dx12.dll），图形菜单与它冲突，已自动停用` → 文字菜单显示（截图确认 1.1.3-cpp 版本号），摄影模式进出/暂停/恢复/HUD 隐藏恢复全链路正常，**游戏零卡死**。用户确认帧生成必开，选择走 UMG 原生控件路线。
+
+## 1.2.0-cpp（2026-10-31 08:0x：UMG 交互菜单——帧生成环境下的图形化方案）
+
+**思路**：帧生成把游戏自己的 UI 当普通画面合成，零冲突。用 1.0.19/1.0.20 验证过的反射管线建真正的 UMG 控件（Slider/Button/TextBlock/VerticalBox/HorizontalBox），交互全部**轮询**而非事件绑定（Shipping 下委托绑定不可控）：
+
+- 滑条：每帧读 `Value` 属性 → 变了就当用户拖动 → 应用到 FOV/速度/灵敏度；外部改了（滚轮/快捷键）→ `SetValue` 反写滑条。双向同步用 last_synced 基线防环。
+- 按钮：轮询 `IsPressed` 上升沿 = 点击（FREEZE/RESET/EXIT）。
+- 鼠标指针：菜单打开期间每帧写 `PC.bShowMouseCursor=true`（游戏拍照模式会藏指针），关闭时恢复 false。
+- Esc 关闭菜单；T/START 开关；进模式自动弹出（沿用 menu_visible_ 状态）。
+- 位置：右上角锚定（锚 (1,0) 对齐 (1,0) 偏移 (-480,90)），宽 440 高 330，双写布局。
+- 菜单优先级：DX12 ImGui（force 进阶）→ UMG 交互 → 文字兜底（三者自动降级）。
+- 已知留白：分页（快捷键页）等交互链路实机验证后再铺；滑条 Fill 布局的 SizeRule 枚举写入是尽力写（失败只是滑条窄）。
+
+改动：`ue4ss_port.h/.cpp`（umg2_* 全套：控件构建/查活重建/双向同步/按钮轮询/指针管理；`Umg2Commands` 提到命名空间层——嵌在类里会让前置声明处编译失败）、`mod_app.h/.cpp`（update_overlay 三级优先 + apply_umg2_commands + Esc 沿检测 + 诊断行图形=交互/隐藏/不可用）。
+
+版本 `1.2.0-cpp`；产物 **826,880 B**；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.2.0-cpp.zip`（426,364 B，sha256 53FADFCA...1E40A）。
+
+### 1.2.0 实机验证要点（帧生成开着直接测）
+
+1. F2 进摄影模式：右上角应出现 UMG 面板（标题 PBZ Photo Mode、STATE 行、三行滑条、三个按钮、两行提示）。日志有 `交互菜单已创建：...`。
+2. 拖 FOV 滑条：画面 FOV 即时变化，数值标签跟着走；滚轮调 FOV 后滑条应反向同步。
+3. 拖 SPEED/SENS 滑条：移动速度/灵敏度即时生效。
+4. 点 FREEZE（时间冻结/恢复）、RESET（视角回初始）、EXIT（退出摄影模式）。
+5. Esc / T 关菜单；再按 T 重开；退出模式后面板消失、指针恢复隐藏。
+6. **关键风险点**：如果面板显示了但滑条拖不动/按钮点了没反应 → 是 Slate 指针路由问题（拍照模式的鼠标捕获抢了事件），日志发回来，下一版改用控件矩形 + 我们自己的鼠标状态做命中判定（方案已备）。
+7. 若面板没出现且日志有 `交互菜单：... 回退文字菜单` → 把那几行发回来。
+
+## 1.2.0 实机结果（2026-10-31 08:17 dump）：构建途中访问违例 ❌ → 1.2.1 收缩控件词汇表
+
+F2 后菜单可见 → `ensure_umg2_menu()` 构建途中进程死亡（`交互菜单已创建` 从未打印）。dump：**真正的访问违例**——`0xC0000005` 读 `0xFFFFFFFFFFFFFFFF`，故障地址 `PBZ.exe+0x157d713`，栈链 `PBZ.exe+0x1b9e0a60 ← UE4SS+0x3d5530`（= UE4SS 的 ProcessEvent 派发进游戏代码）——与 1.1.2 的致命链完全同款。**结论：1.2.0 新引入的 VerticalBox/Slider/Button 及其 ProcessEvent（AddChildToVerticalBox/HorizontalBox/Button.AddChild/SetValue/IsPressed 之一）在本作触发游戏代码内的空指针**。无法无符号定位到具体某个调用，且每个都要一轮实机试错 → 收缩词汇表。
+
+### 1.2.1 修法：控件词汇表收缩回已验证安全集 + 自判定点击
+
+- **只用 CanvasPanel + TextBlock**（1.0.19/1.0.20 整场实机验证过的全部操作：NewObject/AddChildToCanvas/LayoutData 直写/SetText/SetVisibility/AddToViewport/IsInViewport/bAutoSize）。VerticalBox/HBox/Slider/Button 全部移除。
+- 交互改为**自己的命中判定**（不走 Slate 路由）：布局常量在 `engine/umg2_layout.h`（port 摆控件、mod_app 判命中共用）；mod_app 每帧 GetCursorPos → 面板内坐标 → 查 `kHits[]` 命中区 → 左键按下沿 = 点击 → `Umg2Clicks` 传给 port。
+- 数值调整用 `[–]/[+]` 文本按钮（FOV ±fov_step、SPEED ∓20、SENS ∓0.01，带夹紧）；FREEZE/RESET/EXIT 为文本按钮。
+- 指针在面板上时：视角/俯仰/滚轮让位给菜单（`umg2_cursor_in_panel_`，上一帧判定）。指针可见性 = 纯属性写（无游戏代码执行），安全。
+- `Umg2Commands` 字段改为步进语义（fov_step/speed_delta/sens_delta）。
+
+版本 `1.2.1-cpp`；产物 818,688 B；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.2.1-cpp.zip`（426,364+Δ B，sha256 见打包记录）。
+
+### 1.2.1 实机验证要点
+
+1. F2 进摄影模式：右上角出现文本面板（标题/STATE/三行 [–] 数值 [+]/FREEZE/RESET/EXIT/提示），日志 `交互菜单已创建：...`。
+2. 点 FOV 行的 `[+]/[–]`：FOV ±2 即时生效，数值标签变化；SPEED/SENS 同理。
+3. 指针移到面板上：相机不再随鼠标转、滚轮不调 FOV；移开恢复。
+4. FREEZE 冻结/恢复；RESET 视角回初始；EXIT 退出模式。
+5. Esc/T 关开菜单。
+6. 若面板显示但点击没反应 → 命中区对位问题（DPI/窗口缩放），把截图发回来微调 kHits/kPanel 常量。
+
+## 1.2.1 实机结果（2026-10-31 08:3x 用户反馈）：面板渲染在左上角、点击全部落空 ❌ → 1.2.2
+
+用户症状：**点击面板区域触发相机上移，无法点到任何控件**（面板本身显示正常）。两个根因，都是 1.2.1 引入：
+
+1. **摆放与命中坐标系不一致**：`ensure_umg2_menu()` 给全部文本写锚点(0,0)+偏移(item.x,item.y)——画布根铺满视口，(0,0) 就是视口左上，所以面板实际渲染在**屏幕左上角**；而 mod_app 命中判定按**右上角**算（`client.right - kPanelFromRight`）。用户点的是左上角可见面板，`px = 光标x - (屏宽-480)` 恒为负 → 命中全落空、`umg2_cursor_in_panel_` 恒 false → 静音不生效。
+2. **静音列表漏了 `move_up`**：translate 模式下左右键直接叠加进 `Intent.move_up`（`core/input_logic.h:42` 注释明示），命中失败时左键点击 = 相机上移——正是「点击触发上移」的直接来源。即使命中修好，不补这条点击面板仍会推高相机。
+
+### 1.2.2 修法（2026-10-31）
+
+- **渲染端**（`ue4ss_port.cpp`）：文本摆放改为锚点(1,0)+对齐(0,0)，`Left = item.x - kPanelFromRight`、`Top = item.y + kPanelTop`——与命中判定同一套坐标；负偏移+点锚的直写有 1.0.19 右下角状态标签实机先例。
+- **命中端**（`mod_app.cpp`）：窗口选择从 `FindWindowW`（只认第一个匹配，闪屏/隐藏窗口可能抢在前面）改为枚举本进程 UnrealWindow 类、可见、客户区最大的窗口；Slate 单位↔物理像素按窗口 DPI 换算（`GetDpiForWindow`，退 `GetDeviceCaps`）；mod 目录 `umg2_scale.txt` 写一个数可强制缩放（绕游戏自定 UI 缩放曲线）；开菜单打一条 `交互菜单命中映射：窗口/客户区/DPI/缩放/面板像素区` 日志，点不中时对着查偏差。
+- **静音端**：`umg2_cursor_in_panel_` 时 `effective.move_up` 一并清零（左右键升降让位给菜单）。
+- 坐标契约写进 `engine/umg2_layout.h` 文件头（摆放公式 + 命中公式），防止再次各说各话。
+
+版本 `1.2.2-cpp`；产物见打包记录；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.2.2-cpp.zip`。
+
+### 1.2.2 实机验证要点
+
+1. F2 → T：面板出现在**右上角**（不再左上角）；日志出现 `交互菜单已创建` + 一条 `交互菜单命中映射：...`。
+2. 点三行 `[-]/[+]`：FOV ±2、SPEED ±20、SENS ±0.01 即时生效；**点击时相机纹丝不动**（上移问题消失）。
+3. 指针在面板上：鼠标转视角/滚轮/升降全被静音；移开恢复。
+4. FREEZE/RESET/EXIT 各点一次确认。
+5. 若点击仍落空：把 `交互菜单命中映射` 一行 + 实际点击位置（第几行第几个按钮）发回来——偏差方向决定改 `umg2_scale.txt` 强制缩放还是调 kPanel/kHits 常量。
+
+## 1.2.2 实机结果（2026-10-31 08:5x 用户反馈）：命中区仍偏 ❌ → 1.2.3
+
+用户症状：「界面的触发区域还是不准」——面板可见但点击判定区与可见控件错位。判断：**缩放来源错**。1.2.2 用窗口 DPI（GetDpiForWindow/96）推 UI 缩放，但 UE 的 UI 缩放由分辨率曲线决定（UMG 按 Slate 逻辑视口布局，物理像素 = Slate × 缩放），2K/4K 或游戏自定曲线下两者不相等 → 命中区整体偏移/缩放错。
+
+### 1.2.3 修法（2026-10-31）
+
+- **缩放真值来自引擎**：新增 `Ue4ssPort::umg2_viewport_size()`——ProcessEvent `KismetSystemLibrary.GetViewportSize`（与 1.0.x 起大量实机安全使用的 KismetTextLibrary 同族的纯引擎静态工具）拿 Slate 逻辑视口尺寸；开菜单解析一次并缓存：`缩放 = 物理客户区宽 / Slate视口宽`。解析顺序：`umg2_scale.txt` 覆盖 > 视口换算 > DPI 兜底。
+- **映射日志升级**：`交互菜单命中映射：窗口/客户区/Slate视口/DPI/缩放(来源)/面板左缘x/顶y`，来源标注 `视口换算`/`DPI兜底`/`覆盖`。
+- **未命中日志**：点在面板里却没命中按钮时打 `交互菜单点击未命中：面板内(x,y) 缩放=...`（每秒一条）——不用截图就能拿到偏差数字。
+- **命中矩形放宽一圈**（±2~4px、高度 22→26），残余小偏差也能点到。
+
+版本 `1.2.3-cpp`；核心层 415 项全绿；包 `dist/PBZPhotoModeCpp_1.2.3-cpp.zip`。
+
+### 1.2.3 实机验证要点
+
+1. 开菜单日志应出现 `缩放=...（视口换算）`；对照实际位置：日志的「面板左缘x/顶y」应和可见面板边缘吻合（±几个像素）。
+2. 点三行 `[-]/[+]` 与 FREEZE/RESET/EXIT：应全部命中；点击不带动相机。
+3. 若仍偏：点几下看得见但没反应的位置，把 `交互菜单命中映射` + 几条 `交互菜单点击未命中：面板内(x,y)` 发回来——未命中坐标和真实按钮位置（54,76 / 198,76 / …，见 umg2_layout.h）一对比就是精确的缩放残差，下一版直接修死。
+7. 若仍卡死 → 唯一剩余的非安全操作只剩 AddChildToCanvas×N 与 SetText/SetVisibility/AddToViewport（1.0.19/20 验证过），把 log+dump 发回来再深挖。

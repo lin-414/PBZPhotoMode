@@ -12,12 +12,18 @@
 
 #include <chrono>
 #include <filesystem>
+#include <cstring>
+#include <cwchar>
+#include <fstream>
 #include <mutex>
 #include <string>
 
 #include "core/menu_model.h"
+#include "core/menu_view.h"
 #include "core/version.h"
+#include "engine/imgui_overlay.h"
 #include "engine/ue4ss_port.h"
+#include "engine/umg2_layout.h"
 #include "ui_tab.h"
 #include "win_input.h"
 
@@ -42,6 +48,66 @@ PhotoModeMod* g_mod = nullptr;
 #define PBZPM_WIDEN_IMPL(x) L##x
 #define PBZPM_WIDEN(x) PBZPM_WIDEN_IMPL(x)
 
+// 交互菜单的宿主窗口：本进程里类名 UnrealWindow、可见、客户区最大的顶层窗口。
+// FindWindowW 只认第一个匹配（闪屏/隐藏窗口可能排在前面），所以全量枚举挑最大的。
+auto find_umg2_window() -> HWND {
+    struct Scan {
+        HWND best{nullptr};
+        long best_area{0};
+    } scan;
+    EnumWindows(
+        [](HWND hwnd, LPARAM lparam) -> BOOL {
+            auto* s = reinterpret_cast<Scan*>(lparam);
+            DWORD pid = 0;
+            GetWindowThreadProcessId(hwnd, &pid);
+            if (pid != GetCurrentProcessId()) return TRUE;
+            wchar_t cls[32]{};
+            if (GetClassNameW(hwnd, cls, 32) == 0 || wcscmp(cls, L"UnrealWindow") != 0) return TRUE;
+            if (!IsWindowVisible(hwnd)) return TRUE;
+            RECT r{};
+            if (!GetClientRect(hwnd, &r)) return TRUE;
+            const long area = (r.right - r.left) * (r.bottom - r.top);
+            if (area > s->best_area) {
+                s->best_area = area;
+                s->best = hwnd;
+            }
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&scan));
+    return scan.best;
+}
+
+// 窗口 DPI：每显示器感知的进程里 GetDpiForWindow 给真实值（拿不到就退 GetDeviceCaps）。
+// UMG 坐标是 Slate 单位（逻辑像素），物理像素 = Slate × 缩放；缩放错一点命中区就整体偏移。
+auto umg2_dpi(HWND window) -> UINT {
+    if (window != nullptr) {
+        using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+        static const GetDpiForWindowFn get_dpi = reinterpret_cast<GetDpiForWindowFn>(
+            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"user32.dll"), "GetDpiForWindow")));
+        UINT dpi = get_dpi != nullptr ? get_dpi(window) : 0;
+        if (dpi == 0) {
+            if (const HDC dc = GetDC(window); dc != nullptr) {
+                dpi = static_cast<UINT>(GetDeviceCaps(dc, LOGPIXELSX));
+                ReleaseDC(window, dc);
+            }
+        }
+        if (dpi != 0) return dpi;
+    }
+    return 96;
+}
+
+// mod 目录 umg2_scale.txt：写一个数（如 1.0）可强制命中判定用的 UI 缩放，
+// 绕开游戏自定的 UI 缩放曲线；文件缺失或数值非法返回 0（表示跟随窗口 DPI）。
+auto read_umg2_scale_override(const std::string& dir) -> float {
+    std::ifstream f(std::filesystem::path(dir) / "umg2_scale.txt", std::ios::binary);
+    if (!f) return 0.0f;
+    char line[64]{};
+    f.getline(line, sizeof(line));
+    char* end = nullptr;
+    const float v = std::strtof(line, &end);
+    return (end != line && v > 0.01f && v < 10.0f) ? v : 0.0f;
+}
+
 }  // namespace
 
 PhotoModeMod::PhotoModeMod() {
@@ -53,6 +119,10 @@ PhotoModeMod::PhotoModeMod() {
 }
 
 PhotoModeMod::~PhotoModeMod() {
+    if (overlay_ != nullptr) {
+        overlay_->stop();
+        overlay_ = nullptr;
+    }
     if (input_source_ != nullptr) {
         input_source_->uninstall();
     }
@@ -113,6 +183,17 @@ void PhotoModeMod::on_unreal_init() {
     const bool wheel_hook = !std::filesystem::exists(std::filesystem::path(mod_directory()) / "no_wheel_hook.txt");
     if (!input_source_->install(wheel_hook)) {
         port_->log(LogLevel::Warn, "鼠标钩子安装失败：滚轮 FOV / 按住 Alt 转视角可能不可用");
+    }
+
+    // 游戏内图形菜单：1.1.0 在这里直接创建 dummy D3D 设备并补 vtable，跟游戏 RHI 初始化
+    // 撞车导致启动闪退。1.1.1 起延迟到首次进入摄影模式（引擎线程上 RHI 已就绪）才安装。
+    // 排障开关：mod 目录放 no_imgui_menu.txt 可彻底禁用图形菜单（只用 UMG 文字菜单）。
+    overlay_ = &ImGuiOverlay::instance();
+    if (std::filesystem::exists(std::filesystem::path(mod_directory()) / "no_imgui_menu.txt")) {
+        overlay_disabled_ = true;
+        port_->log(LogLevel::Info, "检测到 no_imgui_menu.txt，图形菜单已禁用（使用文字菜单）");
+    } else {
+        port_->log(LogLevel::Info, "图形菜单：延迟初始化（首次进入摄影模式时安装钩子）");
     }
 
     bind_engine_tick();
@@ -184,15 +265,57 @@ void PhotoModeMod::render_tab_impl() {
     }
 }
 
+// 图形菜单延迟初始化：只在首次进入摄影模式时执行一次（游戏线程上 RHI 已就绪）。
+// 失败或被禁用时永久退回 UMG 文字菜单，不再重试。
+void PhotoModeMod::ensure_overlay_started() {
+    if (overlay_disabled_ || overlay_tried_ || overlay_ == nullptr) return;
+    overlay_tried_ = true;
+
+    // 帧生成/插帧插件会包装交换链并管住 back buffer 的资源状态，
+    // 我们注入的渲染 barrier 跟它们冲突会把游戏 RHI 打成致命错误（1.1.2 实机验证）。
+    // 检测到这些模块就不启用 DX12 图形菜单；想强行尝试：mod 目录放 imgui_dx12_force.txt。
+    static constexpr const wchar_t* kFrameGenModules[] = {
+        L"amd_fidelityfx_framegeneration_dx12.dll",  // FSR3 帧生成
+        L"nvngx_dlssg.dll",                          // DLSS 帧生成
+        L"sl.interposer.dll",                        // NVIDIA Streamline（管理帧生成）
+        L"libxess.dll",                              // XeSS（插手交换链）
+    };
+    for (const wchar_t* module_name : kFrameGenModules) {
+        if (GetModuleHandleW(module_name) != nullptr) {
+            const bool force = std::filesystem::exists(std::filesystem::path(mod_directory()) / "imgui_dx12_force.txt");
+            if (!force) {
+                overlay_disabled_ = true;
+                std::string name(1024, '\0');
+                const int len = WideCharToMultiByte(CP_UTF8, 0, module_name, -1, name.data(), static_cast<int>(name.size()), nullptr, nullptr);
+                name.resize(len > 0 ? len - 1 : 0);
+                port_->log(LogLevel::Warn, "检测到帧生成/插帧插件（" + name +
+                                               "），图形菜单与它冲突，已自动停用（使用文字菜单）。\n"
+                                               "想尝试启用：在游戏设置里关掉帧生成后，mod 目录放 imgui_dx12_force.txt 再试。");
+                return;
+            }
+            port_->log(LogLevel::Warn, "检测到帧生成/插帧插件，但存在 imgui_dx12_force.txt：仍尝试启用图形菜单（可能不稳定）");
+            break;
+        }
+    }
+    if (overlay_->start([this](LogLevel level, const std::string& message) { port_->log(level, message); })) {
+        port_->log(LogLevel::Info, "图形菜单已就绪：按 T 或手柄 START 打开（首次打开加载中文字体可能轻微卡顿）");
+    } else {
+        port_->log(LogLevel::Warn, "图形菜单初始化失败，沿用 UMG 文字菜单（原因见上一条日志）");
+    }
+}
+
 void PhotoModeMod::handle_toggle() {
     if (!mode_) return;
     if (mode_->active()) {
         mode_->leave("hotkey");
+        if (overlay_ != nullptr) overlay_->set_menu_open(false);
     } else if (!mode_->enter()) {
         port_->log(LogLevel::Error, "进入摄影模式失败：" + mode_->last_error());
     } else {
         // 进模式时把 PC/Pawn/HUD/相机/ViewTarget 全打一遍，真机排障靠这个
         port_->dump_engine_state();
+        ensure_overlay_started();
+        if (overlay_ != nullptr && overlay_->available()) overlay_->set_menu_open(true);
         if (input_source_ != nullptr) {
             // raw=0 说明 Raw Input 没注册上（退化到 GetCursorPos 差分）；
             // 计数一直不涨说明输入根本没派发到本进程
@@ -253,7 +376,14 @@ void PhotoModeMod::handle_intent(const Intent& intent, double dt) {
         return;
     }
     if (intent.toggle_menu) {
-        mode_->toggle_menu();
+        if (overlay_ != nullptr && overlay_->available()) {
+            const bool open = !overlay_->menu_open();
+            overlay_->set_menu_open(open);
+            mode_->set_menu_visible(false);  // 图形菜单顶替文字菜单
+            port_->log(LogLevel::Info, open ? "图形菜单：开（T / ESC / 手柄 START 关闭）" : "图形菜单：关");
+        } else {
+            mode_->toggle_menu();
+        }
     }
     // 注意：toggle_freeze 由 PhotoMode::tick 统一处理，这里不能再调一次（会双翻转）
     mode_->tick(intent, dt);
@@ -262,22 +392,231 @@ void PhotoModeMod::handle_intent(const Intent& intent, double dt) {
 void PhotoModeMod::update_overlay() {
     if (!mode_ || !port_) return;
 
-    // 菜单关掉 / 退出模式时把屏幕上的字擦掉（HUD 只在有内容时画）
-    if (!mode_->active() || !mode_->menu_visible()) {
+    // 优先级 1：DX12 ImGui 浮窗（无帧生成 + imgui_dx12_force.txt 的进阶路径）
+    if (overlay_ != nullptr && overlay_->available()) {
+        port_->umg2_hide();
         port_->hide_overlay();
         return;
     }
 
+    const bool want_menu = mode_->active() && mode_->menu_visible();
+
+    // 优先级 2：UMG 交互菜单（游戏原生控件；帧生成环境下零冲突。构建失败自动落回文字版）
+    if (want_menu && port_->umg2_available()) {
+        // 鼠标命中判定（不走 Slate 路由）：窗口客户区 → 面板内坐标 → 命中区表。
+        // 坐标系必须与 ue4ss_port 的摆放一致（右上角锚定）；Slate 单位按缩放换算成物理像素。
+        // 1.2.1 的教训：摆放锚在左上、命中按右上算，点击永远落空，左键漏进相机移动。
+        Umg2Clicks clicks{};
+        umg2_cursor_in_panel_ = false;
+        if (!umg2_menu_open_prev_) {
+            umg2_menu_open_prev_ = true;
+            umg2_scale_override_ = read_umg2_scale_override(mod_directory());
+            umg2_scale_cached_ = 0.0f;
+            const HWND w = find_umg2_window();
+            RECT c{};
+            const bool have_client = w != nullptr && GetClientRect(w, &c) != 0;
+            float slate_w = 0.0f;
+            float slate_h = 0.0f;
+            // 缩放解析：umg2_scale.txt 覆盖 > 物理客户区/Slate视口 > 窗口DPI。
+            // UE 的 UI 缩放走分辨率曲线，跟 Windows DPI 是两码事；物理/Slate 才是真值
+            //（1.2.2 用 DPI 推算，2K/4K 或缩放曲线不对时命中区整体偏移）。
+            const bool have_slate = umg2_scale_override_ <= 0.0f && have_client &&
+                                    port_->umg2_viewport_size(slate_w, slate_h);
+            if (umg2_scale_override_ > 0.0f) {
+                umg2_scale_cached_ = umg2_scale_override_;
+            } else if (have_slate && slate_w > 1.0f) {
+                umg2_scale_cached_ = static_cast<float>(c.right) / slate_w;
+            }
+            if (have_client) {
+                const float s = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
+                                                          : static_cast<float>(umg2_dpi(w)) / 96.0f;
+                char buf[260]{};
+                std::snprintf(buf, sizeof(buf),
+                              "交互菜单命中映射：窗口=%p 客户区=%ldx%ld Slate视口=%.0fx%.0f DPI=%u 缩放=%.3f(%s) "
+                              "面板左缘x=%.0f 顶y=%.0f",
+                              reinterpret_cast<void*>(w), c.right, c.bottom, slate_w, slate_h, umg2_dpi(w), s,
+                              umg2_scale_override_ > 0.0f ? "覆盖" : (have_slate ? "视口换算" : "DPI兜底"),
+                              static_cast<float>(c.right) - umg2layout::kPanelFromRight * s,
+                              umg2layout::kPanelTop * s);
+                port_->log(LogLevel::Info, buf);
+            }
+        }
+        if (HWND game_window = find_umg2_window(); game_window != nullptr) {
+            RECT client{};
+            if (GetClientRect(game_window, &client)) {
+                POINT cursor{};
+                if (GetCursorPos(&cursor) && ScreenToClient(game_window, &cursor)) {
+                    float scale = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
+                                                            : static_cast<float>(umg2_dpi(game_window)) / 96.0f;
+                    scale = std::clamp(scale, 0.25f, 8.0f);
+                    const float panel_left_px = static_cast<float>(client.right) - umg2layout::kPanelFromRight * scale;
+                    const float px = (static_cast<float>(cursor.x) - panel_left_px) / scale;
+                    const float py = (static_cast<float>(cursor.y) - umg2layout::kPanelTop * scale) / scale;
+                    umg2_cursor_in_panel_ = px >= 0.0f && py >= 0.0f &&
+                                            px <= umg2layout::kPanelWidth && py <= umg2layout::kPanelHeight;
+                    const bool lmb = input_.left_down();
+                    const bool click = lmb && !lmb_prev_;
+                    lmb_prev_ = lmb;
+                    if (click) {
+                        for (const auto& item : umg2layout::kHits) {
+                            if (px < item.x || px > item.x + item.w || py < item.y || py > item.y + item.h) continue;
+                            if (strcmp(item.id, "fov_dec") == 0) clicks.fov_dec = true;
+                            else if (strcmp(item.id, "fov_inc") == 0) clicks.fov_inc = true;
+                            else if (strcmp(item.id, "speed_dec") == 0) clicks.speed_dec = true;
+                            else if (strcmp(item.id, "speed_inc") == 0) clicks.speed_inc = true;
+                            else if (strcmp(item.id, "sens_dec") == 0) clicks.sens_dec = true;
+                            else if (strcmp(item.id, "sens_inc") == 0) clicks.sens_inc = true;
+                            else if (strcmp(item.id, "freeze") == 0) clicks.freeze = true;
+                            else if (strcmp(item.id, "reset") == 0) clicks.reset = true;
+                            else if (strcmp(item.id, "exit") == 0) clicks.exit = true;
+                        }
+                        // 点在面板里却没命中任何按钮：把面板内坐标打出来（每秒一条），对着映射日志查偏差
+                        if (!(clicks.fov_dec || clicks.fov_inc || clicks.speed_dec || clicks.speed_inc ||
+                              clicks.sens_dec || clicks.sens_inc || clicks.freeze || clicks.reset || clicks.exit)) {
+                            const double now = monotonic_seconds();
+                            if (now - umg2_last_miss_log_ > 1.0) {
+                                umg2_last_miss_log_ = now;
+                                char buf[160]{};
+                                std::snprintf(buf, sizeof(buf), "交互菜单点击未命中：面板内(%.0f,%.0f) 缩放=%.3f", px, py, scale);
+                                port_->log(LogLevel::Info, buf);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Umg2Commands commands;
+        const MenuModel model = build_menu_model(*mode_, keys_);
+        if (port_->umg2_tick(model.status, mode_->fov(), cfg_.move_speed, cfg_.look_sensitivity, clicks, commands)) {
+            port_->hide_overlay();
+            apply_umg2_commands(commands);
+
+            // Esc 关闭菜单
+            const bool esc_down = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
+            if (esc_down && !esc_prev_) mode_->set_menu_visible(false);
+            esc_prev_ = esc_down;
+            return;
+        }
+    }
+    umg2_cursor_in_panel_ = false;
+    umg2_menu_open_prev_ = false;
+
+    if (!want_menu) {
+        port_->umg2_hide();
+        port_->hide_overlay();
+        return;
+    }
+
+    // 兜底：文字菜单（交互菜单构建失败时）
     const MenuModel model = build_menu_model(*mode_, keys_);
     const bool ok = port_->show_overlay(render_menu_text_ascii(model));
     if (ok != overlay_ok_) {
         overlay_ok_ = ok;
         if (!ok) {
-            port_->log(LogLevel::Warn, "游戏内菜单暂不可用（HUD 还没建好），稍后会自动重试");
+            port_->log(LogLevel::Warn, "游戏内菜单不可用（UMG 控件构建失败，原因见上一条日志）");
         } else {
-            port_->log(LogLevel::Info, "游戏内菜单已显示（HUD Canvas 或 PrintString 兜底）");
+            port_->log(LogLevel::Info, "游戏内菜单已显示（UMG 控件）");
         }
     }
+}
+
+// 应用 UMG 交互菜单攒下的动作（每帧轮询产生）
+void PhotoModeMod::apply_umg2_commands(const Umg2Commands& commands) {
+    if (commands.fov_step != 0) mode_->set_fov(mode_->fov() + commands.fov_step * cfg_.fov_step);
+    if (commands.speed_delta != 0.0) {
+        cfg_.move_speed = std::clamp(cfg_.move_speed + commands.speed_delta, 50.0, 2000.0);
+        mode_->set_config(cfg_);
+    }
+    if (commands.sens_delta != 0.0) {
+        cfg_.look_sensitivity = std::clamp(cfg_.look_sensitivity + commands.sens_delta, 0.01, 1.0);
+        mode_->set_config(cfg_);
+    }
+    if (commands.toggle_freeze) mode_->toggle_freeze();
+    if (commands.reset_view) menu_reset_view_ = true;
+    if (commands.exit_mode) {
+        mode_->leave("menu");
+        input_.reset();
+        overlay_ok_ = false;
+    }
+}
+
+// 图形菜单快照：引擎线程每帧发布一次（渲染线程只读快照，绝不直接碰 PhotoMode/Config）
+void PhotoModeMod::publish_menu_snapshot() {
+    const MenuModel model = build_menu_model(*mode_, keys_);
+    MenuView view;
+    view.active = mode_->active();
+    view.menu_open = overlay_->menu_open();
+    view.status = model.status;
+    view.status_frozen = model.status_frozen;
+    view.fov = mode_->fov();
+    view.fov_min = cfg_.fov_min;
+    view.fov_max = cfg_.fov_max;
+    view.move_speed = cfg_.move_speed;
+    view.look_sensitivity = cfg_.look_sensitivity;
+    view.pad_look_speed = cfg_.pad_look_speed;
+    view.pad_deadzone = cfg_.pad_deadzone;
+    view.pad_enabled = cfg_.pad_enabled;
+    view.hide_player = cfg_.hide_player;
+    view.block_game_input = cfg_.block_game_input;
+    view.hide_game_hud = cfg_.hide_game_hud;
+    view.auto_pause_time = cfg_.auto_pause_time;
+    view.pos[0] = mode_->pose().loc.x;
+    view.pos[1] = mode_->pose().loc.y;
+    view.pos[2] = mode_->pose().loc.z;
+    view.rot[0] = mode_->pose().rot.pitch;
+    view.rot[1] = mode_->pose().rot.yaw;
+    view.hints = model.hints;
+    view.hints_ascii = model.hints_ascii;
+    overlay_->publish(view, input_.gamepad());
+}
+
+// 应用图形菜单攒下的操作（渲染线程上一帧写入的）
+void PhotoModeMod::apply_menu_actions() {
+    MenuActions actions;
+    overlay_->drain(actions);
+
+    if (actions.close_menu && overlay_->menu_open()) {
+        overlay_->set_menu_open(false);
+        port_->log(LogLevel::Info, "图形菜单：关");
+    }
+    if (actions.exit_mode) {
+        overlay_->set_menu_open(false);
+        mode_->leave("menu");
+        input_.reset();
+        overlay_ok_ = false;
+        return;
+    }
+    if (actions.fov_changed) mode_->set_fov(actions.fov);
+    if (actions.speed_changed) {
+        cfg_.move_speed = actions.speed;
+        mode_->set_config(cfg_);
+    }
+    if (actions.sens_changed) {
+        cfg_.look_sensitivity = actions.sens;
+        mode_->set_config(cfg_);
+    }
+    if (actions.pad_speed_changed) {
+        cfg_.pad_look_speed = actions.pad_speed;
+        mode_->set_config(cfg_);
+    }
+    if (actions.pad_deadzone_changed) {
+        cfg_.pad_deadzone = actions.pad_deadzone;
+        mode_->set_config(cfg_);
+    }
+    if (actions.flag_pad_enabled) {
+        cfg_.pad_enabled = actions.v_pad_enabled;
+        mode_->set_config(cfg_);
+    }
+    if (actions.flag_auto_pause) {
+        cfg_.auto_pause_time = actions.v_auto_pause;
+        mode_->set_config(cfg_);
+    }
+    if (actions.flag_hide_player) mode_->set_hide_player_live(actions.v_hide_player);
+    if (actions.flag_block_input) mode_->set_block_game_input_live(actions.v_block_input);
+    if (actions.flag_hide_hud) mode_->set_hide_game_hud_live(actions.v_hide_hud);
+    if (actions.toggle_freeze) mode_->toggle_freeze();
+    if (actions.reset_view) menu_reset_view_ = true;
 }
 
 // 每秒打一行输入诊断：真机出问题时，这一行就能判断是“输入没到”还是“到了但没生效”
@@ -287,14 +626,17 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
     if (diag_accum_ < 1.0) return;
     diag_accum_ = 0.0;
 
-    char buf[320]{};
+    const char* graphic_state = (overlay_ != nullptr && overlay_->available())
+                                    ? (overlay_->menu_open() ? "DX12开" : "DX12关")
+                                    : port_->umg2_state().c_str();
+    char buf[360]{};
     std::snprintf(buf, sizeof(buf),
                   "输入诊断 alt=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
-                  "HUD回调=%u 手柄槽位=%d",
+                  "菜单=%s 图形=%s 手柄槽位=%d",
                   input_.alt_down() ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
                   input_source_->ll_ready() ? 1 : 0, input_source_->ll_wheel_events(),
                   input_source_->raw_ready() ? 1 : 0, input_source_->mouse_event_count(),
-                  port_->overlay_hook_hits(), input_source_->pad_slot());
+                  port_->umg_menu_state().c_str(), graphic_state, input_source_->pad_slot());
     engine_peak_dx_ = 0.0;
     engine_peak_dy_ = 0.0;
     port_->log(LogLevel::Info, std::string(buf) + " | " + port_->camera_state_summary());
@@ -393,12 +735,45 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     if (input_source_ != nullptr) input_source_->set_mouse_muted(axis_move_active_ || engine_delta_ok_);
 
     const Intent intent = input_.build(cfg_, keys_);
-    handle_intent(intent, dt);
+    Intent effective = intent;
+    if (menu_reset_view_) {
+        effective.reset_view = true;
+        menu_reset_view_ = false;
+    }
+    if (overlay_ != nullptr && overlay_->available() && overlay_->menu_open()) {
+        // 落在菜单上的滚轮转给 UI；UI 捕获鼠标（拖滑条等）时静音视角输入
+        if (effective.wheel != 0.0 && overlay_->cursor_in_menu()) {
+            overlay_->feed_wheel(effective.wheel);
+            effective.wheel = 0.0;
+        }
+        if (overlay_->ui_captures_mouse()) {
+            effective.look_dx = 0.0;
+            effective.look_dy = 0.0;
+            effective.pitch_up_click = false;
+            effective.pitch_down_click = false;
+        }
+    }
+    if (umg2_cursor_in_panel_) {
+        // 指针在交互菜单面板上：相机输入让位给菜单（上一帧判定，滞后一帧无感知）。
+        // move_up 必须一起静音：translate 模式左右键直接叠加进 move_up，
+        // 不静音的话点击面板会推高相机（1.2.1 实机症状）。
+        effective.look_dx = 0.0;
+        effective.look_dy = 0.0;
+        effective.pitch_up_click = false;
+        effective.pitch_down_click = false;
+        effective.wheel = 0.0;
+        effective.move_up = 0.0;
+    }
+    handle_intent(effective, dt);
     retry_view_attach(dt);
     ensure_axis_hook();
     log_input_diagnostics(intent, dt);
     input_.end_frame();
     update_overlay();
+    if (overlay_ != nullptr && overlay_->available()) {
+        publish_menu_snapshot();
+        apply_menu_actions();
+    }
 }
 
 }  // namespace pbzpm

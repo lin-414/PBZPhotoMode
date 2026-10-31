@@ -999,6 +999,63 @@ void test_photo_mode_input_blocking() {
     }
 }
 
+void test_photo_mode_live_toggles() {
+    section("PhotoMode 图形菜单实时开关");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 屏蔽输入：关→开 循环；退出只按内部标记还原，不多调
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.input_blocked);
+        mode.set_block_game_input_live(false);
+        CHECK(!fe.input_blocked);
+        CHECK_INT(fe.count("block_input_off"), 1);
+        CHECK_INT(fe.count("ignore_move_off"), 1);
+        mode.set_block_game_input_live(true);
+        CHECK(fe.input_blocked);
+        CHECK_INT(fe.count("block_input_on"), 2);
+        mode.leave("test");
+        CHECK(!fe.input_blocked);
+        CHECK_INT(fe.count("block_input_off"), 2);
+    }
+
+    // 隐藏角色：未进入模式时只改配置不碰引擎；进入后开/关即时生效
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        mode.set_hide_player_live(true);
+        CHECK_INT(fe.count("hide_player_on"), 0);
+        CHECK(mode.enter());
+        CHECK(fe.player_hidden);
+        mode.set_hide_player_live(true);
+        CHECK_INT(fe.count("hide_player_on"), 1);
+        mode.set_hide_player_live(false);
+        CHECK(!fe.player_hidden);
+        mode.leave("test");
+        CHECK_INT(fe.count("hide_player_off"), 1);
+        CHECK(!fe.player_hidden);
+    }
+
+    // HUD：进入时默认隐藏一次；开关来回切换即时生效
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(!fe.hud_visible);
+        mode.set_hide_game_hud_live(false);
+        CHECK(fe.hud_visible);
+        mode.set_hide_game_hud_live(false);
+        CHECK_INT(fe.count("hud_on"), 1);
+        mode.set_hide_game_hud_live(true);
+        CHECK(!fe.hud_visible);
+        mode.leave("test");
+        CHECK(fe.hud_visible);
+    }
+}
+
 void test_gamepad_names() {
     section("pad_button 名字表");
     using namespace pbzpm;
@@ -1417,6 +1474,7 @@ int main() {
     test_photo_mode_auto_pause();
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
+    test_photo_mode_live_toggles();
     test_menu_model();
     test_gamepad_names();
     test_gamepad_parse_combo();

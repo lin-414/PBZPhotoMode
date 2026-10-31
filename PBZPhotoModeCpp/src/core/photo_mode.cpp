@@ -210,6 +210,49 @@ void PhotoMode::toggle_freeze() {
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
 }
 
+// ---- 图形菜单实时开关：改配置 + 立即生效，内部记账与 enter()/leave() 共用 ----
+
+void PhotoMode::set_hide_player_live(bool visible) {
+    cfg_.hide_player = visible;
+    if (!active_) return;
+    if (visible && !player_hidden_) {
+        player_hidden_ = engine_.set_player_hidden(true);
+        if (!player_hidden_) log(LogLevel::Warn, "隐藏角色失败");
+    } else if (!visible && player_hidden_) {
+        engine_.set_player_hidden(false);
+        player_hidden_ = false;
+    }
+}
+
+void PhotoMode::set_block_game_input_live(bool blocked) {
+    cfg_.block_game_input = blocked;
+    if (!active_) return;
+    if (blocked) {
+        if (!ignore_move_set_) ignore_move_set_ = engine_.set_ignore_move_input(true);
+        if (!game_input_blocked_) game_input_blocked_ = engine_.set_game_input_blocked(true);
+    } else {
+        if (ignore_move_set_) {
+            engine_.set_ignore_move_input(false);
+            ignore_move_set_ = false;
+        }
+        if (game_input_blocked_) {
+            engine_.set_game_input_blocked(false);
+            game_input_blocked_ = false;
+        }
+    }
+}
+
+void PhotoMode::set_hide_game_hud_live(bool hidden) {
+    cfg_.hide_game_hud = hidden;
+    if (!active_) return;
+    if (hidden && !hud_hidden_) {
+        hud_hidden_ = engine_.set_hud_visible(false);
+    } else if (!hidden && hud_hidden_) {
+        engine_.set_hud_visible(true);
+        hud_hidden_ = false;
+    }
+}
+
 bool PhotoMode::apply_pose_if_dirty() {
     if (!pose_dirty_) return true;
     pose_.fov = fov_;

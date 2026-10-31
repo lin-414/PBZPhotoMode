@@ -14,11 +14,13 @@
 #ifdef PBZPM_WITH_UE4SS
 
 #include "engine/ue4ss_port.h"
+#include "engine/umg2_layout.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cctype>
 #include <cstdio>
+#include <cstring>
 #include <cmath>
 #include <filesystem>
 #include <string>
@@ -34,6 +36,7 @@
 #include <Unreal/FString.hpp>
 #include <Unreal/Hooks.hpp>
 #include <Unreal/Property/FEnumProperty.hpp>
+#include <Unreal/Property/FTextProperty.hpp>
 #include <Unreal/NameTypes.hpp>
 #include <Unreal/UObject.hpp>
 #include <Unreal/UFunctionStructs.hpp>
@@ -1498,296 +1501,682 @@ void Ue4ssPort::dump_engine_state() {
     if (!summary.empty()) log(LogLevel::Info, summary);
 }
 
+// ------------------------------------------------------------------ UMG 文字菜单
+//
+// 旧方案两条路在这作 Shipping 包里都不通：
+//   1) HUD Canvas：BP_PBZHud 是纯 UMG，AHUD::DrawHUD/ReceiveDrawHUD 从不被调用（历次实机
+//      日志 HUD绘制=0），Canvas 钩子永远等不到绘制时机；
+//   2) PrintString：PBZ.exe 是 UE5 Shipping 单体包，UKismetSystemLibrary::PrintString 的函数体
+//      被 #if !UE_BUILD_SHIPPING 整体裁掉，反射调用“成功”但什么都不画（1.0.1 实机已验证）。
+// 现在用引擎 UMG 类动态拼一个菜单：UserWidget(WidgetTree→CanvasPanel→TextBlock)，
+// AddToViewport 常驻，显示/隐藏走 SetVisibility，文本变化才 SetText。
+// 全程反射：对象用 UObjectGlobals::NewObject 创建（内部走游戏的 StaticConstructObject，
+// 原生构造函数会执行）；FText 用 KismetTextLibrary::Conv_StringToText 生成后按
+// “所有权移交”复制（ParamBlock 是裸字节数组，释放时不调 FText 析构，目标属性从此持有引用）。
+
 namespace {
-// ProcessEvent 钩子是全局的（没有 custom data），这里记下当前端口实例
-Ue4ssPort* g_overlay_port = nullptr;
 
-// 全局 ProcessEvent 钩子：UE4SS 里唯一能稳定拿到"HUD 正在画"的时机。
-// 为什么不用 UObjectGlobals::RegisterHook(HUD.ReceiveDrawHUD)：
-//   ReceiveDrawHUD 是 UFUNCTION(BlueprintImplementableEvent)，本作 BP_PBZHud_C 没实现它
-//   → UFunction::Script.Num()==0 → ProcessInternal 直接 return → ProcessLocalScriptFunction
-//     不会被调用 → GlobalScriptHook（按 full name 匹配）永远不会触发。
-//   ProcessEvent 则一定被 AHUD::DrawHUD 调用（原生 stub 内部 ProcessEvent），所以在
-//   ProcessEvent 层按函数名过滤是可靠的。
-void process_event_pre(RC::Unreal::UObject* context, RC::Unreal::UFunction* function, void* /*parms*/) {
-    if (g_overlay_port == nullptr) return;
-    g_overlay_port->on_process_event(context, function);
-}
-}  // namespace
-
-void Ue4ssPort::on_process_event(UObject* context, UFunction* function) {
-    if (function == nullptr || !is_ok(context)) return;
-    if (function->GetFName().ToUnstableInt() != overlay_target_name_) return;
-    ++overlay_hook_hits_;
-    draw_overlay(context);
+auto umg_class(const char* path) -> UClass* {
+    return UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, widen(path).c_str());
 }
 
-bool Ue4ssPort::ensure_overlay_hook() {
-    if (overlay_hook_installed_) return true;
-    if (overlay_hook_failed_) return false;
-
-    UObject* pc = controller();
-    UObject* hud = nullptr;
-    if (!is_ok(pc) || !read_object(find_property(pc, "MyHUD"), pc, hud) || !is_ok(hud)) {
-        return false;  // HUD 还没建好（主菜单/读盘中），下一帧再试
-    }
-
-    // 用实例的类去查 ReceiveDrawHUD：拿到真实的 UFunction（父类 AHUD 上的那个）
-    UFunction* draw_hud = hud->GetFunctionByNameInChain(widen("ReceiveDrawHUD").c_str());
-    if (draw_hud == nullptr) {
-        draw_hud = hud->GetFunctionByNameInChain(widen("DrawHUD").c_str());
-    }
-    if (draw_hud == nullptr) {
-        overlay_hook_failed_ = true;
-        log(LogLevel::Warn, "HUD 上找不到 ReceiveDrawHUD，游戏内菜单不可用（ImGui 面板仍可用）");
+// FString → FText：Conv_StringToText 的 ReturnValue（FText）按字节移交到目标 FText 属性。
+auto make_ftext_into(const std::string& text, FProperty* dst, void* dst_container) -> bool {
+    UObject* library = find_object("/Script/Engine.Default__KismetTextLibrary");
+    if (!is_ok(library)) return false;
+    UFunction* conv = find_function(library, "Conv_StringToText");
+    if (conv == nullptr) return false;
+    ParamBlock params(conv);
+    if (!params.valid()) return false;
+    if (!write_text(params.prop({"SourceString", "InString"}, 0), params.data(), text)) return false;
+    library->ProcessEvent(conv, params.data());
+    FProperty* ret = params.prop({"ReturnValue"}, 0);
+    if (ret == nullptr || !ret->IsA<FTextProperty>() || dst == nullptr || !dst->IsA<FTextProperty>()) {
         return false;
     }
-
-    // 强制 bShowHUD：AHUD::DrawHUD 开头就是 if(!bShowHUD) return;，
-    // 本作 HUD 完全靠 UMG，原生 canvas 很可能被关掉了。
-    if (!overlay_show_hud_forced_) {
-        const bool ok = write_bool(find_property(hud, "bShowHUD"), hud, true);
-        overlay_show_hud_forced_ = true;
-        log(LogLevel::Info, std::string("已强制 HUD.bShowHUD=true：") + (ok ? "成功" : "属性没找到"));
-    }
-
-    overlay_hud_ = hud;
-    overlay_target_name_ = draw_hud->GetFName().ToUnstableInt();
-    g_overlay_port = this;
-
-    if (!overlay_process_hook_installed_) {
-        RC::Unreal::Hook::RegisterProcessEventPreCallback(process_event_pre);
-        overlay_process_hook_installed_ = true;
-    }
-
-    overlay_hook_installed_ = true;
-    log(LogLevel::Info, "HUD Canvas 菜单钩子已挂上（ProcessEvent 过滤 ReceiveDrawHUD，HUD=" +
-                            narrow(hud->GetFullName()) + "）；若 HUD绘制 一直为 0 会自动改用 PrintString");
+    void* src = value_ptr(ret, params.data());
+    void* dst_addr = value_ptr(dst, dst_container);
+    if (src == nullptr || dst_addr == nullptr) return false;
+    const size_t bytes = ret->GetSize() < dst->GetSize() ? ret->GetSize() : dst->GetSize();
+    memcpy(dst_addr, src, bytes);
     return true;
 }
 
-void Ue4ssPort::ensure_screen_messages_enabled() {
-    if (screen_messages_checked_) return;
-    screen_messages_checked_ = true;
-
-    std::vector<UObject*> engines;
-    RC::Unreal::UObjectGlobals::FindAllOf(STR("GameEngine"), engines);
-    for (UObject* engine : engines) {
-        if (!is_ok(engine)) continue;
-        write_bool(find_property(engine, "bEnableOnScreenDebugMessages"), engine, true);
-        write_bool(find_property(engine, "bEnableOnScreenDebugMessagesDisplay"), engine, true);
-    }
+// FAnchor { FVector2D Minimum; FVector2D Maximum; }：两层嵌套的数字成员写入
+auto write_anchor(FProperty* anchor_prop, void* container, double min_x, double min_y, double max_x,
+                  double max_y) -> bool {
+    void* base = struct_member_base(anchor_prop, container);
+    if (base == nullptr) return false;
+    FProperty* minimum = struct_member(anchor_prop, "Minimum");
+    FProperty* maximum = struct_member(anchor_prop, "Maximum");
+    if (minimum == nullptr || maximum == nullptr) return false;
+    return write_struct_number(minimum, base, "X", min_x) && write_struct_number(minimum, base, "Y", min_y) &&
+           write_struct_number(maximum, base, "X", max_x) && write_struct_number(maximum, base, "Y", max_y);
 }
 
-// PrintString 是左上角起画，按 1080p 的引擎调试字体尺寸估算，把 ASCII 菜单推到右下角。
-std::string Ue4ssPort::build_print_menu_text(const std::string& text) {
-    double screen_w = 1920.0;
-    double screen_h = 1080.0;
-    if (UObject* pc = controller(); is_ok(pc)) {
-        if (UFunction* get_size = find_function(pc, "GetViewportSize"); get_size != nullptr) {
-            ParamBlock params(get_size);
-            if (params.valid()) {
-                pc->ProcessEvent(get_size, params.data());
-                double sx = 0.0;
-                double sy = 0.0;
-                if (params.get_number("SizeX", sx) && params.get_number("SizeY", sy) && sx > 64.0 && sy > 64.0) {
-                    screen_w = sx;
-                    screen_h = sy;
-                }
-            }
-        }
-    }
-
-    std::vector<std::string> lines;
-    std::string current;
-    for (const char ch : text) {
-        if (ch == '\n') {
-            lines.push_back(current);
-            current.clear();
-        } else if (ch != '\r') {
-            current.push_back(ch);
-        }
-    }
-    if (!current.empty()) lines.push_back(current);
-    while (!lines.empty() && lines.back().empty()) lines.pop_back();
-    if (lines.empty()) return text;
-
-    std::size_t longest = 0;
-    for (const std::string& line : lines) longest = std::max(longest, line.size());
-
-    const double line_h = std::max(6.0, screen_h / 78.0);
-    const double char_w = std::max(3.0, screen_w / 290.0);
-    const int rows = std::max(1, static_cast<int>((screen_h - 24.0) / line_h));
-    const int cols = std::max(1, static_cast<int>((screen_w - 24.0) / char_w));
-    const int pad_top = std::max(0, rows - static_cast<int>(lines.size()) - 2);
-    const int pad_left = std::max(0, cols - static_cast<int>(longest) - 4);
-
-    std::string out;
-    out.append(static_cast<std::size_t>(pad_top), '\n');
-    const std::string prefix(static_cast<std::size_t>(pad_left), ' ');
-    for (const std::string& line : lines) {
-        out += prefix;
-        out += line;
-        out.push_back('\n');
-    }
-    return out;
-}
-
-// 兜底路径：引擎的 on-screen debug message。早期原型已证明本作可用，
-// 关键是 duration 参数必须写对（见 overlay_via_print_string）。
-bool Ue4ssPort::overlay_via_print_string(const std::string& text, double duration) {
-    ensure_screen_messages_enabled();
-    UObject* library = kismet_system_library();
-    UObject* scene = world();
-    if (!is_ok(library) || !is_ok(scene)) return false;
-
-    return invoke(library, "PrintString", [&](ParamBlock& params) {
-        if (!params.set_object("WorldContextObject", scene)) return false;
-        if (!params.set_text("InString", text)) return false;
-        if (!params.set_bool("bPrintToScreen", true)) return false;
-        // 不写日志：菜单每 0.35 秒重推一次，打开 bPrintToLog 会刷爆 UE4SS.log
-        params.set_bool("bPrintToLog", false);
-        if (FProperty* color = params.property("TextColor"); color != nullptr) {
-            write_struct_number(color, params.data(), "R", 1.0);
-            write_struct_number(color, params.data(), "G", 0.85);
-            write_struct_number(color, params.data(), "B", 0.35);
-            write_struct_number(color, params.data(), "A", 1.0);
-        }
-        // 关键：本作 UEngine 里这个参数名是小写的 duration。以前写成 "Duration"
-        // 按名字查不到，ParamBlock 静默失败后 duration=0，消息立刻消失——看起来就像
-        // “PrintString 调用成功但屏幕上什么都没有”。
-        if (!params.set_number_any({"duration", "Duration"}, -1, duration)) return false;
-        if (!params.set_name("Key", "PBZPhotoModeMenu")) return false;
-        return true;
-    });
-}
-
-void Ue4ssPort::draw_overlay(UObject* hud) {
-    if (!overlay_visible_ || overlay_text_.empty() || !is_ok(hud)) return;
-
-    // 1) 画布尺寸（右下角定位用）
-    double size_x = 1920.0;
-    double size_y = 1080.0;
-    UObject* canvas = nullptr;
-    const bool canvas_ok = read_object(find_property(hud, "Canvas"), hud, canvas) && is_ok(canvas);
-    if (canvas_ok) {
-        double value = 0.0;
-        if (read_number(find_property(canvas, "SizeX"), canvas, value) && value > 1.0) size_x = value;
-        if (read_number(find_property(canvas, "SizeY"), canvas, value) && value > 1.0) size_y = value;
-    }
-
-    // 第一次真正进来时打一遍诊断：画布在不在、多大、量到多宽——真机排障就靠这三行
-    if (!overlay_diag_logged_) {
-        overlay_diag_logged_ = true;
-        char buf[200]{};
-        std::snprintf(buf, sizeof(buf), "HUD 绘制诊断：命中=%u Canvas=%s 尺寸=%.0fx%.0f", overlay_hook_hits_,
-                      canvas_ok ? "有效" : "空", size_x, size_y);
-        log(LogLevel::Info, buf);
-    }
-
-    // 2) 量文字尺寸：AHUD::GetTextSize(Text, OutWidth, OutHeight, Font, Scale)
-    double width = 0.0;
-    double height = 0.0;
-    bool measured = false;
-    if (UFunction* measure = find_function(hud, "GetTextSize"); measure != nullptr) {
-        ParamBlock params(measure);
-        if (params.valid()) {
-            write_text(params.prop({"Text", "InString"}, 0), params.data(), overlay_text_);
-            write_number(params.prop({"Scale"}, 4), params.data(), 1.0);
-            hud->ProcessEvent(measure, params.data());
-            measured = read_number(params.prop({"OutWidth", "Width"}, 1), params.data(), width) &&
-                       read_number(params.prop({"OutHeight", "Height"}, 2), params.data(), height);
-        }
-    }
-    if (width <= 1.0 || height <= 1.0) {
-        // 估算兜底：引擎小字体约 8px 宽 / 16px 高
-        std::size_t longest = 0;
-        std::size_t current = 0;
-        int lines = 1;
-        for (const char ch : overlay_text_) {
-            if (ch == 0x0A) {
-                longest = std::max(longest, current);
-                current = 0;
-                ++lines;
-            } else {
-                ++current;
-            }
-        }
-        longest = std::max(longest, current);
-        width = static_cast<double>(longest) * 8.0;
-        height = static_cast<double>(lines) * 16.0;
-    }
-
-    const float x = static_cast<float>(std::max(8.0, size_x - width - 24.0));
-    const float y = static_cast<float>(std::max(8.0, size_y - height - 24.0));
-
-    // 3) AHUD::DrawText(Text, TextColor, ScreenX, ScreenY, Font, Scale, bScalePosition)
-    //    走 HUD 的 Canvas，和游戏自己的 UI 同一条绘制管线；Font 传空时 AHUD 会自动用小字体。
-    UFunction* draw_text = find_function(hud, "DrawText");
-    if (draw_text == nullptr) return;
-    ParamBlock params(draw_text);
-    if (!params.valid()) return;
-    void* data = params.data();
-    if (!write_text(params.prop({"Text", "InString"}, 0), data, overlay_text_)) return;
-    FProperty* color = params.prop({"TextColor", "Color"}, 1);
-    write_struct_number(color, data, "R", 1.0);
-    write_struct_number(color, data, "G", 1.0);
-    write_struct_number(color, data, "B", 1.0);
-    write_struct_number(color, data, "A", 1.0);
-    write_number(params.prop({"ScreenX", "X"}, 2), data, x);
-    write_number(params.prop({"ScreenY", "Y"}, 3), data, y);
-    write_number(params.prop({"Scale"}, 5), data, 1.0);
-    write_bool(params.prop({"bScalePosition"}, 6), data, false);
-    hud->ProcessEvent(draw_text, params.data());
-}
-
-namespace {
 auto steady_seconds() -> double {
     static const auto start = std::chrono::steady_clock::now();
     return std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
 }
+
 }  // namespace
+
+// 换图/GC 之后缓存的控件指针不可信，一律按创建时记录的全名重新查找；
+// 查不到说明控件已不在（不解引用悬垂指针），调用方据此重建。
+RC::Unreal::UObject* Ue4ssPort::umg_live() const {
+    if (umg_widget_ == nullptr || umg_widget_path_.empty()) return nullptr;
+    return UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, widen(umg_widget_path_).c_str());
+}
+
+void Ue4ssPort::umg_drop() {
+    umg_widget_ = nullptr;
+    umg_tree_ = nullptr;
+    umg_canvas_ = nullptr;
+    umg_text_ = nullptr;
+    umg_widget_path_.clear();
+    umg_last_text_.clear();
+    umg_visibility_state_ = -1;
+    umg_shown_ = false;
+}
+
+// 动态拼装菜单控件。每一步失败都打日志（同类只打一次），真机排障靠这个定位卡在哪一步。
+bool Ue4ssPort::ensure_umg_menu() {
+    UClass* user_widget_class = umg_class("/Script/UMG.UserWidget");
+    UClass* widget_tree_class = umg_class("/Script/UMG.WidgetTree");
+    UClass* text_block_class = umg_class("/Script/UMG.TextBlock");
+    UClass* canvas_panel_class = umg_class("/Script/UMG.CanvasPanel");
+    if (user_widget_class == nullptr || widget_tree_class == nullptr || text_block_class == nullptr ||
+        canvas_panel_class == nullptr) {
+        if (!umg_failed_logged_) {
+            umg_failed_logged_ = true;
+            log(LogLevel::Warn, "UMG 菜单：引擎类缺失（UserWidget/WidgetTree/TextBlock/CanvasPanel），菜单不可用");
+        }
+        return false;
+    }
+
+    UObject* scene = world();
+    if (!is_ok(scene)) return false;  // 世界没就绪：下帧再试，不算失败
+
+    UObject* widget = UObjectGlobals::NewObject<UObject>(scene, user_widget_class);
+    if (!is_ok(widget)) {
+        if (!umg_failed_logged_) {
+            umg_failed_logged_ = true;
+            log(LogLevel::Warn, "UMG 菜单：UserWidget 创建失败");
+        }
+        return false;
+    }
+
+    // UUserWidget 构造器一般会建好 WidgetTree；没有就补一个（CreateWidget 流程同款）。
+    UObject* tree = nullptr;
+    FProperty* tree_prop = find_property(widget, "WidgetTree");
+    read_object(tree_prop, widget, tree);
+    if (!is_ok(tree)) {
+        tree = UObjectGlobals::NewObject<UObject>(widget, widget_tree_class);
+        if (!is_ok(tree) || !write_object(tree_prop, widget, tree)) {
+            log(LogLevel::Warn, "UMG 菜单：WidgetTree 创建失败");
+            return false;
+        }
+    }
+
+    // 根画布与文本控件：按 UMG 约定 outer 到 WidgetTree 上；名字留空让引擎自动生成，
+    // 重建时不会和旧对象重名。
+    UObject* canvas = UObjectGlobals::NewObject<UObject>(tree, canvas_panel_class);
+    UObject* text = UObjectGlobals::NewObject<UObject>(tree, text_block_class);
+    if (!is_ok(canvas) || !is_ok(text)) {
+        log(LogLevel::Warn, "UMG 菜单：CanvasPanel/TextBlock 创建失败");
+        return false;
+    }
+    if (!write_object(find_property(tree, "RootWidget"), tree, canvas)) {
+        log(LogLevel::Warn, "UMG 菜单：WidgetTree.RootWidget 写入失败");
+        return false;
+    }
+
+    UFunction* add_child = find_function(canvas, "AddChildToCanvas");
+    if (add_child == nullptr) {
+        log(LogLevel::Warn, "UMG 菜单：找不到 CanvasPanel.AddChildToCanvas");
+        return false;
+    }
+    UObject* slot = nullptr;
+    {
+        ParamBlock params(add_child);
+        if (!params.valid() || !write_object(params.prop({"Widget"}, 0), params.data(), text)) {
+            log(LogLevel::Warn, "UMG 菜单：AddChildToCanvas 参数写入失败");
+            return false;
+        }
+        canvas->ProcessEvent(add_child, params.data());
+        read_object(params.prop({"ReturnValue"}, 0), params.data(), slot);
+    }
+    if (!is_ok(slot)) {
+        log(LogLevel::Warn, "UMG 菜单：AddChildToCanvas 没返回槽位");
+        return false;
+    }
+
+    // 右下角布局：锚点(1,1) + 对齐(1,1) + 偏移(-24,-24) + 自动按文本尺寸。
+    // 1.0.19 实机：四个 Set* 走 UFunction 至少一个没生效（日志“槽位布局没写全”），菜单被屏幕边裁掉。
+    // 所以这里改为直接写 UCanvasPanelSlot.LayoutData（FAnchorData{Anchors,Offsets,Alignment}）+
+    // bAutoSize 属性——不依赖 UFunction 的参数名；setter 保留在前（若正常也能同步 Slate 状态）。
+    // 全部发生在 AddToViewport 之前：Slate 槽位在 TakeWidget 时才从 LayoutData 构建，直写一定生效。
+    const bool fn_anchors = invoke(slot, "SetAnchors", [&](ParamBlock& p) {
+        return write_anchor(p.prop({"InAnchors", "Anchors"}, 0), p.data(), 1.0, 1.0, 1.0, 1.0);
+    });
+    const bool fn_align = invoke(slot, "SetAlignment", [&](ParamBlock& p) {
+        FProperty* align = p.prop({"InAlignment", "Alignment"}, 0);
+        return write_struct_number(align, p.data(), "X", 1.0) && write_struct_number(align, p.data(), "Y", 1.0);
+    });
+    const bool fn_pos = invoke(slot, "SetPosition", [&](ParamBlock& p) {
+        FProperty* pos = p.prop({"InPosition", "Position"}, 0);
+        return write_struct_number(pos, p.data(), "X", -24.0) && write_struct_number(pos, p.data(), "Y", -24.0);
+    });
+    const bool fn_auto = invoke(slot, "SetAutoSize", [&](ParamBlock& p) { return p.set_bool("InAutoSize", true); });
+
+    bool w_anchors = false;
+    bool w_align = false;
+    bool w_pos = false;
+    bool w_auto = false;
+    FProperty* layout_data = find_property(slot, "LayoutData");
+    void* layout_base = struct_member_base(layout_data, slot);
+    if (layout_base != nullptr) {
+        FProperty* anchors_prop = struct_member(layout_data, "Anchors");
+        FProperty* offsets_prop = struct_member(layout_data, "Offsets");
+        FProperty* align_prop = struct_member(layout_data, "Alignment");
+        if (anchors_prop != nullptr && offsets_prop != nullptr && align_prop != nullptr) {
+            w_anchors = write_anchor(anchors_prop, layout_base, 1.0, 1.0, 1.0, 1.0);
+            w_pos = write_struct_number(offsets_prop, layout_base, "Left", -24.0) &&
+                    write_struct_number(offsets_prop, layout_base, "Top", -24.0);
+            w_align = write_struct_number(align_prop, layout_base, "X", 1.0) &&
+                      write_struct_number(align_prop, layout_base, "Y", 1.0);
+        }
+    }
+    w_auto = write_bool(find_property(slot, "bAutoSize"), slot, true);
+    if (!(fn_anchors && fn_align && fn_pos && fn_auto) || !(w_anchors && w_align && w_pos && w_auto)) {
+        log(LogLevel::Warn, "UMG 菜单：槽位布局 setter(锚" + std::string(fn_anchors ? "√" : "×") + "/对齐" +
+                                std::string(fn_align ? "√" : "×") + "/位置" + std::string(fn_pos ? "√" : "×") + "/自动" +
+                                std::string(fn_auto ? "√" : "×") + ") 直写(锚" + std::string(w_anchors ? "√" : "×") +
+                                "/对齐" + std::string(w_align ? "√" : "×") + "/位置" +
+                                std::string(w_pos ? "√" : "×") + "/自动" + std::string(w_auto ? "√" : "×") + ")");
+    }
+
+    // 回读：真机核对每个字段是否真的写进去了（对不上就是字段名/结构布局有出入）
+    if (layout_base != nullptr) {
+        FProperty* anchors_prop = struct_member(layout_data, "Anchors");
+        FProperty* offsets_prop = struct_member(layout_data, "Offsets");
+        FProperty* align_prop = struct_member(layout_data, "Alignment");
+        auto read_nested = [&](FProperty* parent, const char* sub, const char* member, double& out) {
+            FProperty* sub_prop = struct_member(parent, sub);
+            void* sub_base = struct_member_base(sub_prop, layout_base);
+            return sub_base != nullptr && read_number(struct_member(sub_prop, member), sub_base, out);
+        };
+        double aminx = -1, aminy = -1, amaxx = -1, amaxy = -1, offl = 0, offt = 0, alx = -1, aly = -1, auto_v = -1;
+        const bool r1 = read_nested(anchors_prop, "Minimum", "X", aminx) && read_nested(anchors_prop, "Minimum", "Y", aminy);
+        const bool r2 = read_nested(anchors_prop, "Maximum", "X", amaxx) && read_nested(anchors_prop, "Maximum", "Y", amaxy);
+        const bool r3 = read_number(struct_member(offsets_prop, "Left"), struct_member_base(offsets_prop, layout_base), offl) &&
+                        read_number(struct_member(offsets_prop, "Top"), struct_member_base(offsets_prop, layout_base), offt);
+        const bool r4 = read_number(struct_member(align_prop, "X"), struct_member_base(align_prop, layout_base), alx) &&
+                        read_number(struct_member(align_prop, "Y"), struct_member_base(align_prop, layout_base), aly);
+        const bool r5 = read_number(find_property(slot, "bAutoSize"), slot, auto_v);
+        char buf[200]{};
+        std::snprintf(buf, sizeof(buf),
+                      "UMG 槽位回读：anchors=(%.0f,%.0f)-(%.0f,%.0f) pos=(%.0f,%.0f) align=(%.0f,%.0f) auto=%.0f（读取 %d%d%d%d%d）",
+                      aminx, aminy, amaxx, amaxy, offl, offt, alx, aly, auto_v, r1 ? 1 : 0, r2 ? 1 : 0, r3 ? 1 : 0,
+                      r4 ? 1 : 0, r5 ? 1 : 0);
+        log(LogLevel::Info, buf);
+    }
+    // 槽位类的属性名 dump（一次性）：字段名对不上时真机日志直接可见
+    if (!slot_props_logged_) {
+        slot_props_logged_ = true;
+        std::string names;
+        for (TFieldIterator<FProperty> it(slot->GetClassPrivate()); it; ++it) {
+            names += narrow(it->GetName());
+            names.push_back(' ');
+            if (names.size() > 380) {
+                names += "…";
+                break;
+            }
+        }
+        log(LogLevel::Info, "槽位属性: " + names);
+    }
+
+    // 文本颜色（琥珀，沿用旧 PrintString 菜单的配色）；ColorUseRule 留 0 = 用指定色
+    invoke(text, "SetColorAndOpacity", [&](ParamBlock& p) {
+        FProperty* color = p.prop({"InColorAndOpacity", "ColorAndOpacity"}, 0);
+        void* base = struct_member_base(color, p.data());
+        if (base == nullptr) return false;
+        FProperty* specified = struct_member(color, "SpecifiedColor");
+        return specified != nullptr && write_struct_number(specified, base, "R", 1.0) &&
+               write_struct_number(specified, base, "G", 0.85) && write_struct_number(specified, base, "B", 0.35) &&
+               write_struct_number(specified, base, "A", 1.0);
+    });
+
+    if (!invoke(widget, "AddToViewport", [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+        log(LogLevel::Warn, "UMG 菜单：AddToViewport 失败");
+        return false;
+    }
+
+    umg_widget_ = widget;
+    umg_tree_ = tree;
+    umg_canvas_ = canvas;
+    umg_text_ = text;
+    umg_widget_path_ = narrow(widget->GetFullName());
+    umg_last_text_.clear();
+    umg_visibility_state_ = 0;  // AddToViewport 后默认可见
+    umg_failed_logged_ = false;
+    if (!umg_ready_logged_) {
+        umg_ready_logged_ = true;
+        log(LogLevel::Info, "UMG 菜单已创建：" + umg_widget_path_ + "（右下角；隐藏/显示走 SetVisibility）");
+    }
+    return true;
+}
+
+bool Ue4ssPort::umg_set_text(const std::string& text) {
+    if (!is_ok(umg_text_)) return false;
+    UFunction* set_text = find_function(umg_text_, "SetText");
+    if (set_text == nullptr) return false;
+    ParamBlock params(set_text);
+    if (!params.valid()) return false;
+    if (!make_ftext_into(text, params.prop({"InText", "Text"}, 0), params.data())) return false;
+    umg_text_->ProcessEvent(set_text, params.data());
+    return true;
+}
 
 bool Ue4ssPort::show_overlay(const std::string& text) {
     overlay_text_ = text;
     overlay_visible_ = true;
 
-    // 主路径：HUD Canvas。只有真的收到 ReceiveDrawHUD 回调（overlay_hook_hits_ > 0）
-    // 才说明这条管线可用；本作 BP_PBZHud 根本不走 AHUD::DrawHUD，所以这里通常为 0。
-    if (!overlay_hook_installed_ && !overlay_hook_failed_) {
-        ensure_overlay_hook();
-    }
-    if (overlay_hook_installed_ && overlay_hook_hits_ > 0) {
-        print_path_working_ = false;
-        return true;
+    // 控件被换图/GC 清掉就重建（umg_live 按全名查活，不解引用缓存指针）。
+    // 重建限 0.5 秒一次：万一查活路径在引擎里解析不了，最坏也是节流失败而不是每帧狂建控件。
+    if (umg_live() == nullptr) {
+        const bool was_rebuild = umg_widget_ != nullptr;
+        umg_drop();
+        const double rebuild_now = steady_seconds();
+        if (rebuild_now - umg_last_rebuild_ < 0.5) return false;
+        umg_last_rebuild_ = rebuild_now;
+        if (!ensure_umg_menu()) return false;
+        // 只在真重建（控件曾存在又查不到了）时打日志；若这行刷屏说明查活路径有问题，实机日志能直接暴露
+        if (was_rebuild) log(LogLevel::Info, "UMG 菜单：查活失败，已重建控件");
     }
 
-    // 兜底：KismetSystemLibrary::PrintString。早期原型已经证明这条路在本作可用；
-    // 关键是 duration 不能是 0，并且每 0.35 秒用同一个 FName Key 重推一次。
+    // 文本变化才 SetText：每帧重建 FText 是白费
+    if (text != umg_last_text_) {
+        if (!umg_set_text(text)) {
+            if (!umg_failed_logged_) {
+                umg_failed_logged_ = true;
+                log(LogLevel::Warn, "UMG 菜单：SetText 失败");
+            }
+            return false;
+        }
+        umg_last_text_ = text;
+    }
+
+    // 每秒确认一次还在视口里：有的游戏换图会清视口内容但控件对象还活着
     const double now = steady_seconds();
-    if (now - last_print_push_ < 0.35) return print_path_working_;
-    last_print_push_ = now;
-    const bool ok = overlay_via_print_string(build_print_menu_text(text), 1.0);
-    if (ok != print_path_working_) {
-        print_path_working_ = ok;
-        if (ok) {
-            log(LogLevel::Info, "游戏内菜单改走 PrintString（HUD 绘制回调未触发）");
-        } else {
-            log(LogLevel::Warn, "游戏内菜单 PrintString 调用失败（打印属性不匹配）");
+    if (now - umg_last_vp_check_ >= 1.0) {
+        umg_last_vp_check_ = now;
+        bool in_viewport = true;
+        invoke_bool(umg_widget_, "IsInViewport", [](ParamBlock&) { return true; }, in_viewport);
+        if (!in_viewport) {
+            if (!invoke(umg_widget_, "AddToViewport",
+                        [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+                return false;
+            }
+            log(LogLevel::Info, "UMG 菜单：发现不在视口，已重新 AddToViewport");
         }
     }
-    return ok;
+
+    if (umg_visibility_state_ != 0) {
+        if (!set_widget_visibility(umg_widget_, 0)) return false;  // 0 = ESlateVisibility::Visible
+        umg_visibility_state_ = 0;
+    }
+    umg_shown_ = true;
+    return true;
 }
 
 void Ue4ssPort::hide_overlay() {
-    if (overlay_visible_ && print_path_working_) {
-        // 用同一个 Key 推一条空消息，立刻把残留的菜单擦掉
-        overlay_via_print_string("", 0.05);
-    }
     overlay_visible_ = false;
     overlay_text_.clear();
-    print_path_working_ = false;
-    last_print_push_ = 0.0;
+    // 只在“可见→隐藏”的沿上碰引擎：隐藏态下这里每帧都会进来，不能每帧都调引擎
+    if (!umg_shown_) return;
+    umg_shown_ = false;
+    umg_last_text_.clear();
+    UObject* live = umg_live();
+    if (live != nullptr && umg_visibility_state_ != 1) {
+        if (set_widget_visibility(live, 1)) umg_visibility_state_ = 1;  // 1 = ESlateVisibility::Collapsed
+    }
+}
+
+std::string Ue4ssPort::umg_menu_state() const {
+    if (umg_widget_ == nullptr) return "未创建";
+    return umg_shown_ ? "显示" : "隐藏";
+}
+
+// ------------------------------------------------------------------ UMG 交互菜单（v1.2.1）
+//
+// 帧生成插件（FSR3-FG 等）包装交换链并管住 back buffer 的资源状态，任何 D3D 注入式渲染
+// 都会跟它们抢状态机（1.1.2 实机 dump）。这版改用**游戏自己的 UMG 控件**：帧生成把它当
+// 普通画面合成，零冲突。
+//
+// **控件词汇表刻意收缩到 1.0.19/1.0.20 整场实机验证过的安全集**：CanvasPanel + TextBlock，
+// 全部操作 = NewObject/AddChildToCanvas/LayoutData 直写/SetText/SetVisibility/AddToViewport/
+// IsInViewport。1.2.0 里引入的 VerticalBox/Slider/Button 及其 ProcessEvent 在本作触发了游戏
+// 代码内的访问违例（08:17 dump：ProcessEvent 派发进 PBZ.exe 后读 0xFFFFFFFFFFFFFFFF），全部移除。
+//
+// 交互不依赖 Slate 路由：「按钮」是文本，命中判定由 mod_app 用自己的鼠标状态 + 命中区
+// （engine/umg2_layout.h）完成，点击动作经 Umg2Clicks 传进来。
+
+RC::Unreal::UObject* Ue4ssPort::umg2_live() const {
+    if (umg2_widget_ == nullptr || umg2_path_.empty()) return nullptr;
+    return UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, widen(umg2_path_).c_str());
+}
+
+void Ue4ssPort::umg2_drop() {
+    umg2_widget_ = nullptr;
+    umg2_tree_ = nullptr;
+    umg2_status_ = nullptr;
+    umg2_fov_value_ = nullptr;
+    umg2_speed_value_ = nullptr;
+    umg2_sens_value_ = nullptr;
+    umg2_path_.clear();
+    umg2_visibility_state_ = -1;
+    umg2_shown_ = false;
+}
+
+bool Ue4ssPort::umg2_set_text(UObject* widget, const std::string& text) {
+    if (!is_ok(widget)) return false;
+    UFunction* set_text = find_function(widget, "SetText");
+    if (set_text == nullptr) return false;
+    ParamBlock params(set_text);
+    if (!params.valid()) return false;
+    if (!make_ftext_into(text, params.prop({"InText", "Text"}, 0), params.data())) return false;
+    widget->ProcessEvent(set_text, params.data());
+    return true;
+}
+
+bool Ue4ssPort::ensure_umg2_menu() {
+    UClass* user_widget_class = umg_class("/Script/UMG.UserWidget");
+    UClass* widget_tree_class = umg_class("/Script/UMG.WidgetTree");
+    UClass* canvas_panel_class = umg_class("/Script/UMG.CanvasPanel");
+    UClass* text_block_class = umg_class("/Script/UMG.TextBlock");
+    if (user_widget_class == nullptr || widget_tree_class == nullptr || canvas_panel_class == nullptr ||
+        text_block_class == nullptr) {
+        if (!umg2_failed_logged_) {
+            umg2_failed_logged_ = true;
+            log(LogLevel::Warn, "交互菜单：引擎 UMG 类缺失，回退文字菜单");
+        }
+        umg2_unavailable_ = true;
+        return false;
+    }
+
+    UObject* scene = world();
+    if (!is_ok(scene)) return false;  // 世界没就绪：下帧再试
+
+    UObject* widget = UObjectGlobals::NewObject<UObject>(scene, user_widget_class);
+    if (!is_ok(widget)) {
+        if (!umg2_failed_logged_) {
+            umg2_failed_logged_ = true;
+            log(LogLevel::Warn, "交互菜单：UserWidget 创建失败，回退文字菜单");
+        }
+        umg2_unavailable_ = true;
+        return false;
+    }
+
+    UObject* tree = nullptr;
+    FProperty* tree_prop = find_property(widget, "WidgetTree");
+    read_object(tree_prop, widget, tree);
+    if (!is_ok(tree)) {
+        tree = UObjectGlobals::NewObject<UObject>(widget, widget_tree_class);
+        if (!is_ok(tree) || !write_object(tree_prop, widget, tree)) {
+            log(LogLevel::Warn, "交互菜单：WidgetTree 创建失败");
+            umg2_unavailable_ = true;
+            return false;
+        }
+    }
+
+    UObject* canvas = UObjectGlobals::NewObject<UObject>(tree, canvas_panel_class);
+    if (!is_ok(canvas)) {
+        log(LogLevel::Warn, "交互菜单：CanvasPanel 创建失败");
+        umg2_unavailable_ = true;
+        return false;
+    }
+    if (!write_object(find_property(tree, "RootWidget"), tree, canvas)) {
+        log(LogLevel::Warn, "交互菜单：RootWidget 写入失败");
+        umg2_unavailable_ = true;
+        return false;
+    }
+
+    // 按 umg2layout::kTexts 摆放全部文本（AddChildToCanvas + LayoutData 直写，1.0.20 验证过）；
+    // @开头的动态行缓存指针供 umg2_tick 更新
+    UObject* title = nullptr;
+    for (const auto& item : umg2layout::kTexts) {
+        UObject* w = UObjectGlobals::NewObject<UObject>(tree, text_block_class);
+        if (!is_ok(w)) {
+            log(LogLevel::Warn, "交互菜单：TextBlock 创建失败");
+            umg2_drop();
+            umg2_unavailable_ = true;
+            return false;
+        }
+        UFunction* add_child = find_function(canvas, "AddChildToCanvas");
+        UObject* slot = nullptr;
+        if (add_child != nullptr) {
+            ParamBlock params(add_child);
+            if (params.valid() && write_object(params.prop({"Widget"}, 0), params.data(), w)) {
+                canvas->ProcessEvent(add_child, params.data());
+                read_object(params.prop({"ReturnValue"}, 0), params.data(), slot);
+            }
+        }
+        if (!is_ok(slot)) {
+            log(LogLevel::Warn, "交互菜单：画布槽位创建失败");
+            umg2_drop();
+            umg2_unavailable_ = true;
+            return false;
+        }
+        FProperty* layout_data = find_property(slot, "LayoutData");
+        void* base = struct_member_base(layout_data, slot);
+        if (base != nullptr) {
+            FProperty* anchors = struct_member(layout_data, "Anchors");
+            FProperty* offsets = struct_member(layout_data, "Offsets");
+            FProperty* alignment = struct_member(layout_data, "Alignment");
+            if (anchors != nullptr && offsets != nullptr && alignment != nullptr) {
+                // 右上角锚定（与 mod_app 的命中判定同一套坐标）：锚点(1,0) + 对齐(0,0)，
+                // Left = 面板内x - kPanelFromRight、Top = 面板内y + kPanelTop。
+                // 1.2.1 漏了这层锚定（全 0 锚点把面板钉在屏幕左上角），命中测试却按右上角算，点击全部落空。
+                write_anchor(anchors, base, 1.0, 0.0, 1.0, 0.0);
+                write_struct_number(offsets, base, "Left", item.x - umg2layout::kPanelFromRight);
+                write_struct_number(offsets, base, "Top", item.y + umg2layout::kPanelTop);
+                write_struct_number(alignment, base, "X", 0.0);
+                write_struct_number(alignment, base, "Y", 0.0);
+            }
+        }
+        write_bool(find_property(slot, "bAutoSize"), slot, true);
+
+        const std::string text = item.text;
+        if (text == "@status") {
+            umg2_status_ = w;
+            umg2_set_text(w, "STATE : ...");
+        } else if (text == "@fov") {
+            umg2_fov_value_ = w;
+            umg2_set_text(w, "84.0");
+        } else if (text == "@speed") {
+            umg2_speed_value_ = w;
+            umg2_set_text(w, "400 /s");
+        } else if (text == "@sens") {
+            umg2_sens_value_ = w;
+            umg2_set_text(w, "0.10");
+        } else {
+            umg2_set_text(w, text);
+            if (title == nullptr) {
+                title = w;
+                invoke(w, "SetColorAndOpacity", [&](ParamBlock& p) {
+                    FProperty* color = p.prop({"InColorAndOpacity", "ColorAndOpacity"}, 0);
+                    void* color_base = struct_member_base(color, p.data());
+                    if (color_base == nullptr) return false;
+                    FProperty* specified = struct_member(color, "SpecifiedColor");
+                    return specified != nullptr && write_struct_number(specified, color_base, "R", 1.0) &&
+                           write_struct_number(specified, color_base, "G", 0.85) &&
+                           write_struct_number(specified, color_base, "B", 0.35) &&
+                           write_struct_number(specified, color_base, "A", 1.0);
+                });
+            }
+        }
+    }
+
+    if (!is_ok(umg2_status_) || !is_ok(umg2_fov_value_) || !is_ok(umg2_speed_value_) || !is_ok(umg2_sens_value_)) {
+        log(LogLevel::Warn, "交互菜单：动态行缺失，回退文字菜单");
+        umg2_drop();
+        umg2_unavailable_ = true;
+        return false;
+    }
+
+    if (!invoke(widget, "AddToViewport", [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+        log(LogLevel::Warn, "交互菜单：AddToViewport 失败");
+        umg2_drop();
+        umg2_unavailable_ = true;
+        return false;
+    }
+
+    umg2_widget_ = widget;
+    umg2_tree_ = tree;
+    umg2_path_ = narrow(widget->GetFullName());
+    umg2_visibility_state_ = 0;
+    umg2_shown_ = true;
+    umg2_last_status_.clear();
+    umg2_last_fov_text_.clear();
+    umg2_last_speed_text_.clear();
+    umg2_last_sens_text_.clear();
+    umg2_failed_logged_ = false;
+    if (!umg2_ready_logged_) {
+        umg2_ready_logged_ = true;
+        log(LogLevel::Info, "交互菜单已创建：" + umg2_path_ + "（右上角；文本按钮 + 自判定点击）");
+    }
+    return true;
+}
+
+bool Ue4ssPort::umg2_viewport_size(float& w, float& h) {
+    w = 0.0f;
+    h = 0.0f;
+    UObject* ksl =
+        UObjectGlobals::StaticFindObject<UObject*>(nullptr, nullptr, L"/Script/Engine.Default__KismetSystemLibrary");
+    if (!is_ok(ksl)) return false;
+    UFunction* fn = find_function(ksl, "GetViewportSize");
+    if (fn == nullptr) return false;
+    UObject* scene = world();
+    if (!is_ok(scene)) return false;
+    ParamBlock params(fn);
+    if (!params.valid()) return false;
+    if (!write_object(params.prop({"WorldContextObject"}, 0), params.data(), scene)) return false;
+    ksl->ProcessEvent(fn, params.data());
+    double sx = 0.0;
+    double sy = 0.0;
+    if (!read_number(params.prop({"SizeX"}, 0), params.data(), sx) ||
+        !read_number(params.prop({"SizeY"}, 0), params.data(), sy)) {
+        return false;
+    }
+    if (sx <= 1.0 || sy <= 1.0) return false;
+    w = static_cast<float>(sx);
+    h = static_cast<float>(sy);
+    return true;
+}
+
+bool Ue4ssPort::umg2_available() const { return !umg2_unavailable_; }
+
+std::string Ue4ssPort::umg2_state() const {
+    if (umg2_unavailable_) return "不可用";
+    if (umg2_widget_ == nullptr) return "未创建";
+    return umg2_shown_ ? "交互" : "隐藏";
+}
+
+void Ue4ssPort::umg2_hide() {
+    if (!umg2_shown_) return;
+    umg2_shown_ = false;
+    if (umg2_cursor_shown_) {
+        if (UObject* pc = controller(); is_ok(pc)) {
+            write_bool(find_property(pc, "bShowMouseCursor"), pc, false);
+        }
+        umg2_cursor_shown_ = false;
+    }
+    UObject* live = umg2_live();
+    if (live != nullptr && umg2_visibility_state_ != 1) {
+        if (set_widget_visibility(live, 1)) umg2_visibility_state_ = 1;  // Collapsed
+    }
+}
+
+bool Ue4ssPort::umg2_tick(const std::string& status, double fov, double speed, double sens,
+                          const Umg2Clicks& clicks, Umg2Commands& out) {
+    if (umg2_unavailable_) return false;
+
+    // 查活 + 节流重建（与文字菜单同款防 GC 策略）
+    if (umg2_live() == nullptr) {
+        const bool was_rebuild = umg2_widget_ != nullptr;
+        umg2_drop();
+        const double now = steady_seconds();
+        if (now - umg2_last_rebuild_ < 0.5) return false;
+        umg2_last_rebuild_ = now;
+        if (!ensure_umg2_menu()) return false;
+        if (was_rebuild) log(LogLevel::Info, "交互菜单：查活失败，已重建控件");
+    }
+
+    // ---- 点击 → 动作（命中判定在 mod_app，传进来的是面板内按钮的点击沿）
+    if (clicks.fov_dec) out.fov_step -= 1;
+    if (clicks.fov_inc) out.fov_step += 1;
+    if (clicks.speed_dec) out.speed_delta -= 20.0;
+    if (clicks.speed_inc) out.speed_delta += 20.0;
+    if (clicks.sens_dec) out.sens_delta -= 0.01;
+    if (clicks.sens_inc) out.sens_delta += 0.01;
+    if (clicks.freeze) out.toggle_freeze = true;
+    if (clicks.reset) out.reset_view = true;
+    if (clicks.exit) out.exit_mode = true;
+
+    // ---- 数值标签（变化才 SetText）
+    char buf[48]{};
+    if (is_ok(umg2_fov_value_)) {
+        std::snprintf(buf, sizeof(buf), "%.1f", fov);
+        if (umg2_last_fov_text_ != buf) {
+            umg2_set_text(umg2_fov_value_, buf);
+            umg2_last_fov_text_ = buf;
+        }
+    }
+    if (is_ok(umg2_speed_value_)) {
+        std::snprintf(buf, sizeof(buf), "%.0f /s", speed);
+        if (umg2_last_speed_text_ != buf) {
+            umg2_set_text(umg2_speed_value_, buf);
+            umg2_last_speed_text_ = buf;
+        }
+    }
+    if (is_ok(umg2_sens_value_)) {
+        std::snprintf(buf, sizeof(buf), "%.2f", sens);
+        if (umg2_last_sens_text_ != buf) {
+            umg2_set_text(umg2_sens_value_, buf);
+            umg2_last_sens_text_ = buf;
+        }
+    }
+    if (is_ok(umg2_status_) && umg2_last_status_ != status) {
+        umg2_set_text(umg2_status_, "STATE : " + status);
+        umg2_last_status_ = status;
+    }
+
+    // ---- 鼠标指针：拍照模式游戏会藏指针，菜单打开期间持续保持可见（纯属性写，无游戏代码执行）
+    if (UObject* pc = controller(); is_ok(pc)) {
+        write_bool(find_property(pc, "bShowMouseCursor"), pc, true);
+        umg2_cursor_shown_ = true;
+    }
+
+    // ---- 每秒确认还在视口（换图清视口但控件还活着的情形）
+    const double now = steady_seconds();
+    if (now - umg2_vp_check_ >= 1.0) {
+        umg2_vp_check_ = now;
+        bool in_viewport = true;
+        invoke_bool(umg2_widget_, "IsInViewport", [](ParamBlock&) { return true; }, in_viewport);
+        if (!in_viewport && invoke(umg2_widget_, "AddToViewport",
+                                   [&](ParamBlock& p) { return p.set_number_any({"ZOrder"}, 0, 10000.0); })) {
+            umg2_visibility_state_ = 0;
+            log(LogLevel::Info, "交互菜单：发现不在视口，已重新 AddToViewport");
+        }
+    }
+
+    if (umg2_visibility_state_ != 0) {
+        UObject* live = umg2_live();
+        if (live != nullptr && set_widget_visibility(live, 0)) umg2_visibility_state_ = 0;
+    }
+    umg2_shown_ = true;
+    return true;
 }
 
 }  // namespace pbzpm

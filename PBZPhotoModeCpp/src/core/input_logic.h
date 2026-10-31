@@ -67,6 +67,8 @@ public:
     bool alt_down() const;
     bool left_down() const { return lmb_; }
     bool right_down() const { return rmb_; }
+    // 最近一次 on_gamepad 喂入的快照（图形菜单的手柄导航用）
+    const PadState& gamepad() const { return pad_; }
 
     // 只读：同一帧可以多次调用，只有 end_frame() 会清状态。
     Intent build(const Config& cfg, const KeyMap& keys) const;
