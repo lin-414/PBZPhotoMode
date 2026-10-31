@@ -25,6 +25,8 @@ public:
     bool input_blocked{false};
     bool player_hidden{false};
     bool hud_visible{true};
+    bool prompts_visible{true};
+    int prompt_restore_count{0};
     bool postfx_saved{false};
     CameraPose last_pose{};
     double last_fov{0.0};
@@ -46,6 +48,7 @@ public:
     bool fail_block_input{false};
     bool fail_hide_player{false};
     bool fail_hud{false};
+    bool fail_prompts{false};
     bool fail_postfx{false};
     bool fail_pause{false};
     bool fail_time_dilation{false};
@@ -118,6 +121,13 @@ public:
         calls.push_back(visible ? "hud_on" : "hud_off");
         if (fail_hud && !visible) return false;
         hud_visible = visible;
+        return true;
+    }
+    bool set_interact_prompts_visible(bool visible) override {
+        calls.push_back(visible ? "prompt_on" : "prompt_off");
+        if (fail_prompts && !visible) return false;
+        prompts_visible = visible;
+        if (visible) ++prompt_restore_count;
         return true;
     }
     double get_time_dilation() override {

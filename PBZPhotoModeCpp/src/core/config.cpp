@@ -155,6 +155,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "ultrawide_unlock") set_bool(cfg.ultrawide_unlock, value, error, key.c_str());
         else if (key == "hide_player") set_bool(cfg.hide_player, value, error, key.c_str());
         else if (key == "hide_game_hud") set_bool(cfg.hide_game_hud, value, error, key.c_str());
+        else if (key == "hide_interact_prompt") set_bool(cfg.hide_interact_prompt, value, error, key.c_str());
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
         else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
         else if (key == "restore_fov_on_exit") set_bool(cfg.restore_fov_on_exit, value, error, key.c_str());
@@ -344,6 +345,8 @@ std::string default_config_text() {
         << "hide_player = false\n"
         << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"
         << "hide_game_hud = true\n"
+        << "; 进入摄影模式时隐藏交互提示（可互物体旁的 E 键图标，退出时恢复）\n"
+        << "hide_interact_prompt = true\n"
         << "; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）\n"
         << "auto_pause_time = " << (c.auto_pause_time ? "true" : "false") << "\n"
         << "; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停\n"

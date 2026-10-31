@@ -37,3 +37,6 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 nul
+dist/
+*.webp
+_inspect*

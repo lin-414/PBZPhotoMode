@@ -107,6 +107,7 @@ void test_config_defaults_and_parse() {
     CHECK(empty.cfg.block_game_input);
     CHECK(!empty.cfg.hide_player);
     CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
+    CHECK(empty.cfg.hide_interact_prompt);  // 默认隐藏交互提示（E 键图标）
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
@@ -399,8 +400,8 @@ void test_photo_mode_happy_path() {
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "hud_off", "aspect_unlock", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose",
-                     "pause_on"},
+                     "hud_off", "prompt_off", "aspect_unlock", "save_postfx", "get_time_dilation", "apply_fov",
+                     "apply_pose", "pause_on"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -410,6 +411,7 @@ void test_photo_mode_happy_path() {
     CHECK(fe.input_blocked);
     CHECK(!fe.player_hidden);  // 默认不隐藏角色：摄影模式要能把自己拍进去
     CHECK(!fe.hud_visible);    // 默认隐藏游戏 HUD
+    CHECK(!fe.prompts_visible);  // 默认隐藏交互提示
     CHECK_NEAR(mode.fov(), 88.0, 1e-9);
     CHECK_NEAR(mode.pose().rot.yaw, 45.0, 1e-9);
     CHECK(mode.frozen());  // 默认 auto_pause_time=true：进入即冻结
@@ -425,8 +427,8 @@ void test_photo_mode_happy_path() {
     fe.reset_calls();
     mode.leave("test");
     expect_sequence(fe,
-                    {"pause_off", "restore_postfx", "restore_aspect", "hud_on", "block_input_off", "ignore_move_off",
-                     "restore_view", "destroy_camera"},
+                    {"pause_off", "restore_postfx", "restore_aspect", "hud_on", "prompt_on", "block_input_off",
+                     "ignore_move_off", "restore_view", "destroy_camera"},
                     "退出");
     CHECK(!mode.active());
     CHECK(!fe.paused);
@@ -436,6 +438,7 @@ void test_photo_mode_happy_path() {
     CHECK(!fe.input_blocked);
     CHECK(!fe.player_hidden);
     CHECK(fe.hud_visible);  // 退出后恢复
+    CHECK(fe.prompts_visible);  // 交互提示退出后恢复
     CHECK_NEAR(fe.dilation, 1.0, 1e-12);
 
     // 幂等：再退一次不应有任何调用
@@ -895,6 +898,55 @@ void test_photo_mode_reassert_and_partial() {
         CHECK(!fe.hud_visible);  // 每秒重试后成功
         mode.leave();
         CHECK(fe.hud_visible);
+    }
+}
+
+// ---------------------------------------------------------------- 交互提示（E 键图标）
+
+void test_photo_mode_interact_prompt() {
+    section("PhotoMode 交互提示隐藏");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 默认开启：进入隐藏、退出恢复，各只调一次
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(!fe.prompts_visible);
+        mode.leave();
+        CHECK(fe.prompts_visible);
+        CHECK_INT(fe.count("prompt_off"), 1);
+        CHECK_INT(fe.count("prompt_on"), 1);
+    }
+
+    // 配置关闭：进出都不碰交互提示
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.hide_interact_prompt = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(fe.prompts_visible);
+        mode.leave();
+        CHECK_INT(fe.count("prompt_off"), 0);
+        CHECK_INT(fe.count("prompt_on"), 0);
+    }
+
+    // 提示组件晚挂出：进入时隐藏失败，tick 每秒重试，成功后退出仍能恢复
+    {
+        FakeEngine fe;
+        fe.fail_prompts = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.prompts_visible);  // 第一次隐藏失败
+        CHECK(fe.logs_contain("隐藏交互提示失败"));
+        fe.fail_prompts = false;
+        Intent none;
+        for (int i = 0; i < 5; ++i) mode.tick(none, 0.25);  // 累计 1.25 秒，跨过重试阈值
+        CHECK(!fe.prompts_visible);  // 每秒重试后成功
+        mode.leave();
+        CHECK(fe.prompts_visible);
     }
 }
 
@@ -1813,6 +1865,7 @@ int main() {
     test_photo_mode_input_blocking();
     test_photo_mode_live_toggles();
     test_photo_mode_ultrawide();
+    test_photo_mode_interact_prompt();
     test_menu_model();
     test_gamepad_names();
     test_gamepad_parse_combo();

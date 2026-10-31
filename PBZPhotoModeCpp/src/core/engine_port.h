@@ -43,6 +43,11 @@ public:
     virtual bool set_player_hidden(bool hidden) = 0;
     virtual bool set_hud_visible(bool visible) = 0;
 
+    // 交互提示（可互物体旁的 E 键图标）：进入摄影模式时隐藏、退出还原。
+    // 它是 PBZInteractComponent 挂的世界空间 UMG：SetHideUIForPV 不覆盖它，
+    // 而且暂停下游戏 UI 不再刷新，已经画出来的提示必须隐藏控件组件本身才会消失。
+    virtual bool set_interact_prompts_visible(bool visible) = 0;
+
     // 超宽屏（21:9/32:9）支持：游戏把画幅锁在 16:9，超宽屏两侧补黑边。
     // 进入摄影模式时解除锁定（实现内部保存原值），退出时按进入前的状态还原。
     // 失败只告警不阻断进模式（游戏可能根本没锁，或属性不在预期位置）。

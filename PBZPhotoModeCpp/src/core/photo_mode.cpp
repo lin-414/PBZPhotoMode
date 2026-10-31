@@ -86,6 +86,10 @@ bool PhotoMode::enter() {
         hud_hidden_ = engine_.set_hud_visible(false);
         if (!hud_hidden_) log(LogLevel::Warn, "隐藏 HUD 失败");
     }
+    if (cfg_.hide_interact_prompt) {
+        prompt_hidden_ = engine_.set_interact_prompts_visible(false);
+        if (!prompt_hidden_) log(LogLevel::Warn, "隐藏交互提示失败");
+    }
     if (cfg_.ultrawide_unlock) {
         aspect_unlocked_ = engine_.unlock_aspect_ratio();
         if (!aspect_unlocked_) log(LogLevel::Warn, "画幅解锁失败：超宽屏（21:9/32:9）两侧黑边可能不会消除");
@@ -106,6 +110,7 @@ bool PhotoMode::enter() {
     pose_dirty_ = false;
     reassert_accum_ = 0.0;
     hud_retry_accum_ = 0.0;
+    prompt_retry_accum_ = 0.0;
 
     char buf[160]{};
     std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
@@ -121,7 +126,7 @@ bool PhotoMode::enter() {
 
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
-        !hud_hidden_ && !aspect_unlocked_ && !postfx_saved_) {
+        !hud_hidden_ && !prompt_hidden_ && !aspect_unlocked_ && !postfx_saved_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
@@ -144,6 +149,10 @@ void PhotoMode::leave(const char* reason) {
     if (hud_hidden_) {
         engine_.set_hud_visible(true);
         hud_hidden_ = false;
+    }
+    if (prompt_hidden_) {
+        engine_.set_interact_prompts_visible(true);
+        prompt_hidden_ = false;
     }
     if (player_hidden_) {
         engine_.set_player_hidden(false);
@@ -378,6 +387,16 @@ void PhotoMode::tick(const Intent& intent, double dt) {
             hud_retry_accum_ = 0.0;
             hud_hidden_ = engine_.set_hud_visible(false);
             if (hud_hidden_) log(LogLevel::Info, "HUD 延迟隐藏成功");
+        }
+    }
+
+    // 交互提示同理：进入时可能还没挂出（或第一次没找到），每秒重试直到成功
+    if (cfg_.hide_interact_prompt && !prompt_hidden_) {
+        prompt_retry_accum_ += dt;
+        if (prompt_retry_accum_ >= 1.0) {
+            prompt_retry_accum_ = 0.0;
+            prompt_hidden_ = engine_.set_interact_prompts_visible(false);
+            if (prompt_hidden_) log(LogLevel::Info, "交互提示延迟隐藏成功");
         }
     }
 

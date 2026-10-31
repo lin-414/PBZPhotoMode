@@ -63,6 +63,7 @@ public:
     bool set_game_input_blocked(bool blocked) override;
     bool set_player_hidden(bool hidden) override;
     bool set_hud_visible(bool visible) override;
+    bool set_interact_prompts_visible(bool visible) override;
 
     bool unlock_aspect_ratio() override;
     void restore_aspect_ratio() override;
@@ -201,6 +202,15 @@ private:
     std::vector<std::pair<RC::Unreal::UObject*, int>> hud_widgets_;
     bool hud_widget_missing_logged_{false};
     bool pv_hide_active_{false};  // 本次隐藏是否走了 UIManager.SetHideUIForPV
+
+    // 交互提示（E 键图标）：被隐藏的控件组件（指针 + 原始 bVisible），退出时原样恢复
+    std::vector<std::pair<RC::Unreal::UObject*, bool>> prompt_components_;
+    // 游戏设置的“场景交互提示”开关（bSceneInteractPromptVisible）进入时保存的状态
+    bool prompt_setting_saved_{false};
+    bool prompt_setting_original_{true};
+    RC::Unreal::UObject* prompt_setting_owner_{nullptr};
+    bool prompt_setting_missing_logged_{false};
+    bool prompt_component_missing_logged_{false};
     // UMG 菜单控件（UserWidget → WidgetTree → CanvasPanel → TextBlock）
     RC::Unreal::UObject* umg_widget_{nullptr};
     RC::Unreal::UObject* umg_tree_{nullptr};

@@ -57,6 +57,7 @@ struct Config {
     // ---- [effects] ----
     bool hide_player{false};
     bool hide_game_hud{true};    // 摄影模式默认隐藏游戏 HUD（退出时恢复）
+    bool hide_interact_prompt{true};  // 摄影模式默认隐藏交互提示（可互物体旁的 E 键图标，退出恢复）
     bool auto_pause_time{true};  // 进入摄影模式时自动暂停时间（默认开启）
     FreezeMode freeze_mode{FreezeMode::Pause};
     double freeze_dilation{0.0001};

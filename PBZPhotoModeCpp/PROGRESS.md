@@ -887,3 +887,18 @@ OFL 许可跟着资产走。
   才转拷（资产迭代调试用）；启动日志 `pak 通道：模组目录没有 paks\（正常…）`。
   `menu_pak_autocopy` 配置键保留，注释四处同步更新。
 - pack.py 改双包打包（PBZPhotoModeCpp + PBZPhotoModeUI，同号发布）。核心层 527 项全绿不变。
+
+### 1.5.0 资产 pak 第二轮（IoStore 三件套）+ 交付纪律重申
+
+- **第 1 轮实机失败**（12:38 日志）：经典单 `.pak` 在 ~mods 里存在，但 `WBP 菜单：资产加载失败`——本作是
+  IoStore 引擎，只挂 `pak+utoc+ucas` 三件套（4 个社区 mod 全是三件套且 .pak 近乎空壳；目录索引在 utoc，
+  经典 pak 里的 uasset 包 IoDispatcher 不读）。经典 pak 快捷路线判死。
+- **改走 UAT 正规管线**：ProjectPBZ 工程拆 Runtime/Editor 双模块 + 加 ProjectPBZGame target（UAT 强制要求
+  Game target）→ `RunUAT BuildCookRun -build -cook -stage -pak -compressed` 产出三件套
+  （147MB 诊断版：ucas 130MB 含引擎启动包）。utoc 内确认含 "PBZPhotoMode/WBP_PBZ" 路径串（目录索引在 utoc）。
+- **交付纪律重申（用户指示）**：不直接往游戏目录部署任何东西——一律出 zip（主模组 + UI 资产模组两个独立包）
+  由用户用模组管理器安装。曾短暂直接部署三件套到 ~mods，已按指示撤回。
+- 当前包：`PBZPhotoModeCpp_1.5.0-cpp.zip`（470KB）+ `PBZPhotoModeUI_1.5.0-cpp.zip`（147MB 诊断版，含三件套
+  + README + OFL）。**待用户第 2 轮实机验证**：确认 IoStore 格式能被挂载、WBP_Dummy 出 "PAK OK"。
+- 已知欠账：147MB 太肥（含引擎启动内容，且理论上有 /Engine 包 ID 与游戏自带内容重名的风险）——格式确认后
+  下一轮做瘦身容器（只含 /Game/PBZPhotoMode 三包，目标 ~8MB）。

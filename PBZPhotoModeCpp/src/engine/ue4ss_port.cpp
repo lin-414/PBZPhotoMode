@@ -1088,6 +1088,162 @@ bool Ue4ssPort::set_hud_visible(bool visible) {
     return pv_restored || touched;
 }
 
+// ------------------------------------------------------------------ 交互提示（E 键图标）
+
+namespace {
+
+// 场景互动物（铃铛/拾取点/机关）旁的“E”提示是 PBZInteractComponent
+// （游戏源码 System/Character/Components/PBZInteractComponent.cpp）挂的世界空间 UMG：
+//   ① 控件组件实例：组件上的 InteractWidgetComponent 属性（UWidgetComponent）；
+//   ② 游戏自带设置开关：bSceneInteractPromptVisible（SetSceneInteractPromptVisible/Get…）。
+// SetHideUIForPV 不覆盖它，而且暂停（freeze_mode=pause）下游戏 UI 不再刷新，
+// 已经画出来的提示必须把组件本身藏掉才会消失——所以两条路都用：
+// 设置开关管住之后新出现的提示，控件组件管住此刻已经画出来的。
+
+// 设置开关挂在哪个类离线确定不了（exe 里只有属性/函数名），运行时按候选探测：
+// 第一个带 bSceneInteractPromptVisible 属性的实例就是它（跳过 CDO，优先活对象）。
+auto find_scene_prompt_setting_owner() -> UObject* {
+    static const char* candidates[] = {
+        "PBZUIManagerSubsystem", "BP_GameInstance_C", "PBZGameUserSettings", "PBZCommonUserSettings",
+        "PBZSettingsSubsystem", "PBZUserSettings", "PBZSettingsShared", "PBZSettings", "GameUserSettings",
+    };
+    UObject* cdo_fallback = nullptr;
+    for (const char* name : candidates) {
+        std::vector<UObject*> found;
+        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
+        for (UObject* object : found) {
+            if (!is_ok(object)) continue;
+            if (find_property(object, "bSceneInteractPromptVisible") == nullptr) continue;
+            if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
+            if (cdo_fallback == nullptr) cdo_fallback = object;
+        }
+    }
+    return cdo_fallback;
+}
+
+// UWidgetComponent 继承 USceneComponent：SetVisibility(false) 后渲染器不再画它。
+// UFunction 不可用时直写 bVisible 属性（暂停下没有“下一帧”，但恢复发生在退出后的活世界，没有影响）。
+auto set_component_visibility(UObject* component, bool visible) -> bool {
+    if (invoke(component, "SetVisibility",
+               [&](ParamBlock& params) { return params.set_bool("bNewVisibility", visible); })) {
+        return true;
+    }
+    return write_bool(find_property(component, "bVisible"), component, visible);
+}
+
+// 设置开关 setter 的参数名离线确认不了，按候选名试；全不中由调用方直写属性。
+auto fill_prompt_setting_param(ParamBlock& params, bool value) -> bool {
+    return params.set_bool("bVisible", value) || params.set_bool("bNewValue", value) ||
+           params.set_bool("bNewVisible", value) || params.set_bool("bNewVisibility", value) ||
+           params.set_bool("Value", value) || params.set_bool("InVisible", value);
+}
+
+}  // namespace
+
+bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
+    bool touched = false;
+
+    // ---- 路线 ①：游戏设置开关（管住之后新出现的提示）----
+    if (!visible) {
+        UObject* owner = find_scene_prompt_setting_owner();
+        if (is_ok(owner)) {
+            FProperty* property = find_property(owner, "bSceneInteractPromptVisible");
+            double original = 1.0;
+            if (read_number(property, owner, original)) {
+                prompt_setting_saved_ = true;
+                prompt_setting_original_ = original != 0.0;
+                prompt_setting_owner_ = owner;
+            }
+            bool set_ok = invoke(owner, "SetSceneInteractPromptVisible",
+                                 [&](ParamBlock& params) { return fill_prompt_setting_param(params, visible); });
+            // setter 参数名对不上时直接写属性（值本身一定在）；广播缺失只影响“立刻隐藏已画出的”，
+            // 那部分由路线 ② 的组件隐藏兜住。
+            if (!set_ok) set_ok = write_bool(property, owner, visible);
+            if (set_ok) {
+                touched = true;
+                log(LogLevel::Info, "场景交互提示开关已" + std::string(visible ? "打开" : "关闭") +
+                                        "（owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+            }
+        } else if (!prompt_setting_missing_logged_) {
+            prompt_setting_missing_logged_ = true;
+            log(LogLevel::Warn, "候选对象里找不到场景交互提示开关（bSceneInteractPromptVisible）");
+        }
+    } else if (prompt_setting_saved_) {
+        bool restored = false;
+        if (is_ok(prompt_setting_owner_)) {
+            restored = invoke(prompt_setting_owner_, "SetSceneInteractPromptVisible",
+                              [&](ParamBlock& params) { return fill_prompt_setting_param(params, prompt_setting_original_); });
+            if (!restored) {
+                restored = write_bool(find_property(prompt_setting_owner_, "bSceneInteractPromptVisible"),
+                                      prompt_setting_owner_, prompt_setting_original_);
+            }
+        }
+        prompt_setting_saved_ = false;
+        prompt_setting_owner_ = nullptr;
+        if (restored) {
+            touched = true;
+            log(LogLevel::Info, "场景交互提示开关已还原");
+        }
+    }
+
+    // ---- 路线 ②：控件组件（管住此刻已经画出来的）----
+    std::vector<UObject*> components;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("PBZInteractComponent"), components);
+
+    if (!visible) {
+        int hidden_count = 0;
+        for (UObject* interact : components) {
+            if (!is_ok(interact)) continue;
+            UObject* widget_component = nullptr;
+            for (const char* property_name : {"InteractWidgetComponent", "WidgetComponent", "InteractWidget"}) {
+                if (read_object(find_property(interact, property_name), interact, widget_component) &&
+                    is_ok(widget_component)) {
+                    break;
+                }
+            }
+            if (!is_ok(widget_component)) continue;
+            bool tracked = false;
+            for (const auto& entry : prompt_components_) {
+                if (entry.first == widget_component) {
+                    tracked = true;
+                    break;
+                }
+            }
+            if (tracked) continue;
+            double original_visible = 1.0;
+            if (!read_number(find_property(widget_component, "bVisible"), widget_component, original_visible)) {
+                original_visible = 1.0;
+            }
+            if (set_component_visibility(widget_component, false)) {
+                prompt_components_.emplace_back(widget_component, original_visible != 0.0);
+                ++hidden_count;
+            }
+        }
+        if (hidden_count > 0) {
+            touched = true;
+            log(LogLevel::Info, "已隐藏交互提示控件：数量=" + std::to_string(hidden_count) +
+                                    "（退出摄影模式时恢复原可见性）");
+        } else if (components.empty() && !touched && !prompt_component_missing_logged_) {
+            prompt_component_missing_logged_ = true;
+            log(LogLevel::Warn, "场景里没有 PBZInteractComponent（交互提示若仍在屏上，把这条日志发回来）");
+        }
+    } else {
+        // 重新枚举做存活校验：换图/GC 后旧组件可能已销毁，不能直接解引用旧指针
+        int restored_count = 0;
+        for (const auto& entry : prompt_components_) {
+            if (!pointer_in(components, entry.first)) continue;
+            if (set_component_visibility(entry.first, entry.second)) ++restored_count;
+        }
+        if (restored_count > 0) {
+            touched = true;
+            log(LogLevel::Info, "已恢复交互提示控件：数量=" + std::to_string(restored_count));
+        }
+        prompt_components_.clear();
+    }
+
+    return touched;
+}
+
 // ------------------------------------------------------------------ 超宽屏画幅解锁
 
 // 游戏把画幅锁在 16:9，超宽屏（21:9/32:9）两侧补黑边。UE 里这把锁最常挂在两处：
