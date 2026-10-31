@@ -136,4 +136,57 @@ void apply_stick_deadzone(double& x, double& y, double deadzone) {
     y *= k;
 }
 
+// ---------------- DirectInput（PS 手柄）映射 ----------------
+
+bool dinput_button_to_pad(int index, PadButton& out) {
+    switch (index) {
+        case 0: out = PadButton::X; return true;       // □
+        case 1: out = PadButton::A; return true;       // ╳
+        case 2: out = PadButton::B; return true;       // ○
+        case 3: out = PadButton::Y; return true;       // △
+        case 4: out = PadButton::LB; return true;      // L1
+        case 5: out = PadButton::RB; return true;      // R1
+        case 6: out = PadButton::LT; return true;      // L2（数字镜像，L2 还另有模拟量）
+        case 7: out = PadButton::RT; return true;      // R2（数字镜像）
+        case 8: out = PadButton::Back; return true;    // CREATE / SHARE
+        case 9: out = PadButton::Start; return true;   // OPTIONS
+        case 10: out = PadButton::LS; return true;     // L3
+        case 11: out = PadButton::RS; return true;     // R3
+        case 12: out = PadButton::Guide; return true;  // PS 键
+        default: return false;                         // 13=触摸板按键等，无对应
+    }
+}
+
+void dinput_pov_to_buttons(unsigned long pov, bool out[4]) {
+    out[0] = out[1] = out[2] = out[3] = false;
+    if (pov > 35999UL) return;  // 居中（低字 0xFFFF）或无效值
+    // 每 45° 一个扇区：0=上 1=上右 2=右 … 7=左上
+    const int sector = static_cast<int>(((pov + 2250UL) / 4500UL) % 8UL);
+    out[0] = sector == 7 || sector <= 1;  // 上
+    out[1] = sector >= 1 && sector <= 3;  // 右
+    out[2] = sector >= 3 && sector <= 5;  // 下
+    out[3] = sector >= 5 && sector <= 7;  // 左
+}
+
+double dinput_axis_to_state(DInputAxis axis, long value) {
+    double v = 0.0;
+    switch (axis) {
+        case DInputAxis::LX:
+        case DInputAxis::LZ:
+            v = (static_cast<double>(value) - 32767.5) / 32767.5;
+            break;
+        case DInputAxis::LY:
+        case DInputAxis::LRz:
+            v = -(static_cast<double>(value) - 32767.5) / 32767.5;  // HID 向下为正 → 取反成 XInput 约定
+            break;
+        case DInputAxis::LRx:
+        case DInputAxis::LRy:
+            v = static_cast<double>(value) / 65535.0;  // 扳机：0=松开
+            break;
+    }
+    if (v > 1.0) v = 1.0;
+    if (v < -1.0) v = -1.0;
+    return v;
+}
+
 }  // namespace pbzpm

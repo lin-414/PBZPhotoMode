@@ -52,6 +52,7 @@ struct Config {
     double fov_min{15.0};
     double fov_max{150.0};
     double fov_step{2.0};
+    bool ultrawide_unlock{true};  // 超宽屏（21:9/32:9）：进入摄影模式时解除 16:9 画幅锁（两侧黑边），退出还原
 
     // ---- [effects] ----
     bool hide_player{false};

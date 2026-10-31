@@ -31,6 +31,12 @@ public:
     int postfx_save_count{0};
     int postfx_restore_count{0};
 
+    // 超宽屏画幅解锁
+    bool aspect_unlocked{false};
+    bool aspect_lock_active{true};  // 模拟游戏是否真的锁着 16:9
+    int aspect_unlock_count{0};
+    int aspect_restore_count{0};
+
     // 故障注入
     bool fail_spawn{false};
     bool fail_attach{false};
@@ -43,6 +49,7 @@ public:
     bool fail_postfx{false};
     bool fail_pause{false};
     bool fail_time_dilation{false};
+    bool fail_aspect_unlock{false};
 
     bool world_valid() override {
         calls.push_back("world_valid");
@@ -140,6 +147,18 @@ public:
         calls.push_back("restore_postfx");
         postfx_saved = false;
         ++postfx_restore_count;
+    }
+    bool unlock_aspect_ratio() override {
+        calls.push_back("aspect_unlock");
+        if (fail_aspect_unlock) return false;
+        aspect_unlocked = aspect_lock_active;
+        ++aspect_unlock_count;
+        return true;
+    }
+    void restore_aspect_ratio() override {
+        calls.push_back("restore_aspect");
+        aspect_unlocked = false;
+        ++aspect_restore_count;
     }
     void log(LogLevel level, const std::string& message) override {
         const char* tag = "?";

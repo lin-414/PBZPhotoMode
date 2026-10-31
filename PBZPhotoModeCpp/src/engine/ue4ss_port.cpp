@@ -1088,6 +1088,84 @@ bool Ue4ssPort::set_hud_visible(bool visible) {
     return pv_restored || touched;
 }
 
+// ------------------------------------------------------------------ 超宽屏画幅解锁
+
+// 游戏把画幅锁在 16:9，超宽屏（21:9/32:9）两侧补黑边。UE 里这把锁最常挂在两处：
+// ① APlayerCameraManager.bDefaultConstrainAspectRatio / DefaultAspectRatio —— 对任何 ViewTarget 生效，
+//   就算 ViewTarget 换成摄影相机，黑边照样在（用户反馈的超宽屏黑边就是它）；
+// ② 相机组件自己的 bConstrainAspectRatio —— 我们生成的 CameraActor 默认不锁，显式再关一次保险。
+bool Ue4ssPort::unlock_aspect_ratio() {
+    bool ok = false;
+
+    UObject* manager = camera_manager();
+    if (is_ok(manager)) {
+        FProperty* constrain_prop = find_property(manager, "bDefaultConstrainAspectRatio");
+        FProperty* value_prop = find_property(manager, "DefaultAspectRatio");
+        double constrain = 0.0;
+        if (constrain_prop == nullptr || value_prop == nullptr ||
+            !read_number(constrain_prop, manager, constrain)) {
+            log(LogLevel::Warn,
+                "画幅解锁：相机管理器读不到 bDefaultConstrainAspectRatio/DefaultAspectRatio"
+                "（黑边若来自别的机制，把这条日志发回来）");
+        } else if (constrain == 0.0) {
+            log(LogLevel::Info, "画幅：相机管理器未锁定画幅，无需解锁");
+            ok = true;  // 没锁也算成功：退出时无需写回
+        } else {
+            // 只在确实锁着时才记原值；还原前校验管理器还是同一个，防止换持有时把旧值写进新管理器
+            aspect_saved_ = true;
+            aspect_original_constrain_ = true;
+            aspect_manager_ = manager;
+            if (!read_number(value_prop, manager, aspect_original_value_)) {
+                aspect_original_value_ = 16.0 / 9.0;
+            }
+            if (write_bool(constrain_prop, manager, false)) {
+                char buf[96]{};
+                std::snprintf(buf, sizeof(buf), "画幅解锁：已解除 16:9 锁定（原比例=%.3f），超宽屏黑边消除",
+                              aspect_original_value_);
+                log(LogLevel::Info, buf);
+                ok = true;
+            } else {
+                aspect_saved_ = false;
+                aspect_manager_ = nullptr;
+                log(LogLevel::Warn, "画幅解锁失败：bDefaultConstrainAspectRatio 写不进去");
+            }
+        }
+    } else {
+        log(LogLevel::Warn, "画幅解锁：拿不到相机管理器，跳过管理器这一路");
+    }
+
+    // 摄影相机自己的约束一并关掉（CameraActor 默认不锁，这里防类默认值被改过）
+    if (UObject* component = camera_component(); is_ok(component)) {
+        write_bool(find_property(component, "bConstrainAspectRatio"), component, false);
+    }
+    return ok;
+}
+
+void Ue4ssPort::restore_aspect_ratio() {
+    if (!aspect_saved_) return;
+    aspect_saved_ = false;
+
+    UObject* manager = camera_manager();
+    if (!is_ok(manager) || manager != aspect_manager_) {
+        // 管理器换了（重新持有等）：旧值属于旧对象，不能写进新管理器
+        log(LogLevel::Info, "画幅还原：相机管理器已不是进入时的对象，跳过写回");
+        aspect_manager_ = nullptr;
+        return;
+    }
+    aspect_manager_ = nullptr;
+    FProperty* constrain_prop = find_property(manager, "bDefaultConstrainAspectRatio");
+    if (write_bool(constrain_prop, manager, aspect_original_constrain_)) {
+        if (aspect_original_constrain_) {
+            if (FProperty* value_prop = find_property(manager, "DefaultAspectRatio"); value_prop != nullptr) {
+                write_number(value_prop, manager, aspect_original_value_);
+            }
+            log(LogLevel::Info, "画幅还原：相机管理器已恢复 16:9 锁定");
+        }
+    } else {
+        log(LogLevel::Warn, "画幅还原失败：bDefaultConstrainAspectRatio 写不回去");
+    }
+}
+
 double Ue4ssPort::get_time_dilation() {
     UObject* statics = gameplay_statics();
     UObject* scene = world();
@@ -1369,6 +1447,17 @@ std::string Ue4ssPort::camera_state_summary() {
                     std::snprintf(buf, sizeof(buf), "管理器朝向=(%.1f,%.1f) ", pitch, yaw);
                     out += buf;
                 }
+            }
+        }
+        // 画幅锁状态：真机验证超宽屏解锁（1.5.0）
+        {
+            double constrain = -1.0;
+            if (read_number(find_property(manager, "bDefaultConstrainAspectRatio"), manager, constrain)) {
+                double value = 0.0;
+                read_number(find_property(manager, "DefaultAspectRatio"), manager, value);
+                char buf[64]{};
+                std::snprintf(buf, sizeof(buf), "画幅锁=%s(%.3f) ", constrain != 0.0 ? "开" : "关", value);
+                out += buf;
             }
         }
     }
@@ -2192,16 +2281,20 @@ bool Ue4ssPort::umg2_tick(const std::string& status, double fov, double speed, d
 
 // ------------------------------------------------------------------ WBP 资产菜单（v1.3.0）
 //
-// 离线在 UE 5.7 编辑器里做好的 WidgetBlueprint，cook 成 IoStore pak 三件套随模组分发
-// （assets/paks → DLL 启动时拷进 ProjectPBZ/Content/Paks/~mods，~mods 已有 4 个成功先例）。
-// 控件树由引擎自己的序列化器反序列化——游戏加载任何 UI 资产的同一条原生路径，
-// 彻底绕开 1.2.0「运行时反射拼装控件 + ProcessEvent 新函数」的崩溃类。
+// 离线在 UE 5.7 编辑器里做好的 WidgetBlueprint（ProjectPBZ 工程的 MakeMenuCommandlet 搭建，
+// cook 成 pak 随模组分发：DLL 启动时拷进 ProjectPBZ/Content/Paks/~mods，~mods 已有成功先例）。
+// 控件树由引擎自己的序列化器反序列化——游戏加载任何 UI 资产的同一条原生路径，彻底绕开
+// 1.2.0「运行时反射拼装控件」的崩溃类。
 //
-// ProcessEvent 面收敛到两个新调用，都与实机验证过的 Kismet 静态函数同族：
-//   1) 资产加载：FSoftObjectPath::TryLoad（UEPseudo 原生，非 ProcessEvent；已确认从 UE4SS.dll 导出）
-//      备选 KismetSystemLibrary::LoadAsset_Blocking；2) WidgetBlueprintLibrary::Create（创建控件）。
-// 交互走 Slate 原生路由；C++ 与资产只通过 BP 变量对话（契约见 core/menu_bridge.h 头注释），
-// 变量读写全是属性直写（read_number/write_number），零额外 ProcessEvent。
+// 资产是「声明式」的：只有布局/样式/字体/命名（S_Fov/S_Speed/S_Sens 滑条、T_* 文本、
+// PageCamera/PageKeys 两页、BtnFreeze/BtnReset/BtnExit + 页签纯视觉），零 BP 逻辑。
+// C++ 侧职责：
+//   - 滑条输入：每帧读 Value 属性（安全属性读，零 ProcessEvent）
+//   - 回显/标签：SetValue + SetText（UMG 引擎函数，与 1.0.19 起实机验证的 SetText 同族）
+//   - 按钮/页签：纯视觉，命中判定与动作全在 mod_app（engine/wbp_layout.h 命中区表，1.2.x 机器）
+//   - 页切换：SetVisibility（实机验证过）
+// ProcessEvent 新增面只有两个：WidgetBlueprintLibrary::Create（创建控件）+ USlider::SetValue（回显）；
+// 资产加载走 FSoftObjectPath::TryLoad（UEPseudo 原生，非 ProcessEvent）。
 
 RC::Unreal::UObject* Ue4ssPort::wbp_live() const {
     if (wbp_widget_ == nullptr || wbp_path_.empty()) return nullptr;
@@ -2210,9 +2303,23 @@ RC::Unreal::UObject* Ue4ssPort::wbp_live() const {
 
 void Ue4ssPort::wbp_drop() {
     wbp_widget_ = nullptr;
+    wbp_s_fov_ = nullptr;
+    wbp_s_speed_ = nullptr;
+    wbp_s_sens_ = nullptr;
+    wbp_t_status_ = nullptr;
+    wbp_t_fov_ = nullptr;
+    wbp_t_speed_ = nullptr;
+    wbp_t_sens_ = nullptr;
+    wbp_page_camera_ = nullptr;
+    wbp_page_keys_ = nullptr;
     wbp_path_.clear();
     wbp_visibility_state_ = -1;
     wbp_shown_ = false;
+    wbp_last_status_text_.clear();
+    wbp_last_fov_label_.clear();
+    wbp_last_speed_label_.clear();
+    wbp_last_sens_label_.clear();
+    wbp_page_ = 0;
 }
 
 // 按路径加载 WidgetBlueprint 资产并取出生成类（WBP_PBZPhotoMenu_C）。
@@ -2257,6 +2364,39 @@ RC::Unreal::UClass* Ue4ssPort::wbp_load_class() {
     return static_cast<RC::Unreal::UClass*>(cls);
 }
 
+bool Ue4ssPort::wbp_find_child(const char* name, UObject*& out) {
+    out = nullptr;
+    if (!is_ok(wbp_widget_)) return false;
+    UFunction* fn = find_function(wbp_widget_, "GetWidgetFromName");
+    if (fn == nullptr) return false;
+    ParamBlock params(fn);
+    if (!params.valid()) return false;
+    if (!params.set_name("InName", name)) return false;
+    wbp_widget_->ProcessEvent(fn, params.data());
+    read_object(params.prop({"ReturnValue"}, 0), params.data(), out);
+    return is_ok(out);
+}
+
+// 创建后按名缓存子控件。缺任何一个都视为资产与模组不匹配（永久回退）。
+bool Ue4ssPort::wbp_cache_children() {
+    const bool ok = wbp_find_child("S_Fov", wbp_s_fov_) && wbp_find_child("S_Speed", wbp_s_speed_) &&
+                    wbp_find_child("S_Sens", wbp_s_sens_) && wbp_find_child("T_Status", wbp_t_status_) &&
+                    wbp_find_child("T_Fov", wbp_t_fov_) && wbp_find_child("T_Speed", wbp_t_speed_) &&
+                    wbp_find_child("T_Sens", wbp_t_sens_) && wbp_find_child("PageCamera", wbp_page_camera_) &&
+                    wbp_find_child("PageKeys", wbp_page_keys_);
+    if (!ok) {
+        if (!wbp_failed_logged_) {
+            wbp_failed_logged_ = true;
+            log(LogLevel::Warn,
+                "WBP 菜单：子控件缺失（需 S_Fov/S_Speed/S_Sens/T_Status/T_Fov/T_Speed/T_Sens/PageCamera/PageKeys），"
+                "资产与模组版本不匹配；回退文字面板");
+        }
+        wbp_unavailable_ = true;
+        wbp_drop();
+    }
+    return ok;
+}
+
 bool Ue4ssPort::ensure_wbp_menu() {
     if (wbp_class_ == nullptr) {
         UClass* cls = wbp_load_class();
@@ -2266,7 +2406,7 @@ bool Ue4ssPort::ensure_wbp_menu() {
                 if (!wbp_failed_logged_) {
                     wbp_failed_logged_ = true;
                     log(LogLevel::Warn, "WBP 菜单：资产加载失败（" + wbp_asset_path_ +
-                                            "）。确认 paks\\PBZPhotoMode_UI_P 三件套已在 "
+                                            "）。确认 paks\\PBZPhotoMode_UI_P.pak 已在 "
                                             "ProjectPBZ\\Content\\Paks\\~mods；回退文字面板");
                 }
                 wbp_unavailable_ = true;
@@ -2318,7 +2458,7 @@ bool Ue4ssPort::ensure_wbp_menu() {
     if (!is_ok(widget)) {
         if (!wbp_failed_logged_) {
             wbp_failed_logged_ = true;
-            log(LogLevel::Warn, "WBP 菜单：CreateWidget 返回空（资产版本与引擎不兼容？见 WBP_Dummy 校验行），回退文字面板");
+            log(LogLevel::Warn, "WBP 菜单：CreateWidget 返回空（定制引擎可能拒绝加载 5.7 cook 资产，见 WBP_Dummy 校验日志），回退文字面板");
         }
         wbp_unavailable_ = true;
         return false;
@@ -2337,6 +2477,8 @@ bool Ue4ssPort::ensure_wbp_menu() {
         wbp_ready_logged_ = true;
         log(LogLevel::Info, "WBP 菜单已创建：" + wbp_path_ + "（资产 " + wbp_asset_path_ + "，加载通道 " + wbp_channel_ + "）");
     }
+    if (!wbp_cache_children()) return false;
+    wbp_set_page(0);
     return true;
 }
 
@@ -2384,48 +2526,73 @@ bool Ue4ssPort::wbp_read_number(UObject* widget, const char* name, double& out) 
     return read_number(prop, ptr, out);
 }
 
+// 滑条输入：读 S_* 的 Value 属性（直接属性读，零 ProcessEvent）
 void Ue4ssPort::wbp_read_vars(WbpVars& vars) {
     vars = WbpVars{};
-    UObject* w = wbp_widget_;
-    if (!is_ok(w)) return;
+    if (!is_ok(wbp_s_fov_) || !is_ok(wbp_s_speed_) || !is_ok(wbp_s_sens_)) return;
     double fov = 0.0;
     double speed = 0.0;
     double sens = 0.0;
-    double command = 0.0;
-    double dragging = 0.0;
-    const bool ok = wbp_read_number(w, "FovValue", fov) && wbp_read_number(w, "SpeedValue", speed) &&
-                    wbp_read_number(w, "SensValue", sens) && wbp_read_number(w, "Command", command) &&
-                    wbp_read_number(w, "bDragging", dragging);
-    if (!ok) {
-        if (!wbp_failed_logged_) {
-            wbp_failed_logged_ = true;
-            log(LogLevel::Warn,
-                "WBP 菜单：BP 变量缺失（需要 FovValue/SpeedValue/SensValue/Command/bDragging 五个），"
-                "资产与模组版本不匹配；回退文字面板");
-        }
-        wbp_unavailable_ = true;
+    if (!wbp_read_number(wbp_s_fov_, "Value", fov) || !wbp_read_number(wbp_s_speed_, "Value", speed) ||
+        !wbp_read_number(wbp_s_sens_, "Value", sens)) {
         return;
     }
     vars.valid = true;
     vars.fov = static_cast<float>(fov);
     vars.speed = static_cast<float>(speed);
     vars.sens = static_cast<float>(sens);
-    vars.command = static_cast<int>(command);
-    vars.dragging = dragging != 0.0;
+    vars.command = 0;      // 按钮点击走 mod_app 命中区，不经过 BP 变量
+    vars.dragging = false; // 未接 Slate 捕获检测；回显靠「真值变化才推」语义防打架
+}
+
+bool Ue4ssPort::wbp_set_text_cached(UObject* widget, const std::string& text, std::string& last) {
+    if (!is_ok(widget) || last == text) return true;
+    if (!umg2_set_text(widget, text)) return false;
+    last = text;
+    return true;
+}
+
+// 滑条回显：USlider::SetValue（与 SetText 同族的 UMG 引擎 UFUNCTION；资产无任何委托绑定，无副作用）
+bool Ue4ssPort::wbp_set_slider_value(UObject* slider, double value) {
+    if (!is_ok(slider)) return false;
+    UFunction* fn = find_function(slider, "SetValue");
+    if (fn == nullptr) return false;
+    ParamBlock params(fn);
+    if (!params.valid()) return false;
+    if (!params.set_number_any({"InValue", "NewValue", "Value"}, 0, value)) return false;
+    slider->ProcessEvent(fn, params.data());
+    return true;
 }
 
 void Ue4ssPort::wbp_apply(const WbpWriteBack& back) {
-    UObject* w = wbp_widget_;
-    if (!is_ok(w)) return;
-    const auto apply = [&](const char* name, double value) {
-        if (FProperty* prop = find_property(w, name)) write_number(prop, w, value);
-    };
-    if (back.write_fov) apply("FovValue", back.fov);
-    if (back.write_speed) apply("SpeedValue", back.speed);
-    if (back.write_sens) apply("SensValue", back.sens);
-    if (back.write_frozen) apply("Frozen", back.frozen ? 1.0 : 0.0);
-    if (back.write_status) apply("StatusId", static_cast<double>(back.status));
-    if (back.write_command) apply("Command", static_cast<double>(back.command));
+    char buf[48]{};
+    if (back.write_fov && is_ok(wbp_s_fov_)) {
+        wbp_set_slider_value(wbp_s_fov_, back.fov);
+        std::snprintf(buf, sizeof(buf), "%.1f", back.fov);
+        wbp_set_text_cached(wbp_t_fov_, buf, wbp_last_fov_label_);
+    }
+    if (back.write_speed && is_ok(wbp_s_speed_)) {
+        wbp_set_slider_value(wbp_s_speed_, back.speed);
+        std::snprintf(buf, sizeof(buf), "%.0f", back.speed);
+        wbp_set_text_cached(wbp_t_speed_, buf, wbp_last_speed_label_);
+    }
+    if (back.write_sens && is_ok(wbp_s_sens_)) {
+        wbp_set_slider_value(wbp_s_sens_, back.sens);
+        std::snprintf(buf, sizeof(buf), "%.2f", back.sens);
+        wbp_set_text_cached(wbp_t_sens_, buf, wbp_last_sens_label_);
+    }
+}
+
+void Ue4ssPort::wbp_set_status(const std::string& status) {
+    wbp_set_text_cached(wbp_t_status_, status, wbp_last_status_text_);
+}
+
+void Ue4ssPort::wbp_set_page(int page) {
+    page = page == 1 ? 1 : 0;
+    wbp_page_ = page;
+    // 页可见性：SetVisibility 是 1.0.19 起实机验证过的操作
+    if (is_ok(wbp_page_camera_)) set_widget_visibility(wbp_page_camera_, page == 0 ? 0 : 1);
+    if (is_ok(wbp_page_keys_)) set_widget_visibility(wbp_page_keys_, page == 1 ? 0 : 1);
 }
 
 void Ue4ssPort::wbp_hide() {
@@ -2459,6 +2626,6 @@ std::string Ue4ssPort::wbp_state() const {
     return wbp_shown_ ? "资产" : "隐藏";
 }
 
-}  // namespace pbzpm
+}  // namespace pbzpm}  // namespace pbzpm
 
 #endif  // PBZPM_WITH_UE4SS

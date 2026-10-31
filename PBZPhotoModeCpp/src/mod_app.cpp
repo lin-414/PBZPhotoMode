@@ -213,9 +213,17 @@ void PhotoModeMod::on_unreal_init() {
         std::string("加载完成 v") + PBZPM_VERSION + "，按 " + vk_to_name(keys_.toggle);
     if (cfg_.pad_enabled) {
         load_message += " 或手柄 " + pad_combo_name(keys_.pad_toggle);
-        load_message += input_source_->pad_api_ready()
-                            ? "（XInput 已加载：" + input_source_->pad_api_module() + "）"
-                            : "（XInput 加载失败，手柄功能不可用！）";
+        std::string pad_api = input_source_->pad_api_ready()
+                                  ? "XInput 已加载：" + input_source_->pad_api_module()
+                                  : "XInput 加载失败";
+        // DualSense/DS4 不是 XInput 设备，XInputGetState 永远读不到，PS 手柄由 DInput 后端接手
+        if (input_source_->pad_dinput_ready()) {
+            pad_api += "；PS 手柄走 DInput";
+        }
+        if (!input_source_->pad_api_ready() && !input_source_->pad_dinput_ready()) {
+            pad_api += "，手柄功能不可用！";
+        }
+        load_message += "（" + pad_api + "）";
     }
     load_message += " 进入摄影模式";
     port_->log(LogLevel::Info, load_message);
@@ -433,8 +441,9 @@ void PhotoModeMod::resolve_panel_scale() {
     }
 }
 
-// 指针是否落在缩放后的面板矩形内（umg2 文本面板与 WBP 资产菜单共用）
-bool PhotoModeMod::cursor_in_scaled_panel(float from_right, float top, float width, float height) {
+// 光标 → WBP 面板内坐标（Slate 单位，右上角锚定）；不在面板内返回 false。
+// 悬停静音与按钮命中判定共用这套换算（与 umg2 层同款缩放机器）。
+bool PhotoModeMod::panel_cursor_local(float& px, float& py) {
     if (HWND game_window = find_umg2_window(); game_window != nullptr) {
         RECT client{};
         if (GetClientRect(game_window, &client)) {
@@ -443,10 +452,10 @@ bool PhotoModeMod::cursor_in_scaled_panel(float from_right, float top, float wid
                 float scale = umg2_scale_cached_ > 0.0f ? umg2_scale_cached_
                                                         : static_cast<float>(umg2_dpi(game_window)) / 96.0f;
                 scale = std::clamp(scale, 0.25f, 8.0f);
-                const float panel_left_px = static_cast<float>(client.right) - from_right * scale;
-                const float px = (static_cast<float>(cursor.x) - panel_left_px) / scale;
-                const float py = (static_cast<float>(cursor.y) - top * scale) / scale;
-                return px >= 0.0f && py >= 0.0f && px <= width && py <= height;
+                const float panel_left_px = static_cast<float>(client.right) - wbplayout::kPanelFromRight * scale;
+                px = (static_cast<float>(cursor.x) - panel_left_px) / scale;
+                py = (static_cast<float>(cursor.y) - wbplayout::kPanelTop * scale) / scale;
+                return px >= 0.0f && py >= 0.0f && px <= wbplayout::kPanelWidth && py <= wbplayout::kPanelHeight;
             }
         }
     }
@@ -466,9 +475,10 @@ void PhotoModeMod::update_overlay() {
 
     const bool want_menu = mode_->active() && mode_->menu_visible();
 
-    // 优先级 2：WBP 资产菜单（离线制作的真滑条/真按钮，Slate 原生路由；1.3.0）。
-    // C++ 与资产只通过 BP 变量对话：读 FovValue/SpeedValue/SensValue/Command/bDragging，
-    // 写回真值与命令清零；换算逻辑在 core/menu_bridge（可单测）。
+    // 优先级 2：WBP 资产菜单（离线制作的真滑条面板；1.3.0）。
+    // 滑条输入 = 每帧读 Value 属性 → WbpBridge（core，可单测）→ 命令；
+    // 按钮/页签 = 纯视觉，点击由命中区表判定（wbp_layout.h，1.2.x 机器）；
+    // 回显/标签 = SetValue + SetText；页切换 = SetVisibility。
     if (cfg_.menu_asset && want_menu && port_->wbp_available()) {
         if (port_->wbp_show()) {
             port_->hide_overlay();
@@ -478,6 +488,39 @@ void PhotoModeMod::update_overlay() {
                 wbp_bridge_.on_opened(mode_->fov(), cfg_.move_speed, cfg_.look_sensitivity);
                 resolve_panel_scale();
             }
+
+            // 按钮命中（左键按下沿；面板外时沿丢弃，避免误触发）
+            umg2_cursor_in_panel_ = false;
+            float px = 0.0f;
+            float py = 0.0f;
+            if (panel_cursor_local(px, py)) {
+                umg2_cursor_in_panel_ = true;  // 悬停静音：相机视角/滚轮/升降让位给菜单
+                const bool lmb = input_.left_down();
+                const bool click = lmb && !lmb_prev_;
+                lmb_prev_ = lmb;
+                if (click) {
+                    for (const auto& hit : wbplayout::kHits) {
+                        if (px < hit.x || px > hit.x + hit.w || py < hit.y || py > hit.y + hit.h) continue;
+                        if (strcmp(hit.id, "tab_camera") == 0) {
+                            port_->wbp_set_page(wbplayout::kPageCamera);
+                        } else if (strcmp(hit.id, "tab_keys") == 0) {
+                            port_->wbp_set_page(wbplayout::kPageKeys);
+                        } else if (strcmp(hit.id, "freeze") == 0) {
+                            mode_->toggle_freeze();
+                        } else if (strcmp(hit.id, "reset") == 0) {
+                            menu_reset_view_ = true;
+                        } else if (strcmp(hit.id, "exit") == 0) {
+                            mode_->leave("menu");
+                            input_.reset();
+                            overlay_ok_ = false;
+                        }
+                    }
+                }
+            } else {
+                lmb_prev_ = input_.left_down();
+            }
+
+            // 滑条 → 桥 → 命令 + 回显
             WbpVars vars;
             port_->wbp_read_vars(vars);
             WbpWriteBack back;
@@ -487,10 +530,9 @@ void PhotoModeMod::update_overlay() {
             port_->wbp_apply(back);
             apply_wbp_commands(commands);
 
-            // 悬停静音：Slate 负责控件自身的点击，我们只负责让相机让路（同一套缩放机器）
-            umg2_cursor_in_panel_ =
-                cursor_in_scaled_panel(wbplayout::kPanelFromRight, wbplayout::kPanelTop, wbplayout::kPanelWidth,
-                                       wbplayout::kPanelHeight);
+            // 状态行（变化才 SetText）
+            const MenuModel model = build_menu_model(*mode_, keys_);
+            port_->wbp_set_status(model.status);
 
             // Esc 关闭菜单
             const bool esc_down = (GetAsyncKeyState(VK_ESCAPE) & 0x8000) != 0;
@@ -778,14 +820,15 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
     } else {
         graphic_state = port_->umg2_state();
     }
-    char buf[360]{};
+    char buf[420]{};
     std::snprintf(buf, sizeof(buf),
                   "输入诊断 alt=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
-                  "菜单=%s 图形=%s 手柄槽位=%d",
+                  "菜单=%s 图形=%s 手柄槽位=%d 手柄=%s",
                   input_.alt_down() ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
                   input_source_->ll_ready() ? 1 : 0, input_source_->ll_wheel_events(),
                   input_source_->raw_ready() ? 1 : 0, input_source_->mouse_event_count(),
-                  port_->umg_menu_state().c_str(), graphic_state.c_str(), input_source_->pad_slot());
+                  port_->umg_menu_state().c_str(), graphic_state.c_str(), input_source_->pad_slot(),
+                  input_source_->pad_backend().c_str());
     engine_peak_dx_ = 0.0;
     engine_peak_dy_ = 0.0;
     port_->log(LogLevel::Info, std::string(buf) + " | " + port_->camera_state_summary());
@@ -802,6 +845,11 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
 
     if (input_source_ != nullptr) {
         input_source_->poll(input_, cfg_.pad_enabled);
+        // DInput 后端的一次性诊断（接入成功/初始化失败时各产出一条）
+        std::string pad_diag;
+        if (input_source_->take_pad_dinput_diag(pad_diag)) {
+            port_->log(LogLevel::Info, pad_diag);
+        }
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
@@ -812,9 +860,8 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
         if (connected != pad_logged_connected_) {
             pad_logged_connected_ = connected;
             if (connected) {
-                port_->log(LogLevel::Info, std::string("手柄已连接（XInput 槽位 ") +
-                                                   std::to_string(input_source_->pad_slot()) + "）：手柄 " +
-                                                   pad_combo_name(keys_.pad_toggle) + " 进入摄影模式");
+                port_->log(LogLevel::Info, std::string("手柄已连接（") + input_source_->pad_backend() +
+                                               "）：手柄 " + pad_combo_name(keys_.pad_toggle) + " 进入摄影模式");
             } else {
                 port_->log(LogLevel::Info, "手柄已断开");
             }
@@ -825,7 +872,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
             if (pad_scan_log_timer_ >= 10.0) {
                 pad_scan_logged_ = true;
                 port_->log(LogLevel::Info, input_source_->pad_connected()
-                    ? std::string("手柄扫描正常：已连接（槽位 ") + std::to_string(input_source_->pad_slot()) + "）"
+                    ? std::string("手柄扫描正常：已连接（") + input_source_->pad_backend() + "）"
                     : "手柄扫描正常：暂未发现手柄，持续扫描中（手柄指示灯亮起后即插即用）");
             }
         }

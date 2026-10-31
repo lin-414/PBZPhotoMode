@@ -4,9 +4,9 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.14 |
-| 核心层测试 | 298 项，全部通过 |
-| 实机验证 | F 键冻结时间已通过（游戏暂停模式）；v1.0.12 HUD 隐藏待验证；v1.0.14 进入自动暂停待验证 |
+| 版本 | v1.5.0 |
+| 核心层测试 | 527 项，全部通过 |
+| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停已验证；v1.4.0 DInput 手柄、v1.5.0 超宽屏画幅解锁待验证 |
 
 ## 项目结构
 
@@ -49,6 +49,13 @@ tools\build_tests.bat
 | 隐藏菜单 | `T` |
 
 键位都能在 `config.ini` 里改（`[keys]` 段）。
+
+## 手柄支持
+
+- **Xbox 手柄**：XInput 读取（`XInputGetState` 轮询，强制加载 System32 的 DLL，绕开游戏目录代理）。
+- **DualSense / DualShock4**：**不是 XInput 设备**，Windows 把它们枚举成 DirectInput 手柄——1.4.0 起由 DInput8 轮询后端读取（USB/蓝牙均可），与 XInput 翻译成同一份 `PadState`，键位写法与 Xbox 完全一致。XInput 槽位优先，避免 Xbox 手柄在两套后端重复计数。
+- 映射（`core/gamepad.cpp`）：DIJOYSTATE2 按钮 0..13 → □╳○△/L1R1/L2R2/CREATE/OPTIONS/**L3=LS/R3=RS**/PS；轴 lX/lY/lZ/lRz=双摇杆（Y 取反）、lRx/lRy=L2/R2 模拟量；rgdwPOV=十字键。
+- 接入诊断：`DInput 手柄已接入：<名>（VID_…&PID_…）首读：按钮=… 摇杆=… POV=…`（一次性，原始值，映射对不上真机时用它定位）；`手柄=<后端摘要>` 在每秒输入诊断行里。
 
 ## 配置文件
 
@@ -190,3 +197,17 @@ tools\build_tests.bat
 - 游戏内菜单新增「进入时暂停」状态行，UE4SS 的 ImGui 面板新增对应开关。
 - 自动暂停失败只写 warning，不会阻止进入摄影模式。
 - 版本 `1.0.14-cpp`；核心层测试 298 项全绿。
+
+## 1.5.0 这次改了什么（超宽屏支持，消除两侧黑边）
+
+- 需求：21:9 / 32:9 超宽屏用户反映，进入摄影模式后画面两侧仍有黑边。根因是游戏把画幅锁在 16:9：
+  UE 里这把锁挂在 `APlayerCameraManager.bDefaultConstrainAspectRatio / DefaultAspectRatio`
+  （对任何 ViewTarget 生效，换成摄影相机也锁），部分相机还会在组件上开 `bConstrainAspectRatio`。
+- `[camera]` 新增 `ultrawide_unlock = true`（默认开启）：进入摄影模式时保存管理器原值并解除锁定，
+  同时把摄影相机组件的 `bConstrainAspectRatio` 显式关掉；退出摄影模式时按进入前的值还原。
+- 解锁结果写日志：`画幅解锁：已解除 16:9 锁定（原比例=1.778）`；管理器没锁会打
+  `画幅：相机管理器未锁定画幅，无需解锁`；属性读不到/写不进去会打 warning（黑边若来自别的机制，
+  把这条日志发回来）。解锁失败不阻断进入摄影模式。
+- 每秒诊断行新增 `画幅锁=开/关(比例)`，真机验证解锁是否生效一眼可查。
+- 想保留 16:9 构图（比如要裁成 16:9 输出）的用户可在 `config.ini` 里把 `ultrawide_unlock` 改为 `false`。
+- 版本 `1.5.0-cpp`；核心层测试 503 → **527 项全绿**（新增画幅解锁进退/失败/热重载用例）。

@@ -4,8 +4,8 @@
 
 ## 一句话状态
 
-**C++ 版 v1.3.0 已编译**（WBP 资产菜单：离线 UE 编辑器制作的 WidgetBlueprint 打包 IoStore pak，运行时 TryLoad+CreateWidget，交互走 Slate 原生路由 + BP 变量轮询桥；**资产（Phase 3）未制作，当前装包会自动落回 1.2.x 文字面板**）。
-核心层 **469 项测试全绿**；v1.2.3 UMG 文字面板（命中区偏移待实机验证，现为 WBP 失败兜底）；v1.1.x ImGui 直绘在帧生成环境下已判死；v1.0.19-1.0.20 UMG 文字菜单实机验证通过。
+**C++ 版 v1.5.0 已编译**（新增：超宽屏支持——进入摄影模式解除 16:9 画幅锁消除两侧黑边，`ultrawide_unlock` 配置，退出还原；上一版 DualSense/DualShock4 手柄 DInput8 后端；WBP 资产菜单骨架就绪，**资产（Phase 3）未制作，当前装包会自动落回 1.2.x 文字面板**）。
+核心层 **527 项测试全绿**；v1.2.3 UMG 文字面板（命中区偏移待实机验证，现为 WBP 失败兜底）；v1.1.x ImGui 直绘在帧生成环境下已判死；v1.0.19-1.0.20 UMG 文字菜单实机验证通过。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -726,5 +726,144 @@ F2 后菜单可见 → `ensure_umg2_menu()` 构建途中进程死亡（`交互�
 
 1. **用户装 UE 5.7 编辑器**（Epic Launcher → D 盘，约 30-60GB）。
 2. 编辑器侧（computer-use 操作）：新建空白 BP 工程命名 **ProjectPBZ**（必须与游戏工程同名，cook 产物挂载路径才能对上 /Game/）→ 导入 Noto Sans SC → **WBP_PBZPhotoMenu**（增强版：相机/快捷键两页、三条真滑条、FREEZE/RESET/EXIT、全中文；BP 变量与事件按 menu_bridge.h 契约）+ **WBP_Dummy**（隔离「pak 能否加载」与「菜单本体问题」）→ cook（`UnrealEditor-Cmd -run=Cook -targetplatform=Windows`）→ 三件套改名 `PBZPhotoMode_UI_P.*` → `dist/PBZPhotoModeCpp/paks/`。
+   **纪律（分发合规）**：WBP 里只准用自建内容 + 开源字体 + 引擎默认材质，**绝不引用游戏 /Game 的任何素材**；`OFL.txt`（Noto Sans SC 许可全文）放进 `dist/PBZPhotoModeCpp/paks/` 一并随 zip 分发。
 3. pack.py 出 zip → 实机验收（清单见 1.3.0 验证节，重点：pak 自动安装日志、TryLoad 通道、滑条拖动/按钮/两页切换、悬停静音、失败自动落回）。
 4. 风险预案：R1 定制引擎 vs 原版 5.7 cook 产物序列化不兼容（WBP_Dummy 先隔离）；R2 拍照模式鼠标捕获抢 Slate 指针事件（备选反射调 SetInputModeGameAndUI；再不行 WBP 层自动跳过，1.2.x 面板兜底）。
+
+## 1.3.0 Phase 3 完成（2026-10-31 12:2x：WBP 资产制作 + pak 打包 + C++ 适配）
+
+### 资产制作管线（全部无头，零 GUI 操作）
+
+- 工程 `D:\PBZ_UI\ProjectPBZ`（**必须与游戏工程同名**，cook 产物挂载路径才对上 /Game/）。
+- **Python 路线判死**：5.7 的 Python 不暴露 WidgetTree（widget_tree 属性反射查不到）→ 改走
+  **C++ editor commandlet**（`Source/ProjectPBZ/MakeMenuCommandlet.*`，`UnrealEditor-Cmd -run=MakeMenuCommandlet`）。
+- 踩坑全记录：① 空白工程默认无 Python 插件（uproject 加 PythonScriptPlugin）；② uproject 声明 Runtime
+  模块但无 Source 会弹窗退出（删 Modules）；③ 安装版引擎是 Shared 构建环境，Target 不能用 Unique，
+  且 `CppCompileWarningSettings.UndefinedIdentifierWarningLevel = WarningLevel.Error` 要显式对齐；
+  ④ `UFontFileImportFactory::FactoryCreateBinary` 内部调 `GEditor->GetEditorSubsystem`，commandlet 里
+  GEditor 为空直接 AV（复刻工厂核心：NewObject UFontFace + FontFaceData->SetData + CacheSubFaces）；
+  ⑤ `AssetTools.CreateAsset` 在 commandlet 里把资产放进 transient 包（GetOutermost()=None）→ 改
+  `FKismetEditorUtilities::CreateBlueprint` 手工建包；⑥ commandlet 无编辑器根集，未保存的 WBP 会在后续
+  CompileBlueprint 触发的清理里变成 obj=None（每个资产构建完立即 `UPackage::SavePackage` 底层直存）。
+- 资产（声明式，零 BP 逻辑）：`WBP_PBZPhotoMenu`（右上角面板 460×560：标题/两页签/T_Status/三行真滑条
+  S_Fov[15-150]/S_Speed[0-2000]/S_Sens[0.01-0.5]+数值标签/三个文本按钮/提示行；PageKeys 13 行快捷键
+  默认 Collapsed）+ `WBP_Dummy`（"PAK OK"，隔离 R1）+ Noto Sans SC 字体（OFL.txt 随包）。
+  控件命名与 `wbp_layout.h` 常量一致。
+- cook：`-run=Cook -targetplatform=Windows`（DirectoriesToAlwaysCook=/Game/PBZPhotoMode）→
+  `UnrealPak -create` 单文件经典 pak `PBZPhotoMode_UI_P.pak`（7.3MB，挂载点 `../../../ProjectPBZ/`，
+  8 文件含 AssetRegistry.bin——TryLoad 的 AssetRegistry 查询依赖它随包挂载）。
+- **契约变更**（相对 1.3.0 初版设计）：资产是声明式的 → C++ 改为滑条 `Value` 属性轮询（零 ProcessEvent）
+  + `GetWidgetFromName` 一次缓存 9 个子控件 + `SetValue`/`SetText` 回显（UMG 引擎函数，与 SetText 同族）
+  + 按钮命中区表（wbp_layout.h kHits，1.2.x 机器）+ `SetVisibility` 切页。WbpBridge 语义不变
+  （滑条值≠基线→命令；真值变化才回显），单测保持全绿。
+- 交付：WBP 资产随 1.5.0 包分发（1.3.0 独立包取消——与并行会话的手柄/超宽屏工作合并为一个包）。
+  DLL 启动自动把 `paks\*.pak` 拷进游戏 `ProjectPBZ\Content\Paks\~mods\`。
+
+### 1.3.0 WBP 菜单实机验证要点（决定性一轮）
+
+1. 启动日志：`pak 自动安装：新拷 1 个…`；进游戏等 10 秒无异常。
+2. F2 进摄影模式 → 日志 `WBP 菜单已创建：…加载通道 TryLoad`；**WBP_Dummy 校验**：左上 "PAK OK"——
+   这一行决定 R1（定制引擎能否加载 5.7 cook 资产）。
+3. 屏幕右上角出现**中文图形面板**（深色半透明底、两页签、三条滑条）。
+4. 拖 FOV 滑条：画面即时变化、数值标签联动；滚轮调 FOV 滑条反向同步；SPEED/SENS 同理。
+5. 点 冻结时间/重置视角/退出摄影（文本按钮，命中区判定）；点「快捷键」页签切页。
+6. 指针在面板上时相机不跟转；Esc/T 开关；退出模式指针恢复。
+7. 失败分支：资产加载失败/子控件缺失/CreateWidget 空 → 日志各有专属 Warn 行，自动落回 UMG2 文字面板
+   →文字菜单，摄影功能不受影响。
+8. 若 Dummy 显示但主菜单不显示/花屏 → 菜单本体问题（布局/字体），把日志发回来。
+9. 若连 Dummy 都不显示 → R1 成立：定制引擎拒载 5.7 cook 包；下一步试 IoStore 三件套或查 pak 白名单。
+
+## 1.4.0-cpp（2026-10-31：手柄后端扩展——DualSense 原生支持，L3+R3 进摄影模式）
+
+**触发**：玩家反映 DualSense 手柄按 L3+R3 进不了摄影模式。日志（2026-10-30 20:56-20:59）：
+`加载完成 v1.0.18-cpp ... （XInput 已加载：C:\WINDOWS\SYSTEM32\XInput1_4.dll）`、
+`手柄扫描正常：暂未发现手柄`、全程输入诊断行 `手柄槽位=-1`。
+
+### 根因
+
+手柄支持是 **XInput-only**（`win_input.cpp` 只轮询 `XInputGetState`）。DualSense 在 Windows 上
+**不是 XInput 设备**（是标准 HID/DirectInput 手柄），四个槽位永远返回未连接 → 模组永远看不到手柄。
+游戏本体走自己的输入栈所以能正常玩，只有模组的热键失灵。玩家装的 v1.0.18 与最新的 1.3.0 都一样——
+必须加后端，升级不解决。
+
+### 修法（DirectInput8 轮询后端，选型已与开发者确认）
+
+- **选型**：DInput8 `GetDeviceState` 每帧主动拉状态（不可能被事件派发饿死）而不是 Raw Input HID 事件流
+  ——本作鼠标 raw input 出过「注册成功但一个事件都不来」（1.0.2 教训）。dinput8.dll 动态加载，
+  不链 dinput.lib（`IID_IDirectInput8W`/`GUID_*` 用 `<initguid.h>` 实体化；`DIJOYSTATE2` 格式表手绘，
+  新 SDK 已删 `DIDFT_OPTIONAL` 需补定义、`DIJOFS_*` 的 `FIELD_OFFSET` 进不了 constexpr 用 offsetof 自算、
+  `rgodf` 是非 const 指针数组不能加 const——三条编译踩坑）。
+- **`core/gamepad.h/.cpp`（可测纯逻辑）**：`dinput_button_to_pad`（rgbButtons 0..13 → □╳○△/L1R1/L2R2/
+  CREATE/OPTIONS/**L3=LS、R3=RS**/PS，13 触摸板无对应）、`dinput_pov_to_buttons`（45° 扇区→四方向）、
+  `dinput_axis_to_state`（0..65535 中心 32767.5，LY/LRz 取反成「正=上」，扳机 LRx/LRy → 0..1）。
+- **`win_input.h/.cpp`**：`load_dinput()`（仿 `load_xinput()`，System32 优先）；设备全在 poll() 线程
+  惰性初始化（CoInitializeEx + DirectInput8Create + 隐藏合作级窗口）→ `EnumDevices(GAMECTRL)`
+  （多设备优先 Sony VID 054C）→ CreateDevice/SetDataFormat/后台非独占合作级/逐轴 DIPROP_RANGE
+  0..65535/Acquire；读失败补 Acquire，连续 3 帧失败释放重枚举（对齐 XInput 拔出判定），枚举限流 2 秒。
+- **三态合并**：XInput 槽位已锁定 → XInput 快照（Xbox 手柄在两套 API 各出现一次，XInput 优先防重复）；
+  否则 DInput 已获取 → DInput 快照；否则空。`pad_connected()` = XInput 槽位 || DInput 在场。
+- **诊断**：`pad_backend()`（"XInput 槽位 N" / "DInput: Wireless Controller（VID_054C&PID_…）"）进
+  加载行/扫描行/每秒诊断行（`手柄=...`）；一次性 `DInput 手柄已接入：...首读：按钮=0x… 摇杆=… 扳机=… POV=…`
+  （原始值，映射对不上真机时一眼定位）；初始化失败也产出一次性诊断（CreateDevice/SetDataFormat/
+  合作级/Acquire/量程 分步报）。
+- **文档**：随包 README 手柄三处更新（PS 手柄原生支持说明 + 「旧版本槽位=-1 是正常现象请升级」）；
+  `docs/README.md` 新增「手柄支持」节；`config.ini.example` 注明 DInput 后端。
+  **注意**：随包 README 已有「手柄看不到？先关 Steam 输入」是给 Xbox 手柄的；PS 手柄同样建议停用
+  Steam 输入——本模组 v1.0.18 起直读 System32 XInput 绕开代理 DLL，Steam Input 的虚拟手柄不保证可见，
+  **不能拿「开 Steam 输入」当 PS 手柄的临时方案**，临时方案只有键盘 F2。
+
+- 版本 `1.4.0-cpp`；核心层 **469 → 503 项全绿**（`test_dinput_map` 34 项：按钮全表/POV 扇区+居中/轴归一化）；
+  DLL 编译链接通过。产物 `build-dll/PBZPhotoModeCpp.dll`，包 `dist/PBZPhotoModeCpp_1.4.0-cpp.zip`。
+
+### 1.4.0 实机验证要点（DualSense）
+
+1. USB 与蓝牙各测一次：启动日志应出现 `DInput 手柄已接入：Wireless Controller（VID_054C&PID_0CE6）…`
+   与 `手柄已连接（DInput: ...）`；每秒诊断行 `手柄=DInput: ...`。
+2. **L3+R3 进/出摄影模式**（本次修复的主目标）；左摇杆移动、右摇杆视角、L2/R2 升降、L1/R1 变速、
+   十字键 FOV、OPTIONS 菜单、╳ 冻结、△ 重置（PS 实体键 = config 里的 X/Y 位）。
+3. 插 Xbox 手柄再试：日志应回到 `手柄已连接（XInput 槽位 N）`（优先级未破坏）。
+4. 若 L3+R3 无效但手柄已连接：把 `DInput 手柄已接入：...首读` 那行发回来——按钮位图会直接暴露
+   rgbButtons 实际布局与映射表的偏差（蓝牙描述符与 USB 有差异的可能）。
+5. 回归：键鼠各功能不受影响（DInput 后端只在 XInput 无手柄时活动）。
+
+## 1.5.0-cpp（2026-10-31：超宽屏支持——进入摄影模式解除 16:9 画幅锁，消除两侧黑边）
+
+**触发**：超宽屏（21:9/32:9）用户反映进入摄影模式后画面两侧仍有黑边，要求加超宽屏支持。
+公开信息核实：截至 2026-10 月底游戏本体没有原生 21:9/32:9 支持（社区攻略口径一致），
+超宽屏上是 16:9 画面两侧补黑边；另有第三方 mod 从相机系统入手做解锁，说明锁在相机链路上。
+
+### 根因与机制
+
+- 游戏把画幅锁在 16:9。UE 里这把锁最常挂在两处：① `APlayerCameraManager.bDefaultConstrainAspectRatio`
+  + `DefaultAspectRatio`——**对任何 ViewTarget 生效**，就算 SetViewTarget 换成我们的摄影相机也锁
+  （所以超宽屏黑边在摄影模式里照样在）；② 相机组件自己的 `bConstrainAspectRatio`。
+- 我们生成的 CameraActor 组件默认不锁，所以元凶是 ①。解锁 = 进模式时把 `bDefaultConstrainAspectRatio`
+  写 false（原值存下，退出写回），顺手把摄影相机组件的 `bConstrainAspectRatio` 也显式关掉保险。
+- 宽屏 FOV 行为：解除约束后走引擎默认 `AspectRatioAxisConstraint`（MaintainYFOV），垂直 FOV 不变、
+  水平视野变宽——正是摄影想要的。FOV 滑条语义（水平 FOV）不变。
+
+### 实现
+
+- **`core/engine_port.h`**：新增 `unlock_aspect_ratio()` / `restore_aspect_ratio()` 两个端口方法
+  （失败只告警不阻断进模式，与 hide_hud 同级）。
+- **`core/photo_mode.*`**：`ultrawide_unlock` 配置（默认 true）→ enter() 在 HUD 隐藏之后解锁（`aspect_unlocked_` 记账），
+  leave() 在 postfx 还原之后写回；幂等退出的空判断加上该标记。
+- **`engine/ue4ss_port.*`**：解锁读改写相机管理器属性；只在确实锁着时记原值（没锁=无需写回）；
+  还原前校验管理器指针还是进入时那个（防换持有时把旧值写进新管理器）；属性缺失/写入失败打 warning
+  （黑边若来自别的机制——比如 UI 层画黑边——真机日志会立刻暴露）。
+- **诊断**：每秒诊断行 `画幅锁=开/关(比例)` 追加在相机状态摘要里，真机验证一眼可查。
+- **配置**：`[camera] ultrawide_unlock = true`（config.h/config.cpp/default_config_text/config.ini.example/dist config 五处同步）；
+  想保留 16:9 构图的用户可关。
+- 版本 `1.5.0-cpp`；核心层 **503 → 527 项全绿**（`test_photo_mode_ultrawide` 5 组场景：默认进退/配置关闭/
+  解锁失败不阻断/游戏未锁/热重载后仍按进入时还原；happy_path 进退序列断言同步更新）；
+  DLL 编译链接通过；包 `dist/PBZPhotoModeCpp_1.5.0-cpp.zip`。
+
+### 1.5.0 实机验证要点（超宽屏）
+
+1. 21:9/32:9 显示器进摄影模式：日志应出现 `画幅解锁：已解除 16:9 锁定（原比例=1.778）`，两侧黑边消失，
+   画面铺满全屏；每秒诊断行 `画幅锁=关(1.778)`。
+2. 退出摄影模式：黑边恢复，日志 `画幅还原：相机管理器已恢复 16:9 锁定`，诊断行回到 `画幅锁=开(1.778)`。
+3. 16:9 显示器回归：进出各一次，画面无变化（解锁对 16:9 是视觉无操作），功能不受影响。
+4. 若解锁后黑边仍在：看日志——`未锁定画幅，无需解锁` 或属性缺失的 warning 都说明锁在别处
+   （UI 层黑边/LocalPlayer 尺寸覆写），把日志和截图发回来定下一版方案。
+5. FOV 滑条在超宽屏下的范围体验（15~150 水平 FOV 在 32:9 上是否合适）收集反馈再调。

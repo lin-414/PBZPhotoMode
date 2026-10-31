@@ -152,6 +152,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "fov_min") set_double(cfg.fov_min, value, error, key.c_str());
         else if (key == "fov_max") set_double(cfg.fov_max, value, error, key.c_str());
         else if (key == "fov_step") set_double(cfg.fov_step, value, error, key.c_str());
+        else if (key == "ultrawide_unlock") set_bool(cfg.ultrawide_unlock, value, error, key.c_str());
         else if (key == "hide_player") set_bool(cfg.hide_player, value, error, key.c_str());
         else if (key == "hide_game_hud") set_bool(cfg.hide_game_hud, value, error, key.c_str());
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
@@ -336,7 +337,9 @@ std::string default_config_text() {
         << "fov_default = " << c.fov_default << "\n"
         << "fov_min = " << c.fov_min << "\n"
         << "fov_max = " << c.fov_max << "\n"
-        << "fov_step = " << c.fov_step << "\n\n"
+        << "fov_step = " << c.fov_step << "\n"
+        << "; 超宽屏（21:9/32:9）：进入摄影模式时解除游戏 16:9 画幅锁定（消除两侧黑边），退出还原\n"
+        << "ultrawide_unlock = " << (c.ultrawide_unlock ? "true" : "false") << "\n\n"
         << "[effects]\n"
         << "hide_player = false\n"
         << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"

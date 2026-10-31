@@ -69,6 +69,7 @@ private:
     bool game_input_blocked_{false};
     bool player_hidden_{false};
     bool hud_hidden_{false};
+    bool aspect_unlocked_{false};
     bool postfx_saved_{false};
 
     double prev_dilation_{1.0};

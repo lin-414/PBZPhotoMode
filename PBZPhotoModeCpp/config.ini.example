@@ -35,13 +35,14 @@ mouse_vertical_mode = translate
 vertical_speed = 200
 
 ; ================================================================
-; 手柄支持（v1.0.15 新增）
+; 手柄支持（v1.0.15 新增；v1.4.0 起原生支持 DualSense/DualShock4，USB 与蓝牙均可）
 ; ================================================================
 
 [gamepad]
 ; 手柄支持总开关（false=不轮询手柄）
 pad_enabled = true
 ; 进入/退出摄影模式：默认左右摇杆同时按下（LS=左摇杆按下 L3，RS=右摇杆按下 R3）
+; Xbox 手柄走 XInput，PS 手柄（DualSense/DualShock4）走 DirectInput，键位写法完全一致
 ; 可用按钮：A B X Y LB RB LS RS BACK START GUIDE UP DOWN LEFT RIGHT LT RT
 ; 也认 PS 叫法（CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS）
 ; 多个按钮用 + 连接（同时按住触发）；写 NONE 表示解绑该功能
@@ -67,6 +68,8 @@ fov_default = 90
 fov_min = 15
 fov_max = 150
 fov_step = 2
+; 超宽屏（21:9/32:9）：进入摄影模式时解除游戏 16:9 画幅锁定（消除两侧黑边），退出还原
+ultrawide_unlock = true
 
 [effects]
 hide_player = false

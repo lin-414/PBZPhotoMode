@@ -12,25 +12,26 @@
 - **视角控制**：按住 `Alt` + 移动鼠标；`WASD` 平移；`Q` / `E` 升降
 - **镜头参数**：滚轮调 FOV，小键盘 `+` / `-` 微调，`R` 一键重置到进入时的视角
 - **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）
+- **超宽屏支持**：进入摄影模式自动解除游戏的 16:9 画幅锁定，21:9 / 32:9 显示器不再有左右黑边，退出时还原
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
 - **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性
 - **可配置**：键位、移动速度、灵敏度、FOV 范围、冻结方式等全部写在 `config.ini` 里
 
 ## 当前版本
 
-**v1.0.14-cpp** —— 已编译：
+**v1.5.0-cpp** —— 已编译：
 
-- 进入摄影模式自动暂停时间（`auto_pause_time` 默认 `true`，可在 `config.ini` 关闭）
-- 进入摄影模式自动隐藏游戏 HUD（UMG 根控件 `W_FrontEndHUDLayout_C`），退出时按进入前的可见性恢复
-- F 键冻结时间使用游戏暂停模式，角色、敌人、NPC 与特效会真正静止，摄影相机仍可自由移动
-- 核心层 298 项单元测试全部通过
-- 产物：`PBZPhotoModeCpp_1.0.14-cpp.zip`
+- 超宽屏（21:9 / 32:9）支持：进入摄影模式自动解除游戏 16:9 画幅锁定，消除两侧黑边（`ultrawide_unlock` 默认 `true`，可在 `config.ini` 关闭），退出时还原
+- DualSense / DualShock4 原生手柄支持（DInput8 轮询后端，L3+R3 进摄影模式）
+- 进入摄影模式自动暂停时间（`auto_pause_time` 默认 `true`）、自动隐藏游戏 HUD
+- 核心层 527 项单元测试全部通过
+- 产物：`PBZPhotoModeCpp_1.5.0-cpp.zip`
 
 ## 安装
 
 需要《影之刃零》专用 UE4SS（[KintaroModding/ue4ss](https://github.com/KintaroModding/ue4ss) 的 `phantombladezero` 发行包，开发验证版本 `v3.0.1-1183-gcdbc0b66`）。
 
-从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.14-cpp.zip`，解压到游戏根目录，形成：
+从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.5.0-cpp.zip`，解压到游戏根目录，形成：
 
 ```
 <游戏目录>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp\
@@ -63,7 +64,7 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ```
 .
-├─ PBZPhotoModeCpp/         # UE4SS C++ Mod（v1.0.14）
+├─ PBZPhotoModeCpp/         # UE4SS C++ Mod（v1.5.0）
 │  ├─ src/core/             # 纯逻辑层（配置/输入/状态机/菜单模型，含单元测试）
 │  ├─ src/engine/           # UE4SS 引擎适配层
 │  ├─ src/mod_app.cpp       # CppUserModBase 入口
@@ -78,6 +79,8 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ## 版本记录
 
+- **v1.5.0**（2026-10-31）：超宽屏支持——进入摄影模式自动解除 16:9 画幅锁（`ultrawide_unlock`），21:9/32:9 两侧黑边消除，退出还原。
+- **v1.4.0**（2026-10-31）：DualSense/DualShock4 原生手柄支持（DInput8 后端，L3+R3 进摄影模式）。
 - **v1.0.14**（2026-10-30）：进入摄影模式自动暂停时间（`auto_pause_time`，默认开启，可在 `config.ini` 关闭）。
 - **v1.0.13**（2026-10-30）：移除实验性的截图功能，截图改用 NVIDIA App / Steam 等系统工具。
 - **v1.0.12**（2026-10-30）：进入摄影模式自动隐藏游戏 HUD（UMG 根控件），退出恢复；`hide_game_hud` 默认改为 `true`。

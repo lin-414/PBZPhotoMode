@@ -48,8 +48,8 @@ private:
     void apply_menu_actions();
     void apply_umg2_commands(const Umg2Commands& commands);
     void apply_wbp_commands(const WbpCommands& commands);
-    // WBP 资产菜单：指针是否落在面板上（悬停静音，与 umg2 的命中判定同款缩放机器）
-    bool cursor_in_scaled_panel(float from_right, float top, float width, float height);
+    // WBP 资产菜单：光标 → 面板内坐标（悬停静音与按钮命中判定共用，umg2 同款缩放机器）
+    bool panel_cursor_local(float& px, float& py);
     // 开菜单沿解析一次 UI 缩放（umg2_scale.txt 覆盖 > 物理/Slate 视口 > DPI），并打映射日志
     void resolve_panel_scale();
     // pak 自动安装：把 mod 目录 paks/ 的三件套拷进游戏 ProjectPBZ\Content\Paks\~mods

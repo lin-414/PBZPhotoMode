@@ -55,13 +55,19 @@ public:
     bool raw_dead() const { return raw_dead_; }
     // 诊断用：当前前台窗口是否属于本进程（为 false 时所有输入都会被忽略）
     bool foreground() const { return foreground_; }
-    // 手柄诊断：是否检测到连接（已锁定 XInput 槽位）与槽位号（-1 = 未连接/未启用）
+    // 手柄诊断：是否检测到连接（XInput 槽位已锁定，或 DInput 设备已获取）与 XInput 槽位号
     bool pad_connected() const;
     int pad_slot() const;
-    // XInput 是否加载成功（失败 = 手柄功能完全不可用，与有没有插手柄无关）
+    // XInput 是否加载成功（失败 = Xbox 手柄不可用，与有没有插手柄无关）
     bool pad_api_ready() const;
     // 实际加载的 XInput 模块完整路径（诊断：确认没加载到游戏目录里的代理 DLL）
     std::string pad_api_module() const;
+    // dinput8.dll 是否加载成功（PS 手柄等非 XInput 设备的后端）
+    bool pad_dinput_ready() const;
+    // 当前手柄后端摘要："XInput 槽位 N" / "DInput: <设备名 (VID_…&PID_…)>" / "无"
+    std::string pad_backend() const;
+    // 取走一次性 DInput 诊断（接入成功/初始化失败时各产出一条，日志用）；有则返回 true
+    bool take_pad_dinput_diag(std::string& out);
 
 private:
     Win32InputSource() = default;
@@ -84,11 +90,33 @@ private:
     int cursor_move_frames_{0};
     bool foreground_{false};
 
-    // 手柄（XInput）：只在引擎 Tick 线程的 poll() 里访问，无需加锁
+    // 手柄（XInput + DInput）：只在引擎 Tick 线程的 poll() 里访问，无需加锁
     int pad_slot_active_{-1};  // 已锁定并独占轮询的槽位；-1 = 尚未发现手柄
     int pad_scan_pos_{0};      // 未锁定时每帧扫描一个槽位，最坏 4 帧轮完
     int pad_fail_frames_{0};   // 锁定槽位连续读失败的帧数（满 3 次判定拔出）
     PadState pad_last_{};      // 最近一份有效快照（读失败的帧继续喂它，避免组合键抖动）
+
+    // DInput 后端（DualSense/DualShock4 等）：与上面同线程约定。
+    // DualSense 不是 XInput 设备，XInputGetState 永远读不到；走 DirectInput8 轮询。
+    // 选轮询而不是 Raw Input 事件：本作鼠标 raw input 出现过“注册成功但事件永不到达”，
+    // GetDeviceState 是主动拉状态，不可能被事件派发饿死。
+    void* dinput_api_{nullptr};    // IDirectInput8W*
+    void* dinput_dev_{nullptr};    // IDirectInputDevice8W*
+    void* dinput_hwnd_{nullptr};   // 合作级窗口（poll 线程自建的隐藏窗口）
+    bool dinput_com_{false};       // 已在本线程 CoInitializeEx
+    bool dinput_api_failed_{false};  // DirectInput8Create 失败过，不再重试
+    bool dinput_present_{false};   // 设备已获取且最近一次读取成功
+    bool dinput_dumped_{false};    // 一次性诊断已产出
+    int dinput_fail_frames_{0};    // 连续读取失败帧数（满 3 次释放重枚举）
+    unsigned long dinput_last_probe_{0};  // 上次枚举/获取尝试的 GetTickCount（限流 2 秒）
+    std::wstring dinput_name_;     // 设备产品名（如 "Wireless Controller"）
+    std::wstring dinput_vidpid_;   // "VID_054C&PID_0CE6" 样式，诊断用
+    std::string dinput_diag_;      // 待取的一次性诊断
+
+    bool poll_dinput(PadState& out);
+    bool ensure_dinput_runtime();
+    bool dinput_probe();
+    void dinput_release_device();
 };
 
 }  // namespace pbzpm

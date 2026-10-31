@@ -86,6 +86,10 @@ bool PhotoMode::enter() {
         hud_hidden_ = engine_.set_hud_visible(false);
         if (!hud_hidden_) log(LogLevel::Warn, "隐藏 HUD 失败");
     }
+    if (cfg_.ultrawide_unlock) {
+        aspect_unlocked_ = engine_.unlock_aspect_ratio();
+        if (!aspect_unlocked_) log(LogLevel::Warn, "画幅解锁失败：超宽屏（21:9/32:9）两侧黑边可能不会消除");
+    }
 
     postfx_saved_ = engine_.save_postfx();
     if (!postfx_saved_) log(LogLevel::Warn, "PostProcess 快照失败，退出时不会还原画质设置");
@@ -117,7 +121,7 @@ bool PhotoMode::enter() {
 
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
-        !hud_hidden_ && !postfx_saved_) {
+        !hud_hidden_ && !aspect_unlocked_ && !postfx_saved_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
@@ -132,6 +136,10 @@ void PhotoMode::leave(const char* reason) {
     if (postfx_saved_) {
         engine_.restore_postfx();
         postfx_saved_ = false;
+    }
+    if (aspect_unlocked_) {
+        engine_.restore_aspect_ratio();
+        aspect_unlocked_ = false;
     }
     if (hud_hidden_) {
         engine_.set_hud_visible(true);

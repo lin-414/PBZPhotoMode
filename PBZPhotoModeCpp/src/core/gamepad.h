@@ -52,6 +52,25 @@ std::string pad_combo_name(const std::vector<PadButton>& combo);
 // 摇杆径向死区：分量先夹紧到 [-1,1]；幅度 <= deadzone 归零，其余线性缩放回 0..1。
 void apply_stick_deadzone(double& x, double& y, double deadzone);
 
+// ---------------- DirectInput（PS 手柄）映射 ----------------
+// DualSense / DualShock4 不是 XInput 设备，Windows 把它们枚举成 DirectInput 手柄，
+// 按钮位和轴布局与 Xbox 不同，这里做 DIJOYSTATE2 → PadState 的纯翻译。
+inline constexpr int kDInputButtonCount = 14;  // rgbButtons 0..13；13=触摸板按键，无对应，返回 false
+
+// DIJOYSTATE2.rgbButtons 下标（0 基）→ PadButton。DualSense/DS4 标准 Windows HID 布局：
+// 0=□(X) 1=╳(A) 2=○(B) 3=△(Y) 4=L1(LB) 5=R1(RB) 6=L2(LT) 7=R2(RT)
+// 8=CREATE(Back) 9=OPTIONS(Start) 10=L3(LS) 11=R3(RS) 12=PS(Guide)。越界/无对应返回 false。
+bool dinput_button_to_pad(int index, PadButton& out);
+
+// POV 帽子开关（DIJOYSTATE2.rgdwPOV，单位 1/100 度：0=上 9000=右 18000=下 27000=左，
+// 斜向 4500 等；>35999 视为居中/无效）→ 四方向。out 顺序固定：[0]=上 [1]=右 [2]=下 [3]=左。
+void dinput_pov_to_buttons(unsigned long pov, bool out[4]);
+
+// DIJOYSTATE2 轴 → PadState 数值。摇杆 LX/LZ：0..65535 中心 32767.5 → -1..1；
+// LY/LRz 额外取反成「正=上」（HID 的 Y 是向下为正，翻成 XInput 约定）；扳机 LRx/LRy → 0..1。
+enum class DInputAxis { LX, LY, LZ, LRz, LRx, LRy };
+double dinput_axis_to_state(DInputAxis axis, long value);
+
 // 按钮是否处于按下状态（LT/RT 按阈值判，其余按 held[] 判）
 inline bool pad_held(const PadState& s, PadButton b) {
     if (b == PadButton::LT) return s.lt >= kPadTriggerHeld;

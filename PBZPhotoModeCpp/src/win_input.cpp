@@ -4,8 +4,20 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstddef>
+#include <cstdio>
 #include <thread>
+
+// INITGUID 让 dinput.h 里的 IID/GUID 在本 TU 实体化（否则要链 dinput.lib，不给构建加依赖）
+#include <initguid.h>
+#define DIRECTINPUT_VERSION 0x0800
+#include <dinput.h>
 #include <xinput.h>
+
+// 较新的 Windows SDK 把 DIDFT_OPTIONAL 从 dinput.h 删了，补回老 SDK 的值（0x80000000）
+#ifndef DIDFT_OPTIONAL
+#define DIDFT_OPTIONAL 0x80000000
+#endif
 
 // 部分 Windows SDK 的 xinput.h 略去了 GUIDE 键宏（原生值 0x0400）
 #ifndef XINPUT_GAMEPAD_GUIDE
@@ -63,6 +75,156 @@ void load_xinput() {
         try_load(name);  // 系统路径失败再按搜索顺序兜底
         if (g_xinput_get_state != nullptr) return;
     }
+}
+
+// ---------------- DirectInput（PS 手柄等非 XInput 设备） ----------------
+// DualSense/DualShock4 在 Windows 上不是 XInput 设备，XInputGetState 四个槽位永远读不到；
+// 它们被系统枚举成 DirectInput 手柄，走 DInput8 轮询（GetDeviceState 主动拉状态，
+// 不会像 Raw Input 事件那样被吞——本作鼠标 raw input 出过“注册成功但一个事件都不来”）。
+// 动态加载 dinput8.dll 而不是链 dinput.lib：不给构建加依赖。设备对象全在 poll() 线程里
+// 创建/获取/轮询，遵守 win_input.h 的无锁约定。
+using PFN_DirectInput8Create = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPVOID);
+PFN_DirectInput8Create g_dinput_create = nullptr;
+std::wstring g_dinput_module_path;
+
+void load_dinput() {
+    if (g_dinput_create != nullptr) return;
+    // 与 XInput 同样优先 System32 绝对路径，绕开游戏目录里的同名代理 DLL
+    wchar_t sys_dir[MAX_PATH]{};
+    const UINT sys_len = ::GetSystemDirectoryW(sys_dir, MAX_PATH);
+    const auto try_load = [&](const std::wstring& path) {
+        if (g_dinput_create != nullptr) return;
+        HMODULE mod = ::LoadLibraryW(path.c_str());
+        if (mod == nullptr) return;
+        auto* fn = reinterpret_cast<PFN_DirectInput8Create>(::GetProcAddress(mod, "DirectInput8Create"));
+        if (fn != nullptr) {
+            g_dinput_create = fn;
+            wchar_t file[MAX_PATH]{};
+            g_dinput_module_path = ::GetModuleFileNameW(mod, file, MAX_PATH) > 0 ? file : path;
+            return;
+        }
+        ::FreeLibrary(mod);
+    };
+    if (sys_len > 0) try_load(std::wstring(sys_dir) + L"\\dinput8.dll");
+    try_load(L"dinput8.dll");  // System32 拿不到再按搜索顺序兜底
+}
+
+// 手绘 DIJOYSTATE2 的数据格式表：c_dfDIJoystick2 实体在 dinput.lib 里，这里照抄语义重建。
+// 偏移用 offsetof 自算——SDK 的 DIJOFS_* 宏基于 FIELD_OFFSET（空指针算术），进不了 constexpr。
+// 按钮实例号固定 0..13（HID 按钮用法 1..14 依序对应），保证 rgbButtons 下标与映射表一致；
+// 摇杆/扳机轴按 GUID 匹配，滑条和多余 POV 标 OPTIONAL（DualSense 没有）。
+constexpr DWORD kDIOfsAxis = static_cast<DWORD>(offsetof(DIJOYSTATE2, lX));  // lX..lRz 连续 6 个 LONG
+constexpr DWORD kDIOfsSlider = static_cast<DWORD>(offsetof(DIJOYSTATE2, rglSlider));
+constexpr DWORD kDIOfsPov = static_cast<DWORD>(offsetof(DIJOYSTATE2, rgdwPOV));
+constexpr DWORD kDIOfsButtons = static_cast<DWORD>(offsetof(DIJOYSTATE2, rgbButtons));
+
+// DIDATAFORMAT.rgodf 的声明是 LPDIOBJECTDATAFORMAT（无 const），数组不能加 const
+DIOBJECTDATAFORMAT kJoy2Objects[] = {
+    {&GUID_XAxis, kDIOfsAxis, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_YAxis, kDIOfsAxis + 4, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_ZAxis, kDIOfsAxis + 8, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_RxAxis, kDIOfsAxis + 12, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_RyAxis, kDIOfsAxis + 16, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_RzAxis, kDIOfsAxis + 20, DIDFT_AXIS | DIDFT_ANYINSTANCE, 0},
+    {&GUID_Slider, kDIOfsSlider, DIDFT_AXIS | DIDFT_ANYINSTANCE | DIDFT_OPTIONAL, 0},
+    {&GUID_Slider, kDIOfsSlider + 4, DIDFT_AXIS | DIDFT_ANYINSTANCE | DIDFT_OPTIONAL, 0},
+    {&GUID_POV, kDIOfsPov, DIDFT_POV | DIDFT_ANYINSTANCE, 0},
+    {&GUID_POV, kDIOfsPov + 4, DIDFT_POV | DIDFT_ANYINSTANCE | DIDFT_OPTIONAL, 0},
+    {&GUID_POV, kDIOfsPov + 8, DIDFT_POV | DIDFT_ANYINSTANCE | DIDFT_OPTIONAL, 0},
+    {&GUID_POV, kDIOfsPov + 12, DIDFT_POV | DIDFT_ANYINSTANCE | DIDFT_OPTIONAL, 0},
+    {&GUID_Button, kDIOfsButtons + 0, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(0), 0},
+    {&GUID_Button, kDIOfsButtons + 1, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(1), 0},
+    {&GUID_Button, kDIOfsButtons + 2, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(2), 0},
+    {&GUID_Button, kDIOfsButtons + 3, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(3), 0},
+    {&GUID_Button, kDIOfsButtons + 4, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(4), 0},
+    {&GUID_Button, kDIOfsButtons + 5, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(5), 0},
+    {&GUID_Button, kDIOfsButtons + 6, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(6), 0},
+    {&GUID_Button, kDIOfsButtons + 7, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(7), 0},
+    {&GUID_Button, kDIOfsButtons + 8, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(8), 0},
+    {&GUID_Button, kDIOfsButtons + 9, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(9), 0},
+    {&GUID_Button, kDIOfsButtons + 10, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(10), 0},
+    {&GUID_Button, kDIOfsButtons + 11, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(11), 0},
+    {&GUID_Button, kDIOfsButtons + 12, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(12), 0},
+    {&GUID_Button, kDIOfsButtons + 13, DIDFT_BUTTON | DIDFT_MAKEINSTANCE(13), 0},
+};
+const DIDATAFORMAT kJoy2Format = {
+    sizeof(DIDATAFORMAT),
+    sizeof(DIOBJECTDATAFORMAT),
+    DIDF_ABSAXIS,
+    sizeof(DIJOYSTATE2),
+    static_cast<DWORD>(sizeof(kJoy2Objects) / sizeof(kJoy2Objects[0])),
+    kJoy2Objects,
+};
+
+std::string narrow(const std::wstring& w) {
+    // 设备名 / VID_PID 都是 ASCII，逐字符截断收窄足够
+    std::string out;
+    out.reserve(w.size());
+    for (wchar_t c : w) out.push_back(static_cast<char>(c));
+    return out;
+}
+
+std::string hex8(unsigned long value) {
+    char buf[16]{};
+    std::snprintf(buf, sizeof(buf), "0x%08lX", value);
+    return buf;
+}
+
+// 枚举候选：多设备时优先 Sony（VID 054C），避免 Xbox 手柄（同时挂在 XInput 上）抢先
+struct DInputCandidate {
+    GUID guid{};  // guidInstance
+    std::wstring name;
+    std::wstring vidpid;
+    bool sony{false};
+};
+
+BOOL CALLBACK dinput_enum_cb(LPCDIDEVICEINSTANCEW inst, LPVOID ctx) {
+    auto* c = static_cast<DInputCandidate*>(ctx);
+    if (c->guid != GUID{} && c->sony) return DIENUM_CONTINUE;  // 已有 Sony 设备
+    // HID 设备的 guidProduct.Data1：低字 = VID，次字 = PID
+    const unsigned long vid = static_cast<unsigned long>(inst->guidProduct.Data1) & 0xFFFFu;
+    const bool sony = vid == 0x054C;
+    if (c->guid != GUID{} && !sony) return DIENUM_CONTINUE;  // 已有候选且这个不是更优
+    wchar_t vidpid[32]{};
+    std::swprintf(vidpid, 32, L"VID_%04lX&PID_%04lX", vid,
+                  (static_cast<unsigned long>(inst->guidProduct.Data1) >> 16) & 0xFFFFu);
+    c->guid = inst->guidInstance;
+    c->name = inst->tszProductName != nullptr ? inst->tszProductName : L"";
+    c->vidpid = vidpid;
+    c->sony = sony;
+    return DIENUM_CONTINUE;
+}
+
+PadState dinput_to_pad(const DIJOYSTATE2& js) {
+    PadState p;
+    for (int i = 0; i < kDInputButtonCount; ++i) {
+        if ((js.rgbButtons[i] & 0x80) == 0) continue;
+        PadButton b{};
+        if (!dinput_button_to_pad(i, b)) continue;  // 触摸板等无对应的键
+        if (b == PadButton::LT) {
+            p.lt = 1.0;  // L2 数字镜像：pad_held(LT) 按 lt 阈值判
+        } else if (b == PadButton::RT) {
+            p.rt = 1.0;
+        } else {
+            p.held[static_cast<int>(b)] = true;
+        }
+    }
+    bool pov[4]{};
+    dinput_pov_to_buttons(js.rgdwPOV[0], pov);
+    p.held[static_cast<int>(PadButton::Up)] = pov[0];
+    p.held[static_cast<int>(PadButton::Right)] = pov[1];
+    p.held[static_cast<int>(PadButton::Down)] = pov[2];
+    p.held[static_cast<int>(PadButton::Left)] = pov[3];
+    p.lx = dinput_axis_to_state(DInputAxis::LX, js.lX);
+    p.ly = dinput_axis_to_state(DInputAxis::LY, js.lY);
+    p.rx = dinput_axis_to_state(DInputAxis::LZ, js.lZ);
+    p.ry = dinput_axis_to_state(DInputAxis::LRz, js.lRz);
+    // L2/R2 的模拟量与数字镜像取较大者
+    const double lt = dinput_axis_to_state(DInputAxis::LRx, js.lRx);
+    const double rt = dinput_axis_to_state(DInputAxis::LRy, js.lRy);
+    if (lt > p.lt) p.lt = lt;
+    if (rt > p.rt) p.rt = rt;
+    return p;
 }
 
 double thumb_to_axis(SHORT value) {
@@ -232,10 +394,6 @@ unsigned long Win32InputSource::mouse_event_count() const {
     return g_mouse_events.load();
 }
 
-bool Win32InputSource::pad_connected() const {
-    return pad_slot_active_ >= 0;
-}
-
 int Win32InputSource::pad_slot() const {
     return pad_slot_active_;
 }
@@ -249,11 +407,187 @@ std::string Win32InputSource::pad_api_module() const {
     return std::string(g_xinput_module_path.begin(), g_xinput_module_path.end());
 }
 
+bool Win32InputSource::pad_connected() const {
+    return pad_slot_active_ >= 0 || dinput_present_;
+}
+
+bool Win32InputSource::pad_dinput_ready() const {
+    return g_dinput_create != nullptr;
+}
+
+std::string Win32InputSource::pad_backend() const {
+    if (pad_slot_active_ >= 0) return "XInput 槽位 " + std::to_string(pad_slot_active_);
+    if (dinput_dev_ != nullptr) {
+        return "DInput: " + narrow(dinput_name_) + "（" + narrow(dinput_vidpid_) + "）";
+    }
+    return "无";
+}
+
+bool Win32InputSource::take_pad_dinput_diag(std::string& out) {
+    if (dinput_diag_.empty()) return false;
+    out = std::move(dinput_diag_);
+    dinput_diag_.clear();
+    return true;
+}
+
+bool Win32InputSource::ensure_dinput_runtime() {
+    if (dinput_api_ != nullptr) return true;
+    if (dinput_api_failed_) return false;
+    if (!dinput_com_) {
+        // 游戏主线程通常已初始化 COM；结果忽略（S_FALSE / RPC_E_CHANGED_MODE 都无害），
+        // 也不做 CoUninitialize——DLL 存活期与进程一致。
+        ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+        dinput_com_ = true;
+    }
+    auto* api = static_cast<IDirectInput8W*>(dinput_api_);
+    const HRESULT hr = g_dinput_create(::GetModuleHandleW(nullptr), DIRECTINPUT_VERSION, IID_IDirectInput8W,
+                                       reinterpret_cast<void**>(&api), nullptr);
+    if (FAILED(hr) || api == nullptr) {
+        dinput_api_failed_ = true;
+        dinput_diag_ = "DInput 初始化失败：DirectInput8Create hr=" + hex8(static_cast<unsigned long>(hr));
+        return false;
+    }
+    dinput_api_ = api;
+
+    // 合作级窗口：poll 线程自建隐藏窗口（raw sink 窗口在另一个线程，不跨线程用）
+    constexpr wchar_t kDInputWindowClass[] = L"PBZPM_DInputSink";
+    WNDCLASSEXW wc{};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = &::DefWindowProcW;
+    wc.hInstance = ::GetModuleHandleW(nullptr);
+    wc.lpszClassName = kDInputWindowClass;
+    if (::RegisterClassExW(&wc) == 0 && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
+        dinput_api_failed_ = true;
+        dinput_diag_ = "DInput 初始化失败：窗口类注册失败";
+        return false;
+    }
+    HWND hwnd = ::CreateWindowExW(0, kDInputWindowClass, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
+                                  wc.hInstance, nullptr);
+    if (hwnd == nullptr) {
+        dinput_api_failed_ = true;
+        dinput_diag_ = "DInput 初始化失败：合作级窗口创建失败";
+        return false;
+    }
+    dinput_hwnd_ = hwnd;
+    return true;
+}
+
+bool Win32InputSource::dinput_probe() {
+    const unsigned long now = ::GetTickCount();
+    if (dinput_last_probe_ != 0 && now - dinput_last_probe_ < 2000) return false;  // 限流：2 秒试一次
+    dinput_last_probe_ = now;
+
+    auto* api = static_cast<IDirectInput8W*>(dinput_api_);
+    DInputCandidate candidate;
+    api->EnumDevices(DI8DEVCLASS_GAMECTRL, &dinput_enum_cb, &candidate, DIEDFL_ATTACHEDONLY);
+    if (candidate.guid == GUID{}) return false;  // 没有 DInput 手柄在场（或只有被 XInput 接管的）
+
+    const auto fail = [&](const char* reason, IDirectInputDevice8W* dev, HRESULT hr) {
+        if (dev != nullptr) dev->Release();
+        dinput_diag_ = std::string("DInput 设备初始化失败：") + reason + " hr=" + hex8(static_cast<unsigned long>(hr));
+        return false;
+    };
+
+    IDirectInputDevice8W* dev = nullptr;
+    HRESULT hr = api->CreateDevice(candidate.guid, &dev, nullptr);
+    if (FAILED(hr) || dev == nullptr) return fail("CreateDevice", dev, hr);
+    hr = dev->SetDataFormat(&kJoy2Format);
+    if (FAILED(hr)) return fail("SetDataFormat", dev, hr);
+    hr = dev->SetCooperativeLevel(static_cast<HWND>(dinput_hwnd_), DISCL_BACKGROUND | DISCL_NONEXCLUSIVE);
+    if (FAILED(hr)) return fail("SetCooperativeLevel", dev, hr);
+
+    // 量程统一拉到 0..65535：这是 dinput_axis_to_state 的归一化基准（摇杆中心 32767.5、扳机满量 65535）。
+    // 逐轴设置（DIPH_DEVICE 会波及按钮/POV）；个别轴被驱动拒绝时记诊断但继续。
+    static const DWORD axis_offsets[] = {DIJOFS_X, DIJOFS_Y, DIJOFS_Z, DIJOFS_RX, DIJOFS_RY, DIJOFS_RZ};
+    bool range_ok = true;
+    for (const DWORD offset : axis_offsets) {
+        DIPROPRANGE range{};
+        range.diph.dwSize = sizeof(range);
+        range.diph.dwHeaderSize = sizeof(range.diph);
+        range.diph.dwObj = offset;
+        range.diph.dwHow = DIPH_BYOFFSET;
+        range.lMin = 0;
+        range.lMax = 65535;
+        if (FAILED(dev->SetProperty(DIPROP_RANGE, &range.diph))) range_ok = false;
+    }
+    hr = dev->Acquire();
+    if (FAILED(hr)) return fail("Acquire", dev, hr);
+
+    dinput_dev_ = dev;
+    dinput_name_ = candidate.name;
+    dinput_vidpid_ = candidate.vidpid;
+    dinput_fail_frames_ = 0;
+    dinput_dumped_ = false;
+    if (!range_ok) {
+        dinput_diag_ = "DInput 设备已接入但量程设置部分失败：" + narrow(candidate.name) + "（" +
+                       narrow(candidate.vidpid) + "），摇杆幅度可能异常";
+    }
+    return true;
+}
+
+void Win32InputSource::dinput_release_device() {
+    auto* dev = static_cast<IDirectInputDevice8W*>(dinput_dev_);
+    if (dev != nullptr) {
+        dev->Unacquire();
+        dev->Release();
+    }
+    dinput_dev_ = nullptr;
+    dinput_name_.clear();
+    dinput_vidpid_.clear();
+    dinput_present_ = false;
+    dinput_fail_frames_ = 0;
+}
+
+bool Win32InputSource::poll_dinput(PadState& out) {
+    out = PadState{};
+    if (!ensure_dinput_runtime()) return false;
+
+    auto* dev = static_cast<IDirectInputDevice8W*>(dinput_dev_);
+    if (dev == nullptr) {
+        if (!dinput_probe()) return false;
+        dev = static_cast<IDirectInputDevice8W*>(dinput_dev_);
+        if (dev == nullptr) return false;
+    }
+
+    dev->Poll();  // HID 设备无需轮询（返回 DI_NOEFFECT），失败由 GetDeviceState 兜底
+    DIJOYSTATE2 js{};
+    const HRESULT hr = dev->GetDeviceState(sizeof(js), &js);
+    if (FAILED(hr)) {
+        // 设备丢失/被抢：先补一次 Acquire；连续 3 帧仍读不到就释放重枚举（对齐 XInput 拔出判定）
+        if (++dinput_fail_frames_ >= 3) {
+            dinput_release_device();
+        } else {
+            dev->Acquire();
+        }
+        return false;
+    }
+    dinput_fail_frames_ = 0;
+    out = dinput_to_pad(js);
+
+    if (!dinput_dumped_) {
+        // 一次性诊断：映射与真机有出入时，这行能直接看出按钮位/轴/POV 的原始值
+        dinput_dumped_ = true;
+        unsigned long buttons = 0;
+        for (int i = 0; i < kDInputButtonCount; ++i) {
+            if ((js.rgbButtons[i] & 0x80) != 0) buttons |= (1UL << i);
+        }
+        char buf[256]{};
+        std::snprintf(buf, sizeof(buf),
+                      "DInput 手柄已接入：%ls（%ls）首读：按钮=0x%04lX 摇杆L=(%ld,%ld) R=(%ld,%ld) 扳机=(%ld,%ld) POV=%04lX",
+                      dinput_name_.c_str(), dinput_vidpid_.c_str(), buttons, js.lX, js.lY, js.lZ, js.lRz,
+                      js.lRx, js.lRy, static_cast<unsigned long>(js.rgdwPOV[0] & 0xFFFFu));
+        if (!dinput_diag_.empty()) dinput_diag_ += "；";
+        dinput_diag_ += buf;
+    }
+    return true;
+}
+
 bool Win32InputSource::install(bool enable_wheel_hook) {
     if (thread_ != nullptr) return true;
     g_wheel_hook_enabled.store(enable_wheel_hook);
 
     load_xinput();
+    load_dinput();  // PS 手柄等非 XInput 设备的后端（启动日志会报告可用性）
 
     ::SetLastError(0);
     auto* thread = new std::thread(&raw_thread_main);
@@ -370,34 +704,45 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
         logic.on_mouse_button(MouseButton::Right, right);
     }
 
-    // 5) 手柄（XInput）：每帧喂一份快照。没接手柄/被禁用时喂空状态，组合键视为全部松开。
+    // 5) 手柄：每帧喂一份快照。XInput 优先——Xbox 手柄在 XInput 和 DInput 里各出现一次，
+    //    锁定槽位即视为 Xbox，忽略 DInput；DualSense/DS4 不是 XInput 设备（槽位永远扫不到），
+    //    由 DInput 后端接手。没接手柄/被禁用时喂空状态，组合键视为全部松开。
     //    没锁定槽位时每帧只扫一个槽位（最坏 4 帧轮完），避免每帧 4 次 XInput 调用的卡顿。
-    if (gamepad_enabled && g_xinput_get_state != nullptr) {
-        XINPUT_STATE st{};
-        if (pad_slot_active_ >= 0) {
-            if (g_xinput_get_state(static_cast<DWORD>(pad_slot_active_), &st) == ERROR_SUCCESS) {
-                pad_last_ = xinput_to_pad(st);
-                pad_fail_frames_ = 0;
-            } else if (++pad_fail_frames_ >= 3) {
-                // 连续三帧读不到：判定拔出，回到槽位扫描并松开所有键
-                pad_slot_active_ = -1;
-                pad_fail_frames_ = 0;
-                pad_last_ = PadState{};
-            }
-        } else {
-            const int slot = pad_scan_pos_;
-            pad_scan_pos_ = (pad_scan_pos_ + 1) % 4;
-            if (g_xinput_get_state(static_cast<DWORD>(slot), &st) == ERROR_SUCCESS) {
-                pad_slot_active_ = slot;
-                pad_last_ = xinput_to_pad(st);
-                pad_fail_frames_ = 0;
+    if (gamepad_enabled) {
+        if (g_xinput_get_state != nullptr) {
+            XINPUT_STATE st{};
+            if (pad_slot_active_ >= 0) {
+                if (g_xinput_get_state(static_cast<DWORD>(pad_slot_active_), &st) == ERROR_SUCCESS) {
+                    pad_last_ = xinput_to_pad(st);
+                    pad_fail_frames_ = 0;
+                } else if (++pad_fail_frames_ >= 3) {
+                    // 连续三帧读不到：判定拔出，回到槽位扫描并松开所有键
+                    pad_slot_active_ = -1;
+                    pad_fail_frames_ = 0;
+                    pad_last_ = PadState{};
+                }
+            } else {
+                const int slot = pad_scan_pos_;
+                pad_scan_pos_ = (pad_scan_pos_ + 1) % 4;
+                if (g_xinput_get_state(static_cast<DWORD>(slot), &st) == ERROR_SUCCESS) {
+                    pad_slot_active_ = slot;
+                    pad_last_ = xinput_to_pad(st);
+                    pad_fail_frames_ = 0;
+                }
             }
         }
-        if (!active) pad_last_ = PadState{};  // 切后台时强制松开，避免组合键卡住
-        logic.on_gamepad(pad_last_);
+        // XInput 没锁到槽位时才轮 DInput，避免 Xbox 手柄被两套后端同时计数
+        if (pad_slot_active_ < 0 && g_dinput_create != nullptr) {
+            PadState dpad{};
+            dinput_present_ = poll_dinput(dpad);
+            pad_last_ = dinput_present_ ? dpad : PadState{};
+        }
     } else {
-        logic.on_gamepad(PadState{});
+        dinput_present_ = false;
+        pad_last_ = PadState{};
     }
+    if (!active) pad_last_ = PadState{};  // 切后台时强制松开，避免组合键卡住
+    logic.on_gamepad(pad_last_);
 }
 
 }  // namespace pbzpm

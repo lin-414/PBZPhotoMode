@@ -108,6 +108,7 @@ void test_config_defaults_and_parse() {
     CHECK(!empty.cfg.hide_player);
     CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
+    CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
 
@@ -131,6 +132,7 @@ mouse_vertical_mode = look
 fov_default = 75
 fov_min = 20
 fov_max = 120
+ultrawide_unlock = false
 
 [effects]
 auto_pause_time = false
@@ -150,6 +152,7 @@ dry_run = on
     CHECK(!parsed.cfg.free_look_requires_alt);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Look);
     CHECK_NEAR(parsed.cfg.fov_default, 75.0, 1e-9);
+    CHECK(!parsed.cfg.ultrawide_unlock);
     CHECK(!parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
     CHECK(parsed.cfg.dry_run);
@@ -200,6 +203,7 @@ void test_config_default_text_roundtrip() {
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
     CHECK_NEAR(parsed.cfg.fov_step, 2.0, 1e-9);
+    CHECK(parsed.cfg.ultrawide_unlock);
     CHECK(parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
 }
@@ -395,7 +399,8 @@ void test_photo_mode_happy_path() {
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "hud_off", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose", "pause_on"},
+                     "hud_off", "aspect_unlock", "save_postfx", "get_time_dilation", "apply_fov", "apply_pose",
+                     "pause_on"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -420,8 +425,8 @@ void test_photo_mode_happy_path() {
     fe.reset_calls();
     mode.leave("test");
     expect_sequence(fe,
-                    {"pause_off", "restore_postfx", "hud_on", "block_input_off", "ignore_move_off", "restore_view",
-                     "destroy_camera"},
+                    {"pause_off", "restore_postfx", "restore_aspect", "hud_on", "block_input_off", "ignore_move_off",
+                     "restore_view", "destroy_camera"},
                     "退出");
     CHECK(!mode.active());
     CHECK(!fe.paused);
@@ -893,6 +898,77 @@ void test_photo_mode_reassert_and_partial() {
     }
 }
 
+// ---------------------------------------------------------------- 超宽屏画幅解锁
+
+void test_photo_mode_ultrawide() {
+    section("PhotoMode 超宽屏画幅解锁");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 默认开启：进入解锁、退出还原
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.aspect_unlocked);
+        CHECK_INT(fe.count("aspect_unlock"), 1);
+        CHECK_INT(fe.count("restore_aspect"), 0);
+        mode.leave("test");
+        CHECK(!fe.aspect_unlocked);
+        CHECK_INT(fe.count("restore_aspect"), 1);
+    }
+
+    // 配置关闭：进退都不碰引擎
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.ultrawide_unlock = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("aspect_unlock"), 0);
+        mode.leave("test");
+        CHECK_INT(fe.count("restore_aspect"), 0);
+    }
+
+    // 解锁失败不阻断进模式：只告警，退出也不再还原（没解锁就没有可还原的）
+    {
+        FakeEngine fe;
+        fe.fail_aspect_unlock = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.active());
+        CHECK(!fe.aspect_unlocked);
+        CHECK(fe.logs_contain("画幅解锁失败"));
+        mode.leave("test");
+        CHECK_INT(fe.count("restore_aspect"), 0);
+    }
+
+    // 游戏本来就没锁（aspect_lock_active=false 仍返回成功）：进退各调一次
+    {
+        FakeEngine fe;
+        fe.aspect_lock_active = false;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(!fe.aspect_unlocked);
+        CHECK_INT(fe.count("aspect_unlock"), 1);
+        CHECK(fe.logs_contain("画幅解锁失败") == false);
+        mode.leave("test");
+        CHECK_INT(fe.count("restore_aspect"), 1);
+    }
+
+    // 进入后配置热重载关掉：退出仍按进入时做过的步骤还原
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        Config changed;
+        changed.ultrawide_unlock = false;
+        mode.set_config(changed);
+        mode.leave("test");
+        CHECK_INT(fe.count("restore_aspect"), 1);
+    }
+}
+
 // ---------------------------------------------------------------- 菜单
 
 void test_menu_model() {
@@ -1126,6 +1202,57 @@ void test_gamepad_parse_combo() {
     CHECK(rt.cfg.pad_enabled);
     CHECK_NEAR(rt.cfg.pad_look_speed, 180.0, 1e-9);
     CHECK_NEAR(rt.cfg.pad_deadzone, 0.15, 1e-9);
+}
+
+void test_dinput_map() {
+    section("DInput 映射（PS 手柄）");
+    using namespace pbzpm;
+    PadButton b{};
+
+    // 按钮 0 基索引：□ ╳ ○ △ L1 R1 L2 R2 CREATE OPTIONS L3 R3 PS（13=触摸板无对应）
+    const PadButton expected[] = {
+        PadButton::X,    PadButton::A,   PadButton::B,     PadButton::Y,
+        PadButton::LB,   PadButton::RB,  PadButton::LT,    PadButton::RT,
+        PadButton::Back, PadButton::Start, PadButton::LS, PadButton::RS,
+        PadButton::Guide,
+    };
+    for (int i = 0; i < 13; ++i) {
+        CHECK(dinput_button_to_pad(i, b) && b == expected[i]);
+    }
+    CHECK(!dinput_button_to_pad(13, b));
+    CHECK(!dinput_button_to_pad(-1, b));
+    CHECK(!dinput_button_to_pad(kDInputButtonCount, b));
+
+    // POV：0=上 9000=右 18000=下 27000=左；斜向同时亮两向；居中全松
+    bool d[4];
+    dinput_pov_to_buttons(0, d);
+    CHECK(d[0] && !d[1] && !d[2] && !d[3]);
+    dinput_pov_to_buttons(9000, d);
+    CHECK(!d[0] && d[1] && !d[2] && !d[3]);
+    dinput_pov_to_buttons(18000, d);
+    CHECK(!d[0] && !d[1] && d[2] && !d[3]);
+    dinput_pov_to_buttons(27000, d);
+    CHECK(!d[0] && !d[1] && !d[2] && d[3]);
+    dinput_pov_to_buttons(4500, d);
+    CHECK(d[0] && d[1] && !d[2] && !d[3]);
+    dinput_pov_to_buttons(31500, d);
+    CHECK(d[0] && !d[1] && !d[2] && d[3]);
+    dinput_pov_to_buttons(0xFFFF, d);      // 居中（低字 0xFFFF）
+    CHECK(!d[0] && !d[1] && !d[2] && !d[3]);
+    dinput_pov_to_buttons(0xFFFFFFFF, d);  // 居中（全字 0xFFFFFFFF）
+    CHECK(!d[0] && !d[1] && !d[2] && !d[3]);
+
+    // 轴：0..65535；摇杆中心 32767.5 → 0，LY/LRz 取反成「正=上」，扳机 0..1
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LX, 0), -1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LX, 32767), 0.0, 1e-4);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LX, 65535), 1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LY, 0), 1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LY, 65535), -1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LZ, 32767), 0.0, 1e-4);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRz, 0), 1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRx, 0), 0.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRx, 65535), 1.0, 1e-9);
+    CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRy, 32767), 0.5, 1e-4);
 }
 
 void test_gamepad_deadzone() {
@@ -1685,9 +1812,11 @@ int main() {
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
     test_photo_mode_live_toggles();
+    test_photo_mode_ultrawide();
     test_menu_model();
     test_gamepad_names();
     test_gamepad_parse_combo();
+    test_dinput_map();
     test_gamepad_deadzone();
     test_gamepad_input_logic();
     test_photo_mode_gamepad();

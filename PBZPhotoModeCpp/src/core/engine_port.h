@@ -43,6 +43,12 @@ public:
     virtual bool set_player_hidden(bool hidden) = 0;
     virtual bool set_hud_visible(bool visible) = 0;
 
+    // 超宽屏（21:9/32:9）支持：游戏把画幅锁在 16:9，超宽屏两侧补黑边。
+    // 进入摄影模式时解除锁定（实现内部保存原值），退出时按进入前的状态还原。
+    // 失败只告警不阻断进模式（游戏可能根本没锁，或属性不在预期位置）。
+    virtual bool unlock_aspect_ratio() = 0;
+    virtual void restore_aspect_ratio() = 0;
+
     virtual double get_time_dilation() = 0;
     virtual bool set_time_dilation(double dilation) = 0;
     virtual bool set_paused(bool paused) = 0;
