@@ -1,5 +1,5 @@
 // 纯核心层测试：不加载 UE4SS、不启动游戏，直接用 cl/cmake 编译即可跑。
-// 覆盖：配置解析、键名映射、输入状态机、数学约定、摄影模式状态机（含回滚）、菜单模型。
+// 覆盖：配置解析、键名映射、输入状态机、数学约定、摄影模式状态机（含回滚）。
 #include <cmath>
 #include <cstdio>
 #include <initializer_list>
@@ -9,8 +9,6 @@
 #include "core/config.h"
 #include "core/input_logic.h"
 #include "core/math3.h"
-#include "core/menu_bridge.h"
-#include "core/menu_model.h"
 #include "core/photo_mode.h"
 #include "core/vk.h"
 #include "tests/fake_engine.h"
@@ -99,7 +97,6 @@ void test_config_defaults_and_parse() {
     const ConfigLoadResult empty = parse_config("");
     CHECK_INT(empty.warnings.size(), 0);
     CHECK_STR(empty.cfg.key_toggle, "F2");
-    CHECK_STR(empty.cfg.key_menu, "T");
     CHECK_STR(empty.cfg.key_freeze, "F");
     CHECK_STR(empty.cfg.key_reset, "R");
     CHECK_NEAR(empty.cfg.move_speed, 400.0, 1e-9);
@@ -111,6 +108,8 @@ void test_config_defaults_and_parse() {
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
+    CHECK_NEAR(empty.cfg.vertical_speed, 200.0, 1e-9);
+    CHECK_NEAR(empty.cfg.roll_speed, 60.0, 1e-9);  // Q/E 滚转默认 60 度/秒
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
 
     const std::string ini = R"(
@@ -128,6 +127,8 @@ slow_mult = 0.5
 invert_y = yes
 free_look_requires_alt = false
 mouse_vertical_mode = look
+vertical_speed = 350
+roll_speed = 120
 
 [camera]
 fov_default = 75
@@ -152,6 +153,8 @@ dry_run = on
     CHECK(parsed.cfg.invert_y);
     CHECK(!parsed.cfg.free_look_requires_alt);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Look);
+    CHECK_NEAR(parsed.cfg.vertical_speed, 350.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.roll_speed, 120.0, 1e-9);
     CHECK_NEAR(parsed.cfg.fov_default, 75.0, 1e-9);
     CHECK(!parsed.cfg.ultrawide_unlock);
     CHECK(!parsed.cfg.auto_pause_time);
@@ -171,6 +174,7 @@ invert_y = maybe
 fov_min = 30
 fov_max = 10
 pitch_limit = 120
+roll_speed = 0
 freeze_dilation = 0
 this line has no equals
 )";
@@ -181,6 +185,7 @@ this line has no equals
     CHECK_NEAR(parsed.cfg.fov_min, 15.0, 1e-9);      // 越界组合回退默认
     CHECK_NEAR(parsed.cfg.fov_max, 150.0, 1e-9);
     CHECK_NEAR(parsed.cfg.pitch_limit, 89.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);  // 非正值回退默认
     CHECK_NEAR(parsed.cfg.freeze_dilation, 0.0001, 1e-12);
 
     // fov_default 落在范围外要被夹紧并告警
@@ -200,6 +205,7 @@ void test_config_default_text_roundtrip() {
     using namespace pbzpm;
     const std::string text = default_config_text();
     CHECK(text.find("key_toggle") != std::string::npos);
+    CHECK(text.find("roll_speed") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
@@ -207,6 +213,7 @@ void test_config_default_text_roundtrip() {
     CHECK(parsed.cfg.ultrawide_unlock);
     CHECK(parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
+    CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);
 }
 
 // ---------------------------------------------------------------- 数学
@@ -239,6 +246,9 @@ void test_math() {
     CHECK_NEAR(clamp_pitch(-120.0, 89.0), -89.0, 1e-9);
     CHECK_NEAR(wrap_yaw(370.0), 10.0, 1e-9);
     CHECK_NEAR(wrap_yaw(-10.0), 350.0, 1e-9);
+    CHECK_NEAR(wrap_angle_180(190.0), -170.0, 1e-9);  // 滚转折回对称区间
+    CHECK_NEAR(wrap_angle_180(-190.0), 170.0, 1e-9);
+    CHECK_NEAR(wrap_angle_180(360.0), 0.0, 1e-9);
 
     const Vec3 moved = offset_by_local(Vec3{}, Rot{}, Vec3{1.0, 0.0, 0.0}, 100.0);
     CHECK_NEAR(moved.x, 100.0, 1e-9);
@@ -258,7 +268,6 @@ void test_input_logic() {
     CHECK_INT(warnings.size(), 0);
     CHECK(keys.all_resolved);
     CHECK_INT(keys.toggle, 0x71);
-    CHECK_INT(keys.menu, 'T');
     CHECK_INT(keys.freeze, 'F');
     CHECK_INT(keys.reset, 'R');
 
@@ -334,7 +343,30 @@ void test_input_logic() {
     CHECK_NEAR(intent.move_up, -1.0, 1e-9);
     in.reset();
 
-    // look 模式：左右键变俯仰，且与 E/Q 升降不混
+    // Q/E：v1.9.0 起改为滚转（E=+1 顺时针 / Q=-1 逆时针），不再参与上下平移
+    in.on_key('E', true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.roll, 1.0, 1e-9);
+    CHECK_NEAR(intent.move_up, 0.0, 1e-9);
+    in.on_key('E', false);
+    in.on_key('Q', true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.roll, -1.0, 1e-9);
+    CHECK_NEAR(intent.move_up, 0.0, 1e-9);
+    in.on_key('Q', false);
+    in.reset();
+
+    // Q/E 滚转与鼠标左右键升降同帧叠加互不干扰
+    in.on_key('Q', true);
+    in.on_mouse_button(MouseButton::Left, true);
+    intent = in.build(cfg, keys);
+    CHECK_NEAR(intent.roll, -1.0, 1e-9);
+    CHECK_NEAR(intent.move_up, 1.0, 1e-9);
+    in.on_key('Q', false);
+    in.on_mouse_button(MouseButton::Left, false);
+    in.reset();
+
+    // look 模式：左右键变俯仰，与 Q/E 滚转互不影响
     Config look_cfg = cfg;
     look_cfg.mouse_vertical_mode = MouseVerticalMode::Look;
     in.on_mouse_button(MouseButton::Left, true);
@@ -342,6 +374,7 @@ void test_input_logic() {
     CHECK(intent.pitch_up_click);
     CHECK(!intent.pitch_down_click);
     CHECK_NEAR(intent.move_up, 0.0, 1e-9);
+    CHECK_NEAR(intent.roll, 0.0, 1e-9);
     in.reset();
 
     // 按下沿只触发一次；按住不放不会重复触发
@@ -416,7 +449,6 @@ void test_photo_mode_happy_path() {
     CHECK_NEAR(mode.pose().rot.yaw, 45.0, 1e-9);
     CHECK(mode.frozen());  // 默认 auto_pause_time=true：进入即冻结
     CHECK(fe.paused);
-    CHECK(mode.menu_visible());
 
     // 再进一次不应重复 spawn
     fe.reset_calls();
@@ -567,7 +599,7 @@ void test_photo_mode_tick() {
     {
         FakeEngine fe_reset;
         fe_reset.pov.loc = Vec3{10.0, 20.0, 30.0};
-        fe_reset.pov.rot = Rot{5.0, 45.0, 0.0};
+        fe_reset.pov.rot = Rot{5.0, 45.0, 12.0};
         fe_reset.pov.fov = 80.0;
         Config cfg_reset;
         PhotoMode resetter(fe_reset, cfg_reset);
@@ -576,10 +608,12 @@ void test_photo_mode_tick() {
         Intent move;
         move.move_forward = 1.0;
         move.look_dy = 10.0;
+        move.roll = 1.0;
         move.wheel = 2.0;
         resetter.tick(move, 0.1);
         CHECK(resetter.pose().loc.x > fe_reset.pov.loc.x);  // 先确实移动/转/改 FOV
         CHECK(resetter.pose().rot.pitch < fe_reset.pov.rot.pitch);
+        CHECK(resetter.pose().rot.roll > fe_reset.pov.rot.roll);  // 滚转也确实动过
         CHECK(resetter.fov() < fe_reset.pov.fov);
 
         Intent reset;
@@ -590,6 +624,7 @@ void test_photo_mode_tick() {
         CHECK_NEAR(resetter.pose().loc.z, fe_reset.pov.loc.z, 1e-9);
         CHECK_NEAR(resetter.pose().rot.pitch, fe_reset.pov.rot.pitch, 1e-9);
         CHECK_NEAR(resetter.pose().rot.yaw, fe_reset.pov.rot.yaw, 1e-9);
+        CHECK_NEAR(resetter.pose().rot.roll, fe_reset.pov.rot.roll, 1e-9);
         CHECK_NEAR(resetter.fov(), fe_reset.pov.fov, 1e-9);
         CHECK(fe_reset.logs_contain("相机视角已重置"));
         resetter.leave();
@@ -643,6 +678,55 @@ void test_photo_mode_tick() {
     mover.tick(lag, 5.0);
     CHECK_NEAR(std::fabs(mover.pose().loc.x - lag_start.x), 400.0 * 0.25, 1e-6);
 
+    // Q/E 滚转：roll_speed 度/秒，正 = 顺时针（roll 增大）；Shift/Ctrl 变速同样生效
+    {
+        FakeEngine fe_roll;
+        Config cfg_roll;
+        cfg_roll.roll_speed = 90.0;
+        PhotoMode roller(fe_roll, cfg_roll);
+        CHECK(roller.enter());
+
+        Intent roll_cw;
+        roll_cw.roll = 1.0;
+        roller.tick(roll_cw, 0.1);  // 90 * 0.1 = 9 度
+        CHECK_NEAR(roller.pose().rot.roll, 9.0, 1e-9);
+
+        Intent roll_ccw;
+        roll_ccw.roll = -1.0;
+        roller.tick(roll_ccw, 0.1);
+        CHECK_NEAR(roller.pose().rot.roll, 0.0, 1e-9);
+
+        roll_ccw.boost = true;
+        roller.tick(roll_ccw, 0.1);  // -90 * 4 * 0.1 = -36
+        CHECK_NEAR(roller.pose().rot.roll, -36.0, 1e-9);
+
+        roll_ccw.slow = true;  // Shift+Ctrl 同按：4 * 0.3 = 1.2 倍
+        roller.tick(roll_ccw, 0.1);  // -10.8 -> -46.8
+        CHECK_NEAR(roller.pose().rot.roll, -46.8, 1e-9);
+
+        // dt 超限保护对滚转同样生效
+        PhotoMode capped(fe_roll, cfg_roll);
+        CHECK(capped.enter());
+        capped.tick(roll_cw, 5.0);  // 实际按 0.25s 算：90 * 0.25 = 22.5
+        CHECK_NEAR(capped.pose().rot.roll, 22.5, 1e-9);
+
+        // 环绕：滚过 ±180 折回对称区间，不无界增长
+        Config cfg_fast = cfg_roll;
+        cfg_fast.roll_speed = 3600.0;
+        PhotoMode spinner(fe_roll, cfg_fast);
+        CHECK(spinner.enter());
+        spinner.tick(roll_cw, 0.1);  // +360 -> 0
+        CHECK_NEAR(spinner.pose().rot.roll, 0.0, 1e-9);
+        Intent roll_left;
+        roll_left.roll = -1.0;
+        spinner.tick(roll_left, 0.2);  // -720 -> 0
+        CHECK_NEAR(spinner.pose().rot.roll, 0.0, 1e-9);
+        spinner.tick(roll_left, 0.05);  // -180 -> -180
+        CHECK_NEAR(spinner.pose().rot.roll, -180.0, 1e-9);
+        spinner.tick(roll_left, 0.05);  // 再 -180：-360 折回 0
+        CHECK_NEAR(spinner.pose().rot.roll, 0.0, 1e-9);
+        spinner.leave();
+    }
 
     // 世界失效 -> 自动退出并还原
     fe.world_ok = false;
@@ -1021,52 +1105,6 @@ void test_photo_mode_ultrawide() {
     }
 }
 
-// ---------------------------------------------------------------- 菜单
-
-void test_menu_model() {
-    section("menu_model");
-    using namespace pbzpm;
-    using pbzpm::test::FakeEngine;
-
-    FakeEngine fe;
-    Config menu_cfg;
-    menu_cfg.auto_pause_time = false;  // 本组测菜单状态，手动控制冻结
-    PhotoMode mode(fe, menu_cfg);
-    const KeyMap keys = build_keymap(mode.config(), nullptr);
-
-    MenuModel off = build_menu_model(mode, keys);
-    CHECK_STR(off.status, "OFF");
-
-    CHECK(mode.enter());
-    MenuModel live = build_menu_model(mode, keys);
-    CHECK_STR(live.status, "LIVE");
-    CHECK(!live.status_frozen);
-    CHECK(live.rows.size() >= 5);
-    CHECK_STR(live.rows[0].label, "FOV");
-    CHECK_STR(live.rows[0].value, "90.0");
-
-    mode.toggle_freeze();
-    MenuModel frozen = build_menu_model(mode, keys);
-    CHECK_STR(frozen.status, "FROZEN");
-    CHECK(frozen.status_frozen);
-
-    const std::string text = render_menu_text(frozen);
-    CHECK(text.find("FROZEN") != std::string::npos);
-    CHECK(text.find("FOV") != std::string::npos);
-    CHECK(text.find("ALT") != std::string::npos);
-    CHECK(text.find("F2") != std::string::npos);   // 退出键提示
-    CHECK(text.find("F") != std::string::npos);    // 冻结键提示
-
-    // 改了键位，提示也要跟着变
-    Config cfg;
-    cfg.key_toggle = "F10";
-    cfg.key_freeze = "G";
-    PhotoMode mode2(fe, cfg);
-    const KeyMap keys2 = build_keymap(mode2.config(), nullptr);
-    const std::string text2 = render_menu_text(build_menu_model(mode2, keys2));
-    CHECK(text2.find("F10") != std::string::npos);
-    CHECK(text2.find("G") != std::string::npos);
-}
 
 }  // namespace
 
@@ -1219,7 +1257,7 @@ void test_gamepad_parse_combo() {
     CHECK_INT((int)r.buttons.size(), 2);
     CHECK(r.buttons[0] == PadButton::LS && r.buttons[1] == PadButton::RS);
 
-    r = parse_pad_combo(" start ", fb, "pad_menu", &warnings);
+    r = parse_pad_combo(" start ", fb, "pad_freeze", &warnings);
     CHECK(r.ok && r.buttons.size() == 1 && r.buttons[0] == PadButton::Start);
 
     r = parse_pad_combo("ls + rs", fb, "pad_toggle", &warnings);
@@ -1405,15 +1443,15 @@ void test_gamepad_input_logic() {
     // NONE 解绑后不触发，且不算解析失败
     {
         Config unbind = cfg;
-        unbind.pad_menu = "NONE";
+        unbind.pad_freeze = "NONE";
         std::vector<std::string> w2;
         const KeyMap k2 = build_keymap(unbind, &w2);
         CHECK(k2.all_resolved);
-        CHECK(k2.pad_menu.empty());
+        CHECK(k2.pad_freeze.empty());
         PadState s;
-        s.held[static_cast<int>(PadButton::Start)] = true;
+        s.held[static_cast<int>(PadButton::X)] = true;
         input.on_gamepad(s);
-        CHECK(!input.build(unbind, k2).toggle_menu);
+        CHECK(!input.build(unbind, k2).toggle_freeze);
         input.end_frame();
         input.reset();
     }
@@ -1501,16 +1539,41 @@ void test_gamepad_input_logic() {
     CHECK_NEAR(in.pad_look_dx, cfg.pad_look_speed, 1e-9);
     logic2.end_frame();
 
-    // RT/LT 升降（模拟量）+ LB/RB 变速
+    // RT/LT 升降（模拟量）+ RB/LB 滚转（1.0.22 起：RB 顺时针 / LB 逆时针）
     PadState trig;
     trig.rt = 1.0;
-    trig.lt = 0.5;
-    trig.held[static_cast<int>(PadButton::LB)] = true;
     trig.held[static_cast<int>(PadButton::RB)] = true;
     input.on_gamepad(trig);
     in = input.build(cfg, keys);
-    CHECK_NEAR(in.move_up, 0.5, 1e-9);
+    CHECK_NEAR(in.move_up, 1.0, 1e-9);
+    CHECK_NEAR(in.roll, 1.0, 1e-9);
+    CHECK(!in.boost);
+    trig = PadState{};
+    trig.lt = 0.5;
+    trig.held[static_cast<int>(PadButton::LB)] = true;
+    input.on_gamepad(trig);
+    in = input.build(cfg, keys);
+    CHECK_NEAR(in.move_up, -0.5, 1e-9);
+    CHECK_NEAR(in.roll, -1.0, 1e-9);
+    input.end_frame();
+    input.reset();
+
+    // 变速随滚转让位到摇杆按下：LS 加速 / RS 减速；两杆同按（进出组合）时不触发变速
+    PadState sticks;
+    sticks.held[static_cast<int>(PadButton::LS)] = true;
+    input.on_gamepad(sticks);
+    in = input.build(cfg, keys);
     CHECK(in.boost);
+    CHECK(!in.slow);
+    sticks.held[static_cast<int>(PadButton::RS)] = true;
+    input.on_gamepad(sticks);
+    in = input.build(cfg, keys);
+    CHECK(!in.boost);
+    CHECK(!in.slow);
+    sticks.held[static_cast<int>(PadButton::LS)] = false;
+    input.on_gamepad(sticks);
+    in = input.build(cfg, keys);
+    CHECK(!in.boost);
     CHECK(in.slow);
     input.end_frame();
     input.reset();
@@ -1528,6 +1591,61 @@ void test_gamepad_input_logic() {
     input.end_frame();
     input.reset();
 
+    // FOV 按住连发（1.0.23）：按下沿立即一格，按住 0.35 秒后按 0.08 秒间隔连发；松开即停。
+    // 帧序列 dt=0.10：0.10s 按下沿=1，0.20/0.30s 未到延迟=0，0.40s 过延迟=1，之后每帧约 1~2 格。
+    input.on_gamepad(PadState{});  // 先松开并过一帧：上一段把十字键留在按住态，was_down 要在 build 里才会回落
+    in = input.build(cfg, keys, 0.0);
+    input.end_frame();
+    PadState pad_up;
+    pad_up.held[static_cast<int>(PadButton::Up)] = true;
+    input.on_gamepad(pad_up);
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 2);
+    input.end_frame();
+    // 松开：立即停发，且不会把松开误判成反向
+    input.on_gamepad(PadState{});
+    in = input.build(cfg, keys, 0.10);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    input.reset();
+
+    // 键盘 FOV 键同样支持按住连发；按住时进出模式（reset）不误发新按下沿
+    input.on_key(keys.fov_up, true);
+    in = input.build(cfg, keys, 0.05);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    input.reset();
+    in = input.build(cfg, keys, 0.0);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    input.on_key(keys.fov_up, true);  // 重新按下：正常触发新的按下沿
+    in = input.build(cfg, keys, 0.35);
+    CHECK_INT(in.fov_nudge, 1);
+    input.end_frame();
+    input.on_key(keys.fov_up, false);
+    in = input.build(cfg, keys, 0.05);
+    CHECK_INT(in.fov_nudge, 0);
+    input.end_frame();
+    input.reset();
+
     // 手柄冻结/重置键
     PadState btns;
     btns.held[static_cast<int>(PadButton::X)] = true;
@@ -1536,7 +1654,6 @@ void test_gamepad_input_logic() {
     in = input.build(cfg, keys);
     CHECK(in.toggle_freeze);
     CHECK(in.reset_view);
-    CHECK(!in.toggle_menu);
     input.end_frame();
 }
 
@@ -1638,214 +1755,6 @@ void test_photo_mode_gamepad() {
     }
 }
 
-// ---------------------------------------------------------------- WBP 资产菜单变量桥
-
-void test_wbp_bridge() {
-    using namespace pbzpm;
-    section("WbpBridge");
-    {
-        // 无效快照：既无命令也无写回（控件不可用时绝不能往别处写属性）
-        WbpBridge b;
-        WbpWriteBack out;
-        WbpVars v;
-        v.valid = false;
-        v.fov = 999;
-        v.command = 3;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
-        CHECK(!c.toggle_freeze && !c.reset_view && !c.exit_mode);
-        CHECK(!out.write_fov && !out.write_speed && !out.write_sens);
-        CHECK(!out.write_frozen && !out.write_status && !out.write_command);
-    }
-    {
-        // 未 on_opened 直接 step：以外部真值为基线自举，并把真值推给 BP
-        WbpBridge b;
-        WbpWriteBack out;
-        WbpVars v;
-        v.valid = true;
-        v.fov = 90;
-        v.speed = 400;
-        v.sens = 0.1f;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
-        CHECK(out.write_fov);
-        CHECK_NEAR(out.fov, 90.0, 1e-6);
-        CHECK(out.write_speed);
-        CHECK_NEAR(out.speed, 400.0, 1e-6);
-        CHECK(out.write_sens);
-        CHECK_NEAR(out.sens, 0.1, 1e-6);
-        CHECK(out.write_frozen && !out.frozen);
-        CHECK(out.write_status && out.status == 1);
-        CHECK(!out.write_command);
-    }
-    {
-        // on_opened 之后的正常帧：同值无命令，状态写回仍在
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpWriteBack out;
-        WbpVars v;
-        v.valid = true;
-        v.fov = 90;
-        v.speed = 400;
-        v.sens = 0.1f;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
-        CHECK(out.write_fov && out.write_speed && out.write_sens);  // 首帧 push_pending：三个真值全推
-        CHECK_NEAR(out.fov, 90.0, 1e-6);
-        out = WbpWriteBack{};
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!out.write_fov && !out.write_speed && !out.write_sens);  // 真值没变 → 不再推
-        CHECK(out.write_frozen && out.write_status);                   // 状态仍然每帧推
-    }
-    {
-        // 滑条变化 → 命令；同值不重复；微抖动（< eps）不触发
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        v.fov = 90;
-        v.speed = 400;
-        v.sens = 0.1f;
-        WbpWriteBack out;
-        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);  // warmup：消耗 push_pending
-        v.fov = 90.03f;  // < kFovEps(0.05)
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed);
-        v.fov = 100.0f;
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.fov_changed);
-        CHECK_NEAR(c.fov, 100.0, 1e-9);
-        CHECK(!out.write_fov);  // 未夹紧：不回写
-        // 外部真值追上来后（相机已应用 100）：命令不重复，真值回显推一次给 BP
-        c = b.step(v, 100, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed);
-        CHECK(out.write_fov);
-        CHECK_NEAR(out.fov, 100.0, 1e-6);
-        out = WbpWriteBack{};
-        c = b.step(v, 100, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!out.write_fov);  // 回显也只推一次
-    }
-    {
-        // 超上限：命令夹紧；拖动中不回写；松手后回写夹紧值
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        v.fov = 90;
-        v.speed = 400;
-        v.sens = 0.1f;
-        WbpWriteBack out;
-        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);  // warmup：消耗 push_pending
-        v.fov = 160.0f;  // 轨道渲染上限 150 之外（理论上不会出现，防资产轨道配错）
-        v.dragging = true;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.fov_changed);
-        CHECK_NEAR(c.fov, 150.0, 1e-9);
-        CHECK(!out.write_fov);  // 拖动中：不回写，避免和拖拽打架
-        v.dragging = false;
-        c = b.step(v, 150, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.fov_changed);   // 残余差仍在 → 仍下发（夹紧后同值，无副作用）
-        CHECK_NEAR(c.fov, 150.0, 1e-9);
-        CHECK(out.write_fov);   // 松手：回写夹紧值，滑条弹回
-        CHECK_NEAR(out.fov, 150.0, 1e-6);
-    }
-    {
-        // 灵敏度低于下限：命令夹紧
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        v.sens = 0.001f;
-        WbpWriteBack out;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.sens_changed);
-        CHECK_NEAR(c.sens, 0.01, 1e-9);
-    }
-    {
-        // 速度：变化下发 + 夹紧到 [0, 2000]
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        v.speed = 3000.0f;
-        WbpWriteBack out;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.speed_changed);
-        CHECK_NEAR(c.speed, 2000.0, 1e-9);
-    }
-    {
-        // 冻结状态每帧同步
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        WbpWriteBack out;
-        b.step(v, 90, 400, 0.1, true, 15, 150, 0.01, 0.5, out);
-        CHECK(out.write_frozen && out.frozen);
-        CHECK(out.write_status && out.status == 2);
-    }
-    {
-        // 命令沿：执行 + 写回 0；写回未生效前不重复；归零后可再次触发
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        WbpWriteBack out;
-        v.command = 1;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.toggle_freeze);
-        CHECK(!c.reset_view && !c.exit_mode);
-        CHECK(out.write_command);
-        CHECK_INT(out.command, 0);
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.toggle_freeze);  // 同值（写回还没被 BP 看到）不双触发
-        v.command = 0;
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!out.write_command || out.command == 0);
-        v.command = 1;
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.toggle_freeze);  // 归零后可再次触发
-    }
-    {
-        // 三种命令各有出口；未知命令忽略但清零
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        WbpVars v;
-        v.valid = true;
-        WbpWriteBack out;
-        v.command = 2;
-        auto c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.reset_view && !c.toggle_freeze);
-        v.command = 0;
-        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        v.command = 3;
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(c.exit_mode);
-        v.command = 0;
-        b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        v.command = 7;
-        c = b.step(v, 90, 400, 0.1, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.toggle_freeze && !c.reset_view && !c.exit_mode);
-        CHECK(out.write_command);  // 仍要清零，免得卡在未知值上
-    }
-    {
-        // reset + 重新 on_opened：新基线，不产生伪命令
-        WbpBridge b;
-        b.on_opened(90, 400, 0.1);
-        b.reset();
-        b.on_opened(60, 300, 0.05);
-        WbpVars v;
-        v.valid = true;
-        v.fov = 60;
-        v.speed = 300;
-        v.sens = 0.05f;
-        WbpWriteBack out;
-        auto c = b.step(v, 60, 300, 0.05, false, 15, 150, 0.01, 0.5, out);
-        CHECK(!c.fov_changed && !c.speed_changed && !c.sens_changed);
-        CHECK(out.write_fov);
-        CHECK_NEAR(out.fov, 60.0, 1e-6);
-    }
-}
 
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
@@ -1866,14 +1775,12 @@ int main() {
     test_photo_mode_live_toggles();
     test_photo_mode_ultrawide();
     test_photo_mode_interact_prompt();
-    test_menu_model();
     test_gamepad_names();
     test_gamepad_parse_combo();
     test_dinput_map();
     test_gamepad_deadzone();
     test_gamepad_input_logic();
     test_photo_mode_gamepad();
-    test_wbp_bridge();
 
     std::printf("\n----------------------------------------\n");
     std::printf("检查 %d 项，失败 %d 项\n", g_checks, g_failures);

@@ -59,6 +59,13 @@ inline double wrap_yaw(double yaw_deg) {
     return y;
 }
 
+// 滚转归一化到 [-180, 180)：Q/E 连续滚时不无界增长；roll 关于水平对称，用对称区间更直观
+inline double wrap_angle_180(double angle_deg) {
+    double a = std::fmod(angle_deg + 180.0, 360.0);
+    if (a < 0.0) a += 360.0;
+    return a - 180.0;
+}
+
 inline Vec3 offset_by_local(const Vec3& loc, const Rot& rot, const Vec3& local_dir, double scale) {
     const Vec3 fwd = forward_from_angles(rot.pitch, rot.yaw);
     const Vec3 right = right_from_yaw(rot.yaw);

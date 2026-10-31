@@ -12,6 +12,11 @@ constexpr int kD = 'D';
 constexpr int kE = 'E';
 constexpr int kQ = 'Q';
 
+// FOV 按住连发：首格延迟与连发间隔（秒）。单击仍是一格；按住 0.35 秒后以 12.5 格/秒连发。
+// 键盘 FOV 键与手柄十字键同规则。
+constexpr double kFovRepeatDelay = 0.35;
+constexpr double kFovRepeatInterval = 0.08;
+
 int resolve_key(const std::string& name, int fallback, const char* label, std::vector<std::string>* warnings, bool& all_ok) {
     const int vk = vk_from_name(name);
     if (vk == 0) {
@@ -28,7 +33,6 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     KeyMap map;
     map.all_resolved = true;
     map.toggle = resolve_key(cfg.key_toggle, map.toggle, "key_toggle", warnings, map.all_resolved);
-    map.menu = resolve_key(cfg.key_menu, map.menu, "key_menu", warnings, map.all_resolved);
     map.freeze = resolve_key(cfg.key_freeze, map.freeze, "key_freeze", warnings, map.all_resolved);
     map.reset = resolve_key(cfg.key_reset, map.reset, "key_reset", warnings, map.all_resolved);
     map.fov_up = resolve_key(cfg.key_fov_up, map.fov_up, "key_fov_up", warnings, map.all_resolved);
@@ -40,7 +44,6 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
         return parsed.buttons;
     };
     map.pad_toggle = resolve_combo(cfg.pad_toggle, map.pad_toggle, "pad_toggle");
-    map.pad_menu = resolve_combo(cfg.pad_menu, map.pad_menu, "pad_menu");
     map.pad_freeze = resolve_combo(cfg.pad_freeze, map.pad_freeze, "pad_freeze");
     map.pad_reset = resolve_combo(cfg.pad_reset, map.pad_reset, "pad_reset");
     map.pad_fov_up = resolve_combo(cfg.pad_fov_up, map.pad_fov_up, "pad_fov_up");
@@ -90,6 +93,30 @@ bool InputLogic::pad_combo_pressed(const std::vector<PadButton>& combo) const {
     return pad_combo_down(pad_, combo) && !pad_combo_down(pad_prev_, combo);
 }
 
+int InputLogic::fov_axis_nudge(int vk, const std::vector<PadButton>& combo, double dt, FovRepeat& st) {
+    // 键盘键与手柄组合合成一个方向通道，谁先按下都算同一次按下沿
+    const bool down = key_held(vk) || pad_combo_down(pad_, combo);
+    int nudge = 0;
+    if (down) {
+        if (!st.was_down) {
+            nudge = 1;  // 按下沿：立即一格
+            st.hold = 0.0;
+            st.next = kFovRepeatDelay;
+        } else {
+            st.hold += dt;
+            while (st.hold >= st.next) {  // 大掉帧时一次补多格，节奏不变
+                ++nudge;
+                st.next += kFovRepeatInterval;
+            }
+        }
+    } else {
+        st.hold = 0.0;
+        st.next = 0.0;
+    }
+    st.was_down = down;
+    return nudge;
+}
+
 bool InputLogic::held(int vk) const {
     return key_held(vk);
 }
@@ -98,7 +125,7 @@ bool InputLogic::alt_down() const {
     return key_held(kAltGeneric) || key_held(kAltLeft) || key_held(kAltRight);
 }
 
-Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
+Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
     Intent out;
 
     const bool shift = key_held(kShiftGeneric) || key_held(kShiftLeft) || key_held(kShiftRight);
@@ -109,7 +136,8 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
 
     out.move_forward = (key_held(kW) ? 1.0 : 0.0) - (key_held(kS) ? 1.0 : 0.0);
     out.move_right = (key_held(kD) ? 1.0 : 0.0) - (key_held(kA) ? 1.0 : 0.0);
-    out.move_up = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
+    // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给鼠标左右键与手柄 RT/LT
+    out.roll = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
 
     // 左右键：translate 模式下是上下平移，look 模式下是俯仰
     if (cfg.mouse_vertical_mode == MouseVerticalMode::Translate) {
@@ -129,18 +157,16 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
     out.wheel = wheel_;
 
     out.toggle_mode = key_pressed(keys.toggle);
-    out.toggle_menu = key_pressed(keys.menu);
     out.toggle_freeze = key_pressed(keys.freeze);
     out.reset_view = key_pressed(keys.reset);
 
-    // FOV 步进：键盘 FOV 键 + 手柄十字键
-    if (key_pressed(keys.fov_up) || pad_combo_pressed(keys.pad_fov_up)) out.fov_nudge += 1;
-    if (key_pressed(keys.fov_down) || pad_combo_pressed(keys.pad_fov_down)) out.fov_nudge -= 1;
+    // FOV 步进：键盘 FOV 键 + 手柄十字键；按下沿立即一格，持续按住先延迟再连发
+    out.fov_nudge += fov_axis_nudge(keys.fov_up, keys.pad_fov_up, dt, fov_up_repeat_);
+    out.fov_nudge -= fov_axis_nudge(keys.fov_down, keys.pad_fov_down, dt, fov_down_repeat_);
 
     // 手柄：enabled=false 时快照全为“松开”，任何组合都不会触发
     if (cfg.pad_enabled) {
         out.toggle_mode = out.toggle_mode || pad_combo_pressed(keys.pad_toggle);
-        out.toggle_menu = out.toggle_menu || pad_combo_pressed(keys.pad_menu);
         out.toggle_freeze = out.toggle_freeze || pad_combo_pressed(keys.pad_freeze);
         out.reset_view = out.reset_view || pad_combo_pressed(keys.pad_reset);
 
@@ -158,10 +184,16 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys) const {
         out.pad_look_dx = rx * cfg.pad_look_speed;
         out.pad_look_dy = -ry * cfg.pad_look_speed;
 
-        // RT 上 / LT 下（模拟量）；LB 加速 / RB 减速
+        // RT 上 / LT 下（模拟量）；RB/LB 滚转（与 Q/E 同向：RB 顺时针 / LB 逆时针）
         out.move_up += pad_.rt - pad_.lt;
-        out.boost = out.boost || pad_held(pad_, PadButton::LB);
-        out.slow = out.slow || pad_held(pad_, PadButton::RB);
+        out.roll += (pad_held(pad_, PadButton::RB) ? 1.0 : 0.0) - (pad_held(pad_, PadButton::LB) ? 1.0 : 0.0);
+
+        // 变速原在 LB/RB，随滚转让位到摇杆按下：LS 加速 / RS 减速；
+        // 两杆同时按住是进出模式组合键，此时不触发变速
+        const bool ls = pad_held(pad_, PadButton::LS);
+        const bool rs = pad_held(pad_, PadButton::RS);
+        out.boost = out.boost || (ls && !rs);
+        out.slow = out.slow || (rs && !ls);
     }
     return out;
 }
@@ -185,6 +217,12 @@ void InputLogic::reset() {
     // 注意：pad_/pad_prev_ 不能清。切换摄影模式时组合键还按着（如 LS+RS），
     // 清掉上一帧状态会让“仍按住”被当成新的按下沿，进出模式死循环。
     // 键盘没有这个问题：win_input 的 key_state_ 在 reset 之外自己记住边沿。
+    // FOV 连发计时同理清零，但 was_down 保留——十字键仍按住时不算新的按下沿。
+    // next 归位到首格延迟而不是 0：按住时进出模式，回来第一帧不应立刻连发。
+    fov_up_repeat_.hold = 0.0;
+    fov_up_repeat_.next = kFovRepeatDelay;
+    fov_down_repeat_.hold = 0.0;
+    fov_down_repeat_.next = kFovRepeatDelay;
 }
 
 }  // namespace pbzpm

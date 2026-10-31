@@ -21,9 +21,6 @@ public:
 
     bool active() const { return active_; }
     bool frozen() const { return frozen_; }
-    bool menu_visible() const { return menu_visible_; }
-    void set_menu_visible(bool visible) { menu_visible_ = visible; }
-    void toggle_menu() { menu_visible_ = !menu_visible_; }
 
     const CameraPose& pose() const { return pose_; }
     double fov() const { return fov_; }
@@ -60,7 +57,6 @@ private:
 
     bool active_{false};
     bool frozen_{false};
-    bool menu_visible_{true};
 
     // 进入时成功执行了哪些步骤 —— leave 严格按这些标记回滚，不多做也不少做
     bool spawned_{false};

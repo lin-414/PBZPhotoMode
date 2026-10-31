@@ -15,9 +15,8 @@ enum class MouseVerticalMode { Translate, Look };
 enum class FreezeMode { Dilation, Pause };
 
 struct Config {
-    // ---- [keys] 快捷键名，写法与默认键名一致：F2 / T / F / ADD / SUBTRACT / OEM_PLUS ----
+    // ---- [keys] 快捷键名，写法与默认键名一致：F2 / F / R / ADD / SUBTRACT / OEM_PLUS ----
     std::string key_toggle{"F2"};
-    std::string key_menu{"T"};
     std::string key_freeze{"F"};
     std::string key_reset{"R"};
     std::string key_fov_up{"ADD"};
@@ -34,11 +33,11 @@ struct Config {
     bool block_game_input{true};
     MouseVerticalMode mouse_vertical_mode{MouseVerticalMode::Translate};
     double vertical_speed{200.0};    // 左右键上下平移速度
+    double roll_speed{60.0};         // Q/E 滚转速度（度/秒）：E 顺时针，Q 逆时针
 
     // ---- [gamepad] 手柄 ----
     bool pad_enabled{true};           // 总开关（false=不轮询手柄）
     std::string pad_toggle{"LS+RS"};  // 进入/退出：默认左右摇杆同时按下（L3+R3）
-    std::string pad_menu{"START"};
     std::string pad_freeze{"X"};
     std::string pad_reset{"Y"};
     std::string pad_fov_up{"UP"};
@@ -65,12 +64,7 @@ struct Config {
     bool restore_view_on_exit{true};
 
     // ---- [ui] ----
-    bool imgui_tab{true};        // UE4SS 控制台里的 ImGui 面板
-    bool hud_fallback{false};    // 无 ImGui 时用 PrintString 画右下角文字菜单
-    // WBP 资产菜单（1.3.0）：离线在 UE 编辑器里做好的 WidgetBlueprint，打进 pak 随模组分发
-    bool menu_asset{true};           // 加载 WBP 资产菜单（失败自动落回 UMG2 文本面板）
-    std::string menu_asset_path{"/Game/PBZPhotoMode/WBP_PBZPhotoMenu"};  // 资产对象路径（不含 _C）
-    bool menu_pak_autocopy{true};    // 开发者通道：把本模组 paks\\ 内的 pak 转拷进游戏 ~mods（图形资产来自独立模组 PBZPhotoModeUI，正常安装用不到）
+    bool imgui_tab{true};        // UE4SS 控制台里的 ImGui 诊断面板（游戏内无任何菜单，v1.8.0 起纯快捷键）
 
     // ---- [misc] ----
     LogLevel log_level{LogLevel::Info};

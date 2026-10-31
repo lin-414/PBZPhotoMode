@@ -4,8 +4,8 @@
 
 ## 一句话状态
 
-**C++ 版 v1.5.0 已编译**（新增：超宽屏支持——进入摄影模式解除 16:9 画幅锁消除两侧黑边，`ultrawide_unlock` 配置，退出还原；上一版 DualSense/DualShock4 手柄 DInput8 后端；WBP 资产菜单骨架就绪，**资产（Phase 3）未制作，当前装包会自动落回 1.2.x 文字面板**）。
-核心层 **527 项测试全绿**；v1.2.3 UMG 文字面板（命中区偏移待实机验证，现为 WBP 失败兜底）；v1.1.x ImGui 直绘在帧生成环境下已判死；v1.0.19-1.0.20 UMG 文字菜单实机验证通过。
+**C++ 版 1.0.23 已编译**（1.0.22 手柄滚转之上：**FOV 按住连发**——十字键上/下与键盘 FOV 键单击一格不变，按住约 0.35 秒后按 0.08 秒间隔连发，松开即停；摄影功能全量保留——冻结/隐藏 HUD/交互提示隐藏/超宽屏/手柄/时间控制）。
+核心层 **521 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -887,6 +887,334 @@ OFL 许可跟着资产走。
   才转拷（资产迭代调试用）；启动日志 `pak 通道：模组目录没有 paks\（正常…）`。
   `menu_pak_autocopy` 配置键保留，注释四处同步更新。
 - pack.py 改双包打包（PBZPhotoModeCpp + PBZPhotoModeUI，同号发布）。核心层 527 项全绿不变。
+
+## 1.6.0-cpp（2026-10-31：进入摄影模式隐藏交互提示——场景互物体旁的“E”键图标）
+
+**触发**：用户进入摄影模式后截图（2026-10-31 12:04）发现，对准场景互动物（铃铛）时屏幕上的“E”交互提示不会消失。
+
+### 离线情报（PBZ.exe 反射字符串扫描，511MB Shipping 单体包）
+
+- 交互提示本体：`PBZInteractComponent`（源码路径字符串 `System/Character/Components/PBZInteractComponent.cpp`）挂的**世界空间 UMG**——组件属性 `InteractWidgetComponent`（UWidgetComponent），配套 `SetInteractWidgetClass(NewWidgetClass)`、`InteractWidgetData`、`OnInteractWidgetUpdatePosition`。
+- 游戏自带设置开关：`bSceneInteractPromptVisible` + `SetSceneInteractPromptVisible` / `GetSceneInteractPromptVisible`（属性群与 bSubtitleBackgroundEnabled 等用户设置为邻）。
+- 结论：`SetHideUIForPV` 与 `W_FrontEndHUDLayout_C` 都不覆盖它；且 `freeze_mode=pause` 下游戏 UI 不再刷新，**已经画出来的提示必须把控件组件本身藏掉才会消失**。
+
+### 实现
+
+- **`engine/ue4ss_port.cpp` 新增 `set_interact_prompts_visible(visible)`**，双路径：
+  - 路线①（游戏设置开关，管住之后新出现的提示）：运行时按候选类探测第一个带 `bSceneInteractPromptVisible` 属性的实例（跳过 CDO），优先调 `SetSceneInteractPromptVisible`（setter 参数名按候选名尝试，全不中直写属性）；进模式关、退出按进入时读到的原值还原。
+  - 路线②（控件组件，管住此刻已画出的）：`FindAllOf(PBZInteractComponent)` → 读 `InteractWidgetComponent`（候选属性名兜底）→ `UWidgetComponent` 调 `SetVisibility(false)`（UFunction 缺失直写 `bVisible`）；进入时保存原始可见性，退出时重新枚举做存活校验后按原值恢复。
+  - 两路任一成功即算隐藏成功；全失败打一次性 Warn（真机排障发日志）。
+- **`core/photo_mode.*`**：与 `hide_game_hud` 同款——enter 尝试 + 每秒重试（`prompt_retry_accum_`）+ leave 按 `prompt_hidden_` 记账恢复 + 幂等退出条件加 `!prompt_hidden_`。
+- **`core/engine_port.h`**：端口新增 `set_interact_prompts_visible`。
+- **配置**：`[effects] hide_interact_prompt = true`（config.h/.cpp/default_config_text/config.ini.example/dist config 六处同步）；未加图形菜单实时开关（菜单里暂不放第二个 HUD 类开关）。
+- **测试**：FakeEngine 新增 `set_interact_prompts_visible`（prompt_off/prompt_on）与 `fail_prompts`；happy_path 进退时序加入 prompt_off/prompt_on；新增 `test_photo_mode_interact_prompt`（默认进退/配置关闭/失败重试三组）。
+- 版本 `1.6.0-cpp`；核心层 527 → **544 项全绿**；DLL 重链接通过；包 `dist/PBZPhotoModeCpp_1.6.0-cpp.zip`（UI 包同号重打）。
+
+### 1.6.0 实机验证要点
+
+1. 站在铃铛旁等“E”出现，按 F2 进摄影模式：提示应立即消失；日志应有 `场景交互提示开关已关闭（owner=...）` 与/或 `已隐藏交互提示控件：数量=...`。
+2. `auto_pause_time = false` 时把镜头转走再转回来：不应再弹新提示（设置开关管住了）。
+3. F2 退出：提示恢复；日志有 `场景交互提示开关已还原` / `已恢复交互提示控件：数量=...`。
+4. 若出现 `候选对象里找不到场景交互提示开关` 或 `场景里没有 PBZInteractComponent` 的 Warn：把日志发回来，候选类名/属性名按实机改死。
+
+## 1.6.0 补记（2026-10-31 13:1x：UI pak 实机启动崩溃，R1 坐实——PBZPhotoModeUI 撤下）
+
+- 用户装上 PBZPhotoModeUI_1.6.0 包（~mods 写入时间 13:05:24）后游戏启动即崩（13:06:19）：
+  `Fatal error: ShaderCompiler.cpp(4823) Missing global shader FCullHLODTrianglesVHM_CS's permutation 0, Please make sure cooking was successful.`
+- 崩溃发生在 UE4SS 对象构造阶段之前——本模组 DLL 尚未执行任何代码，**与 1.6.0 的 DLL（含交互提示隐藏）无关**；
+  上一局（12:38，无 UI pak）同一 DLL 全程正常。
+- 机理：UAT 产出的 IoStore 容器**这次成功挂载**了（比 1.3.0 经典单 pak「不被挂载」更进一步），但原版 UE 5.7
+  编辑器 cook 的 PackageStore/着色器元数据与本作定制引擎的着色器管线不匹配（FCullHLODTrianglesVHM_CS 是
+  VirtualHeightfieldMesh 相关全局着色器，定制引擎没有编译该 permutation）→ 初始化即 fatal。R1 风险坐实，
+  且不是「cook 时对齐几个插件开关」能解决的量级：定制引擎着色器差异未知，逐项对齐不可控。
+- 处置：
+  1. ~mods 里的 `PBZPhotoMode_UI_P.*` 三件套移至 `PBZPhotoModeCpp/_quarantine_UI_pak/`（游戏恢复正常）；
+  2. 撤下 `dist/PBZPhotoModeUI_1.6.0-cpp.zip`（绝不能分发给玩家）；主包重打，README 安装说明改为警告；
+  3. **WBP 资产菜单路线判定：本作不可用**（除非拿到游戏定制引擎）。四级菜单优先级自动落回
+     UMG2 文字面板（1.2.x，实机验证过），摄影功能不受影响；
+  4. `dist/PBZPhotoModeUI_1.5.0-cpp.zip` 内容同样会崩（同一资产），若已上 Releases 需下架（待查）。
+- 1.6.0 主线不受影响：`hide_interact_prompt` 交互提示隐藏就绪，实机验证按 1.6.0 清单在无 pak 环境进行。
+
+## 1.6.0 补记 2（2026-10-31 下午：R3 纯净容器——剥离着色器库后 WBP 路线重开，待实机）
+
+**触发**：用户以 R2 崩溃截图追问「WBP pak 资产菜单不可用吗」。重新勘验后判定：R2 判死的是
+「官方 UAT 容器整包」，**WBP 资产本身从未被检验过**（崩在初始化着色器阶段，早于任何资产加载）。
+
+### R2 崩溃成因坐实（比补记 1 更进一步）
+
+- 容器成分盘点（utoc 目录索引）：3 个资产包 + **2 个 SM5 着色器库**（ShaderArchive-Global/ProjectPBZ-PCD3D_SM5）
+  + 433 个引擎内容包（EngineMaterials/Sounds/Sky/…）。
+- cook 侧 471 个包的来源：`GameDefaultMap=/Engine/Maps/Templates/Template_Default` + 引擎启动/配置征用
+  （cook 日志：Config Accesses 引用 285 个包；`IsCookAll=false`）。换 `GameDefaultMap=/Engine/Maps/Entry`
+  只减 27 个包（444）——**闭包大头由配置征用决定，cook 侧减不下来**。
+- 致命点：本作是 SM6 定制引擎，**没有 SM5 全局着色器库**；挂载进来的 SM5 库在初始化校验
+  （`FCullHLODTrianglesVHM_CS` permutation 0 缺失）即 fatal——与资产、DLL 均无关。
+
+### R3 路线：retoc 从裸资产直构容器（零着色器、零引擎包）
+
+- 工具：**retoc**（trumank/retoc）。**0.1.5 发布版的 to-zen 解析不了 UE 5.7 新增的 2 个包摘要字段**
+  （`failed to fill whole buffer`；issue #61、#82——#82 正是另一位《影之刃零》modder 两天前开的），
+  修复在 master（d7b6350，未发版）→ `D:\PBZ_UI\retoc_build` 克隆 master（885a8da）本地 `cargo build --release`。
+- 产出管线（全程 D:\PBZ_UI）：
+  1. `zen_in\ProjectPBZ\Content\PBZPhotoMode\`＝7 个裸 cook 文件（3 包 uasset+uexp + .ufont）；
+  2. `retoc.exe to-zen --version UE5_7 zen_in out3\PBZPhotoMode_UI_P.utoc` → **utoc 612B + ucas 17KB**，
+     恰好 3 个 ExportBundleData 包 + ContainerHeader，`retoc verify` 通过，目录索引仅 /ProjectPBZ/Content/PBZPhotoMode；
+  3. `.ufont`（8.3MB 字体数据）与 AssetRegistry.bin 不属于 zen 包（retoc 静默丢弃），**走经典 .pak 侧**
+     （UnrealPak -create paklist_side.txt，8.5MB）——与原版 5.7 UAT「sidecar 不进 zen 容器」行为一致。
+- 交付纪律（只出包不部署）：`dist/PBZPhotoModeUI/PBZPhotoModeUI_1.6.0-cpp-r3.zip`（R2 三件套与 1.5.0 zip
+  移入 `_quarantine_UI_pak/`，其中 R2 容器另存 `R2_uat_trio/` 留档）；dist/PBZPhotoModeUI/README.txt 改为 R3 说明。
+- 后备未启用：R3a「UAT 重打删着色器产物容器」成功产出但含 433 个原生引擎包（115MB，有 /Engine 包 ID
+  覆盖游戏自带内容的花屏风险），留在 `ProjectPBZ/Saved/StagedBuilds/`，实机仅作对照。
+- 其它：`ProjectPBZ/Config/DefaultEngine.ini` GameDefaultMap 已改 `/Engine/Maps/Entry`（对瘦身无效但无害，保留）；
+  本轮临时脚本 `D:\PBZ_UI\r3_cook.bat` / `r3_pak.bat` / `paklist_side.txt`，retoc 构建目录 `D:\PBZ_UI\retoc_build`。
+
+### R3 实机验证要点（装 r3 包后启动游戏即开始）
+
+1. **游戏能正常启动** ＝ 着色器库假说成立（R2 在这一步就崩）。若仍崩：卸下三件套恢复，崩溃截图发回。
+2. **UE4SS.log 出现「WBP 菜单已创建…加载通道 …」+ 左上角 "PAK OK"** ＝ 定制引擎能加载 5.7 cook 资产（R1 终审）。
+   加载失败会自动落回 UMG2 文字面板，摄影功能不受影响。
+3. **右上角中文图形面板出得来、滑条/按钮/两页签可用** ＝ WBP 菜单路线复活；中文显示为方框 ＝ 字体 .ufont
+   未从经典 pak 侧读到（记日志，下一轮把字体换装载路径）。
+
+### R3 实机（14:15/14:19/14:31 三次）+ R4 修正轮
+
+- **验证点 1 通过（假说坐实）**：R3 三件套装上后游戏**不再启动崩溃**——R2 死因=SM5 着色器库，定案。
+- **新症状：卡死在启动 logo 画面**（挂载后干等，非崩溃）；UE4SS 日志全程正常，DLL 未执行任何相关代码。
+- 二分：只删 .pak 留 utoc/ucas **仍卡** → .pak 无罪（AssetRegistry/.ufont 排除），卡点在**容器挂载/store 合并**。
+- 取证：容器格式与社区 mod（retoc 同管线、347B 空壳 pak）逐项一致（ReplaceIoChunkHashWithIoHash +
+  SoftPackageReferencesOffset + mount ../../../）→ 格式无罪；唯一差异=我们容器引用了 1 个不在容器内的
+  /Engine 包（`/Engine/EngineResources/WhiteSquareTexture`，WBP_PBZPhotoMenu 默认笔刷贴图；WBP_Dummy/Fonts
+  零外部引用），社区 mod 只引用游戏资产。R2 反证：它的引擎包全自带，mount 走完了才崩在着色器。
+  游戏本体日志亦加密（%LOCALAPPDATA%\ProjectPBZ\Saved\Logs 不可读），社区游戏实锤级黑盒。
+- **R4**：容器加打 WhiteSquareTexture（1010+898B，无二级引用）→ 4 包 utoc 791B / ucas 18.6KB，verify 过；
+  .pak=retoc 自产 347B 空壳（与社区同款）。交付 `dist/PBZPhotoModeUI/PBZPhotoModeUI_1.6.0-cpp-r4.zip`。
+  待实机：能进主菜单=R4 假说成立 → 继续 F2 验证 PAK OK（字体本版不参与，方框预期）；仍卡 → 下一轮
+  对照 R3a（115MB 自给自足版，在 ProjectPBZ/Saved/StagedBuilds）定位 store 合并的确切条件。
+
+### R4 实机（14:44，决定性证据）+ R5 纯 UMG 探针轮
+
+- **R4 结果：不再卡死**——游戏推进到「加载我们容器里的包」并给出决定性错误：
+  `AsyncLoading2.cpp(8884) ObjectSerializationError: /Engine/EngineResources/WhiteSquareTexture -
+  Texture2D: Serial size mismatch: Expected read size 894, Actual read size 31`。
+- 判读两条：1) **R3 卡死之谜解**——游戏挂载期会**预载 mod 容器内的包**（R3 的 Fonts 包等不到
+  .ufont 侧车数据→字体加载无限等待＝卡死；R4 贴图包加载快、先崩）→「容器里只能放定制引擎
+  能干净加载的包」成为铁律；2) **原版 cook 的 Texture2D 被定制引擎序列化器拒收**（干净地读了
+  31 字节＝它自己的格式，与导出表 894 不符；retoc 数据无损——尺寸来自我们 uasset 头）。
+- **R5（纯 UMG 探针）**：MakeMenuCommandlet 三改——MakeText 不动 Font（保留 UMG 默认）、三处
+  `SetBrushFromTexture(White)` → 无资源 Box 笔刷+着色（新增 MakeSolid）、Main 跳过字体导入与
+  Fonts 落盘；重编 editor → 重跑 commandlet → cook。
+- **跨会话第 5 坑（本实录最重要的踩坑）**：重跑 commandlet 前必须**清空
+  `ProjectPBZ/Content/PBZPhotoMode/` 旧源资产**——启动期资产注册表异步加载旧包（引用旧 Fonts），
+  被死锁规避刷新成「部分加载」态；CreatePackage 拿到同一脏包→新资产构建进去→保存被
+  「只加载了一部分」拒收（appError，折腾三轮才钉死）。
+- 导入面验证（铁证）：两个 cooked WBP 只引 `/Script/CoreUObject` + `/Script/UMG`（零 /Engine、
+  零 /Game/Fonts，连默认字体 Roboto 都没进序列化）——容器 100% 自包含。R5 容器：2 包
+  utoc 525B / ucas 15.7KB + 347B 空壳 pak（社区同款），verify 过。交付
+  `dist/PBZPhotoModeUI/PBZPhotoModeUI_1.6.0-cpp-r5.zip`（r3/r4 zip 已从 dist 清理）。
+- **R5 判据（WBP 路线生死）**：启动不崩 + F2 后 UE4SS.log「WBP 菜单已创建」/左上角 PAK OK
+  → WBP 序列化兼容，路线复活（中文方框=预期，字体另案：引用游戏自带中文字体或换字体分发路线）；
+  启动即 ObjectSerializationError 指向 UMG 类 → 定制引擎改了 UMG 序列化，WBP 路线判死。
+
+### R5 实机（15:08）+ v1.6.1 DLL 探针
+
+- **R5 启动干净（不崩不卡）**——容器挂载 + 预载全过，纯 UMG 的 WBP 包对定制引擎无害；
+  但 F2 时 `TryLoad`/`LoadAsset_Blocking` 双通道都拿不到资产 → 按设计落回 UMG2 文字面板。
+- 排除项：帧生成守卫**无辜**（mod_app.cpp 的守卫只拦 DX12 ImGui 浮窗；WBP 是引擎原生绘制，
+  `update_overlay` 优先级 2 不受守卫影响——用户环境常开 FSR3 帧生成，该警告每局都有，别被它带偏）。
+- **新主假说（统一 R2-R5 全部事实）**：定制引擎的包加载按「包 ID」走——社区 mod 三个全是
+  **同名遮蔽游戏既有包**（patch 模式，DodgeWindow 的包就是 /PBZDeflectSystem/... 游戏资产路径），
+  所以都能用；我们引入的是**新包名**，进不了引擎的「名字→包 ID」解析 → TryLoad 必然失败。
+  R3 卡死/R4 崩溃则是我们 store 条目里的**导入**（按 ID 直达，不经名字解析）分别指向
+  等不到侧车的 Fonts（无限等待）与被原版字节遮蔽的纹理（序列化器拒收）。
+- **v1.6.1-cpp（DLL 探针轮）**：`wbp_load_class()` 新增通道 0 `StaticFindObject`（若挂载预载已把
+  包载进内存，按名直取对象，绕开名字→ID 解析）+ 全通道一行诊断
+  （`探针：FindObject(资产)=有/无 TryLoad=… LoadAsset_Blocking=…` 随失败日志一次性输出；
+  FindObject 命中时打「包已在内存（挂载预载成立），已绕开名字解析」）。版本 1.6.1-cpp；
+  核心层 544 项全绿不变；`dist/PBZPhotoModeCpp_1.6.1-cpp.zip` + `PBZPhotoModeUI_1.6.1-cpp.zip`（UI 三件套=R5 不变）。
+- **v1.6.1 判据**：日志出「FindObject 命中」且屏幕出图形菜单 = 绕开解析直接复活；
+  探针全无 = 预载不成立，下一轮在 DLL 里做「包 ID 直查/重建名字映射」或评估同名遮蔽路线（需找到
+  游戏可安全让位的既有 UI 包路径，红线是绝不能破坏游戏自身 UI）。
+
+### v1.6.1 探针实机（15:26，裁决）+ 新路线发现（puerts）
+
+- **探针裁决：`FindObject(资产)=无 TryLoad=无 LoadAsset_Blocking=无`**——挂载预载不成立（R5 启动干净
+  的真相=根本没人加载我们的包），新包名确认进不了引擎的名字→包 ID 解析。**IoStore「新增资产」路线判死**；
+  IoStore 在本作只能做「同名遮蔽既有包」（社区三 mod 全是此模式，如 DodgeWindow 遮蔽
+  /PBZDeflectSystem/...）。
+- **破墙发现**：社区 zFreeMapTeleport 的 582KB .pak 里是一份**明文 JS**
+  （`ProjectPBZ/Content/JavaScript/UI/Widget/Map.js`）——本作 UI 层跑在 **puerts** 上
+  （`require("puerts"/"ue"/"cpp")`、`UE.` 反射 770 处、`$ref`、CreateWidget/SetVisibility 全套），
+  定制引擎带 JS UI 框架且**按文件路径从经典 .pak 读 JS**（社区已验证的交付通道，绕开 IoStore！）。
+- exe 佐证：`/Script/JsEnv` 模块、V8 后端、源码路径 `C:\PBZ\ProjectPBZ\Plugins\Puerts`、
+  `PuertsServer*`（调试服务器设施）、`NumberOfJsEnv`。DLL 若能拿到游戏运行的 JsEnv 实例并调
+  Eval（puerts UJsEnv 的 UFUNCTION），即可在游戏自己的 JS 运行时里 require 我们经经典 pak
+  分发的模块、用游戏原生 UI 框架+中文字体搭真滑条面板——**交付与中文两大死结同时解开**。
+- v1.6.1-cpp 已出（`dist/PBZPhotoModeCpp_1.6.1-cpp.zip`，544 测试全绿；wbp_load_class 加通道 0
+  FindObject + 全通道探针日志——本轮完成历史使命，结论如上）。
+
+### v1.6.2-cpp（puerts 探针轮，待实机）
+
+- 依据用户抉择走 puerts 路线。`Ue4ssPort::puerts_probe()`（进摄影模式时调一次，有结论即静默）：
+  1. `FindAllOf("JsEnv")` 数实例 + `/Script/JsEnv.Default__JsEnv` CDO 探测；
+  2. 关键 UFunction 盘点（Eval/Start/Stop/Require）；
+  3. **Eval 实测**：`globalThis.__pbzm=(globalThis.__pbzm||0)+1` 写入 → 第二次 `Eval("String(globalThis.__pbzm)")`
+     回读——FString 参数/返回值按 0x10 布局校验后 memcpy（候选参数名 Code/JsCode/Script/code）；
+     回读成功 = JS 运行时完全可用，输出「执行成功 回读=N」。
+  4. 实例为 0 时不置 done（JS 环境可能较晚初始化），下次进摄影模式重试。
+- 版本 1.6.2-cpp；544 项测试全绿；`dist/PBZPhotoModeCpp_1.6.2-cpp.zip` + `PBZPhotoModeUI_1.6.2-cpp.zip`（UI 三件套=R5 不变）。
+- **判据**：日志「puerts 探针：JsEnv 实例=N … Eval=有 … 执行成功 回读=N」→ 下一轮经典 pak 分发
+  `Content/JavaScript/UI/Widget/PBZPhotoMenu.js` + DLL/Eval require 注入，用游戏原生框架搭真滑条中文菜单；
+  「无 Eval」→ Shipping 剥离执行入口，puerts 路线受阻（届时评估 PuertsServer 调试设施或收工）。
+
+### v1.6.2 探针实机（16:01）+ v1.6.3 修正轮
+
+- v1.6.2 探针读数：`JsEnv 实例=0（CDO=无）`——**连类都没加载进反射**。两个可能：类名不对 / JS 环境
+  未创建（用户没开过地图等 JS 界面）。
+- exe 反射区取证：**真类名是 `JsEnvImpl`**（puerts 实现类，反射数据与 PuertsMod/NumberOfJsEnv 相邻；
+  `Default__JsEnv`/`UJsEnv` 在 exe 中不存在）。
+- **v1.6.3**：① 类名候选改 `JsEnvImpl`→`JsEnv`；② 探测改**后台周期制**——mod 每 15 秒一次、不限摄影
+  模式（JsEnvImpl 可能在前端/地图 JS 首次使用时才创建），第一次出现即打全量日志 + Eval 实测；
+  Eval 跑通（哪怕读不到返回值）即置 conclusive 停止。版本 1.6.3-cpp，544 测试全绿，
+  `dist/PBZPhotoModeCpp_1.6.3-cpp.zip`。
+- **判据**：日志「puerts 探针：JsEnvImpl 实例=N … Eval=有 … 执行成功」→ JS 运行时可用，下一轮经典
+  pak 分发 PBZPhotoMenu.js + Eval 注入搭原生中文菜单；15 秒级持续探测始终 实例=0 → 本局 JS 根本没跑
+  （届时请开一次地图 M 键再观察，或评估 JsEnvImpl 在 Shipping 被裁剪）。
+
+### v1.6.3 探针实机（16:20-16:35）+ v1.6.4 自建运行时轮
+
+- v1.6.3 读数：持续探测在 6.5 分钟全程（约 26 周期，含地图内活动）**始终 实例=0**——游戏侧从未创建
+  puerts 运行时（用户是否开过地图不可证，但即便开了地图也没出现）。
+- 判据链推进：**决定性的下一步 = CDO 在不在**。类在（模块注册、运行时未启动）→ 可**自建**：
+  puerts `JsEnvImpl` 自带 Start/Eval，DLL 自己 NewObject + Start + Eval，完全不依赖游戏去启动它；
+  两类都不在 → Shipping 未注册 puerts 模块 → JS 路线判死。
+- **v1.6.4**：空实例分支加 CDO 诊断（JsEnvImpl/JsEnv 两个 CDO 分列）+ 类在时枚举关键 UFunction
+  （Start/Eval/Stop/Require/Reload/NotifyGameThreadReady）+ **自建尝试**（NewObject → Start[参数名
+  候选 DebugPort/InDebugPort/Port 置 0] → Eval 实测回读）；自建结果无论成败都置 conclusive（一次尝试，
+  不循环）。版本 1.6.4-cpp，544 测试全绿，`dist/PBZPhotoModeCpp_1.6.4-cpp.zip`。
+- **判据**：「JsEnvImpl CDO=有 … Eval 执行成功 回读=N —— 自建 JS 运行时可用！」→ 下一轮经典 pak
+  分发 PBZPhotoMenu.js + Eval 注入搭原生中文菜单；「两个类都不在」→ Shipping 未注册 puerts，JS 路线
+  判死（文字面板定格）；「自建失败/Start 后 Eval 未跑通」→ puerts 在此游戏不可用，同样收束。
+
+### v1.6.4 探针终审（16:45）——puerts 路线判死，引擎内路线全部穷尽
+
+- **终审读数：`实例=0（JsEnvImpl CDO=无，JsEnv CDO=无）→ Shipping 未注册 puerts 模块`**。
+  exe 里链了 JsEnv 模块（源码路径/字符串俱在）但其 UClass 注册从未运行——运行时不存在，
+  自建无从建起。JS 路线正式判死。
+- 至此引擎内路线六连闭环（全部实证）：①经典 pak 不挂载 → ②UAT 整包 SM5 着色器库崩 →
+  ③纯净容器卡死（字体侧车等待）→ ④定制序列化器拒收原版纹理 → ⑤纯 UMG 干净但新包名
+  进不了名字解析（IoStore 只能同名遮蔽）→ ⑥puerts 交付通道可用但运行时未注册。
+  **《影之刃零》Shipping 的定制引擎对本模组而言是彻底黑盒：引擎内无路。**
+- 备份路线盘点（PROGRESS 旧记录）：F=ReShade addon（与帧生成冲突风险 + 需装 ReShade）、
+  D2=DirectComposition 子窗口覆盖（OS 合成器层、帧生成安全，但全新工程：窗口管理/自绘/输入转发）、
+  B+=复用游戏原生控件资产（被⑤的序列化器拒收堵死）。主路线维持 **UMG2 文字面板**（1.2.x 实机验证）。
+- 待用户抉择：收工定格 / 文字面板加中文（运行时找游戏 CN 字体 SetFont，一轮小改）/ D2 覆盖窗新工程。
+
+### v1.7.0-cpp（用户抉择：文字面板加中文）
+
+- **UMG2 文字面板中文化**：面板字体从游戏自带 UI 字体整块拷贝——供体优先游戏 HUD
+  （`W_FrontEndHUDLayout_C` 下的 TextBlock，游戏 UI 全中文，其 FSlateFontInfo 必然覆盖中文字形），
+  `FindAllOf("TextBlock")` 按全名过滤取供体 → 两块 `Font` 属性尺寸校验后 memcpy（不做手工偏移），
+  在 AddToViewport 之前完成（Slate 尚未缓存字形）。供体缺失时保持默认字体（英文），不致命。
+- **menu_asset 默认改 false**（config.h/config.cpp/config.ini.example/dist config 四处同步）：
+  WBP 路线已判死（v1.6.4 终审），默认关闭省去每次进摄影模式的一行失败日志；config 键保留（想试仍可开）。
+- 版本 1.7.0-cpp；544 项测试全绿；`dist/PBZPhotoModeCpp_1.7.0-cpp.zip` + `PBZPhotoModeUI_1.7.0-cpp.zip`（UI 三件套=R5 不变，已无用可卸）。
+- **实机判据**：进摄影模式后右上角文字面板出现中文（「PBZ 摄影模式/状态/视野/速度/灵敏度/冻结/重置/退出」），
+  日志有「字体已换游戏 UI 字体（供体 …）」；若「未找到可拷贝的游戏字体供体」→ 把日志发回（换供体策略）。
+
+### v1.7.1 修正（字体补丁挪到真正的装配路径）
+
+- v1.7.0 实机无效果且两条字体日志都没出现——**字体补丁加错了函数**：加进了 `ensure_umg_menu`
+  （1.2.0 的简单装配路径，日志前缀「UMG 菜单：」，本作不可用未走），而真正在用的是 **umg2 装配路径**
+  （动态行循环，日志前缀「交互菜单已创建」）。
+- v1.7.1：撤掉错位的补丁，改为在 umg2 装配的 TextBlock 循环里逐个拷贝——供体
+  `W_FrontEndHUDLayout_C` 下的 TextBlock（`FindAllOf("TextBlock")` 按全名过滤），
+  `Font` 属性尺寸校验后整块 memcpy，循环结束打一行结果（成功=中文可用 / 失败=保持英文）。
+- 版本 1.7.1-cpp，544 测试全绿，`dist/PBZPhotoModeCpp_1.7.1-cpp.zip`。
+- **判据**：F2 后右上角面板出中文（「PBZ 摄影模式/状态…」）+ 日志「字体已换游戏 UI 字体」；
+  若仍英文且日志「未找到游戏字体供体」→ 供体过滤策略再议。
+
+### v1.7.2（字符串中文化——v1.7.1 只换了字体没换文字）
+
+- v1.7.1 实机：日志「字体已换游戏 UI 字体」成功执行，但面板仍英文——**根因是文字内容本身就是英文**
+  （umg2layout::kTexts 全英文 + 状态行 "STATE : " 拼接），字体换了文字没换。
+- v1.7.2 三改：① `umg2_layout.h` kTexts 全部中文化（PBZ 摄影模式/视野/速度/灵敏度/冻结/重置/退出/
+  点击 [-][+] 调整；命中区 kHits 按坐标对齐，不受文字宽度影响）；② 状态行显示层翻译
+  （core 的 OFF/FROZEN/LIVE 保持英文机器值不动——测试锁定；ue4ss_port 显示层映射
+  已冻结/运行中/已退出）；③ **字体清单诊断**（FindAllOf("Font") 名单一次日志）——若 HUD 供体
+  字体不含中文出方块，可据此换字体。
+- 版本 1.7.2-cpp；544 测试全绿；`dist/PBZPhotoModeCpp_1.7.2-cpp.zip`。
+- **判据**：面板出中文（含「状态：已冻结/运行中」）→ 完成；**中文变方块 □□□** → 把「字体清单」
+  日志行发回，按名单换含 CJK 的字体对象（一轮收尾）。
+
+### v1.8.0-cpp（用户抉择：移除界面，收工）
+
+- **界面移除**：`[ui] menu = false` 总开关（config.h/config.cpp/config.ini.example/dist config 四处）——
+  update_overlay 的 want_menu 加上 `cfg_.menu` 门，任何菜单不再创建/显示；true 可恢复旧文字面板（诊断用）。
+  快捷键操作不受影响：F2 进入/退出、F 冻结、R 重置、滚轮 FOV、WASD/QE/Shift/Ctrl 移动（键位均可配）。
+- **死路线残留清理**：puerts 探针周期块与成员移除（终审已判死）；WBP 路径 menu_asset 默认 false 保持；
+  pack.py 停打 UI 包（UI 三件套已无用，~mods 里可卸）。
+- README 警告行改为「图形菜单已移除，纯快捷键操作」。
+- 版本 1.8.0-cpp；544 项测试全绿；产物 `dist/PBZPhotoModeCpp_1.8.0-cpp.zip`（仅主模组）。
+- **状态定格**：摄影功能全量可用（冻结/隐藏 HUD/交互提示隐藏/超宽屏/手柄/时间控制），无菜单界面。
+  真图形菜单若日后重启，唯一剩余路径 = D2 DirectComposition 覆盖窗（OS 合成层，帧生成安全）——
+  大工程，从 PROGRESS/记忆可随时接续。
+
+### v1.8.1-cpp（图形菜单代码彻底移除 + 死代码/临时文件清理）
+
+- **彻底移除（v1.8.0 只做了默认关闭，代码还在；本版把代码删干净）**：
+  - 删除文件：`engine/imgui_overlay.{cpp,h}`（DX12 ImGui 图形菜单）、`engine/umg2_layout.h`、
+    `engine/wbp_layout.h`（命中区表）、`core/menu_bridge.{cpp,h}`（WBP 变量桥）、`core/menu_view.h`、
+    `core/menu_model.{cpp,h}`（菜单内容模型）、`game_menu.{cpp,h}`（ImGui 菜单绘制）。
+  - `ue4ss_port`：删除 UMG 文字菜单 / UMG2 交互菜单 / WBP 资产菜单 / puerts 探针全部实现
+    （v1.8.0 漏删的 1250 行，含 make_ftext_into/write_anchor/set_class/kismet_system_library 等
+    菜单专用反射助手与全部菜单状态成员）。
+  - `mod_app`：删除 update_overlay 三级菜单优先级机、DX12 覆盖层延迟初始化（帧生成插件检测）、
+    umg2/WBP 鼠标命中与缩放机器（umg2_scale.txt）、pak 开发者转拷通道（ensure_pak_installed）、
+    图形菜单快照/动作桥；mod_app.cpp 979 → 436 行。
+  - **v1.8.0 的门没关严**：DX12 ImGui 菜单（优先级 1）不受 `[ui] menu` 管，进摄影模式仍会自动打开——
+    本次随代码一并消失。
+- **配置键清理**：`key_menu` / `pad_menu` / `hud_fallback` / `menu` / `menu_asset` / `menu_asset_path` /
+  `menu_pak_autocopy` 全部移除（旧 config.ini 里写了这些键只会得到「未知配置项已忽略」告警，无害）；
+  `Intent.toggle_menu`、`PhotoMode::menu_visible` 等菜单输入通路一并删除。`[ui]` 只剩 `imgui_tab`（控制台诊断面板）。
+- **临时文件清理**：仓库根 `%SystemDrive%/`（脚本路径错误拷出的 Windows 缓存库）、`pakstore.json`
+  （游戏 oplog 泄漏）、`PBZPhotoModeCpp/_quarantine_UI_pak/`（隔离的 UI pak 三件套，~290MB）、
+  24 个 build/pack 日志。
+- 版本 1.8.1-cpp；核心层测试 **470 项全绿**（删除 menu_model/WbpBridge 用例后剩 470；NONE 解绑、
+  parse_pad_combo 等用例改挂 pad_freeze）；DLL 全量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.8.1-cpp.zip`。
+- **状态**：纯快捷键定格，与 v1.8.0 收工决定一致；图形菜单若日后重启，唯一路径仍是 D2 DirectComposition
+  覆盖窗（本次删除不影响那条路线——它本来就是从零新工程）。
+
+### 版本号回退 1.0.20 + dist 冗余包清理（用户指示，2026-10-31）
+
+- **版本号回退**：对外版本号从 1.1.0–1.8.1 回退到 **1.0.20-cpp**——1.1.0–1.8.1 全部是未发布的图形菜单
+  迭代（ImGui 直绘 / UMG 交互 / WBP 资产 / puerts 探针），随路线判死整体作废，不对外发布；版本号
+  对外回到 1.0.x 线。旧 1.0.20（UMG 文字菜单版）的号被当前构建重用，以本版为准。
+- **dist 冗余包清理**：删除 39 个主模组历史 zip（v1.0.0–1.8.1）、6 个已判死 UI 模组 zip 空壳、
+  4 个旧版 staging 目录（v1.0.3–v1.0.6）与 PBZPhotoModeUI staging；dist 只留 `PBZPhotoModeCpp/`
+  staging 与新包 `PBZPhotoModeCpp_1.0.20-cpp.zip`。
+- 上一条 v1.8.1 记录里的产物 zip（1.8.1）随之删除，内容重打包为 1.0.20。
+- 版本 1.0.20-cpp；470 项测试全绿；产物 `dist/PBZPhotoModeCpp_1.0.20-cpp.zip`（仅主模组）。
+
+### 1.0.21-cpp：相机滚转（Q/E 改旋转，鼠标左右键升降不变）
+
+- **需求**：新增相机旋转功能——键盘 `Q` / `E` 从升降改为**滚转**（roll，镜头绕视线轴旋转；E=+1 顺时针 / Q=-1 逆时针）；鼠标左键上移 / 右键下移保持不变（translate 模式照旧），手柄 RT/LT 升降照旧。
+- **实现**：`Intent` 新增 `roll`（input_logic.h/.cpp：Q/E 不再进 `move_up`）；`PhotoMode::tick` 按 `roll_speed` 积分 `pose.rot.roll`，`wrap_angle_180`（math3.h）把滚转归一化到 [-180,180)；引擎层 `apply_pose` 本来就写 Roll（FRotator 三元组），零改动。R 重置照旧回到进入时的滚转角。
+- **配置**：`roll_speed`（`[control]`，默认 60 度/秒，非法值回退 60 并告警；Shift/Ctrl 变速同样生效）；`default_config_text` / `config.ini.example` 同步。
+- 版本 1.0.21-cpp；核心层测试 **501 项全绿**（470 + 滚转相关 31 项断言：Q/E intent、与鼠标左右键同帧叠加互不干扰、tick 积分/变速/dt 封顶/±180 环绕、重置含滚转、配置解析与默认文本）；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.21-cpp.zip`。
+
+### 1.0.22-cpp：手柄滚转适配（RB/LB 倾斜，变速移到 L3/R3）
+
+- **需求**：手柄同步适配倾斜/滚转——`RB` / `LB` 滚转相机（RB=+1 顺时针 / LB=-1 逆时针，与键盘 Q/E 同向）。
+- **变速让位**：原 LB=加速 / RB=减速移到**摇杆按下**——LS(L3) 加速 / RS(R3) 减速；两杆同时按住是进出模式组合键（LS+RS），此时不触发变速（避免进/出模式的按压窗口里误触变速）。
+- **实现**：input_logic.cpp 手柄块 `out.roll += RB - LB`；boost/slow 改为单杆按住且另一杆未按。与键盘同帧叠加时 roll 累加（与 move_forward 同惯例）。RT/LT 升降、十字键 FOV、X/Y/组合键全部不变；固定键位不占 `[gamepad]` 配置（与原 LB/RB 变速同风格）。
+- 版本 1.0.22-cpp；核心层测试 **509 项全绿**；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.22-cpp.zip`。
+
+### 1.0.23-cpp：FOV 步进按住连发（十字键/键盘 FOV 键）
+
+- **需求**：十字键上下调 FOV 原先一个按下沿走一格，持续变焦要连点；改为**按住即持续放大/缩小**。
+- **实现**：`InputLogic` 每个方向一条按住连发通道（键盘 FOV 键与手柄十字键合成一个方向通道，谁先按下都算同一次按下沿）——按下沿立即 1 格；持续按住 0.35 秒后按 0.08 秒间隔连发（约 12.5 格/秒，配合 `fov_step=2` 即 25 度/秒）；大掉帧时一帧补多格，节奏不变；松开立即停。`build` 增加 `dt` 参数（默认 0.0 兼容旧调用/单测），状态机在 `fov_axis_nudge` 里。`reset()` 清计时但保留 `was_down`，按住十字键进出模式不会误发新按下沿（与 `pad_prev_` 不清同理）。
+- **顺手修正**：手柄帮助文案「LB/RB 变速」是 1.0.22 之前的残留，改为 L3/R3 变速；键盘 FOV 键与十字键同享按住连发。
+- **测试**：新增 12 项断言——按下沿、延迟窗口内不连发、过延迟补格、一帧补多格、松开即停、键盘通道、按住时 `reset` 不误发。核心层 **521 项全绿**；版本 1.0.23-cpp；DLL 增量重编链接通过；产物 `dist/PBZPhotoModeCpp_1.0.23-cpp.zip`。
 
 ### 1.5.0 资产 pak 第二轮（IoStore 三件套）+ 交付纪律重申
 

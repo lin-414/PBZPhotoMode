@@ -15,14 +15,12 @@ enum class MouseButton { Left, Right };
 // 配置里的键名解析结果。任一键解析失败会退回默认键并记 warning。
 struct KeyMap {
     int toggle{0x71};    // F2
-    int menu{'T'};
     int freeze{'F'};
     int reset{'R'};
     int fov_up{0x6B};    // ADD
     int fov_down{0x6D};  // SUBTRACT
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
     std::vector<PadButton> pad_toggle{PadButton::LS, PadButton::RS};  // 默认：左右摇杆同时按下
-    std::vector<PadButton> pad_menu{PadButton::Start};
     std::vector<PadButton> pad_freeze{PadButton::X};
     std::vector<PadButton> pad_reset{PadButton::Y};
     std::vector<PadButton> pad_fov_up{PadButton::Up};
@@ -39,16 +37,16 @@ struct Intent {
     double wheel{};     // 滚轮凹槽累积
     double move_forward{};  // W/S  -> +1/-1
     double move_right{};    // D/A  -> +1/-1
-    double move_up{};       // E/Q 组合，translate 模式下叠加左右键
+    double move_up{};       // 左右键（translate 模式）+ 手柄 RT/LT
+    double roll{};          // Q/E 滚转：E=+1 顺时针 / Q=-1 逆时针
     bool pitch_up_click{};  // look 模式：左键
     bool pitch_down_click{};// look 模式：右键
     bool boost{};           // Shift
     bool slow{};            // Ctrl
     bool toggle_mode{};
-    bool toggle_menu{};
     bool toggle_freeze{};
     bool reset_view{};  // R：回到进入摄影模式时的位姿/FOV
-    int fov_nudge{};    // FOV 步进：+1 增大 / -1 缩小（FOV 键或手柄十字键的按下沿）
+    int fov_nudge{};    // FOV 步进：+1 增大 / -1 缩小（FOV 键或手柄十字键的按下沿；按住时连发折算成多格）
     double pad_look_dx{};  // 手柄右摇杆转速（度/秒，正值 = 向右；tick 里乘 dt）
     double pad_look_dy{};  // 手柄右摇杆转速（度/秒，正值 = 向下；invert_y 在 tick 里处理）
 };
@@ -65,13 +63,9 @@ public:
 
     bool held(int vk) const;
     bool alt_down() const;
-    bool left_down() const { return lmb_; }
-    bool right_down() const { return rmb_; }
-    // 最近一次 on_gamepad 喂入的快照（图形菜单的手柄导航用）
-    const PadState& gamepad() const { return pad_; }
 
-    // 只读：同一帧可以多次调用，只有 end_frame() 会清状态。
-    Intent build(const Config& cfg, const KeyMap& keys) const;
+    // dt 用于 FOV 按住连发计时；默认 0 表示不推进计时（旧调用/单测兼容）。每帧只调用一次。
+    Intent build(const Config& cfg, const KeyMap& keys, double dt = 0.0);
 
     // 每帧末尾调用：清掉按下沿与鼠标累积量
     void end_frame();
@@ -87,6 +81,14 @@ private:
     bool pad_combo_down(const PadState& s, const std::vector<PadButton>& combo) const;
     bool pad_combo_pressed(const std::vector<PadButton>& combo) const;
 
+    // FOV 单个方向的按住连发：按下沿立即 1 格，按住超过延迟后按固定间隔补格
+    struct FovRepeat {
+        bool was_down{};  // 上一帧该方向是否按住（键盘键或手柄组合任一）
+        double hold{};    // 已连续按住的时长（秒）
+        double next{};    // 下一次连发步进的时间点（秒，从按下起算）
+    };
+    int fov_axis_nudge(int vk, const std::vector<PadButton>& combo, double dt, FovRepeat& st);
+
     std::unordered_set<int> held_;
     std::unordered_set<int> pressed_;
     double dx_{};
@@ -96,6 +98,8 @@ private:
     bool rmb_{};
     PadState pad_{};
     PadState pad_prev_{};
+    FovRepeat fov_up_repeat_{};
+    FovRepeat fov_down_repeat_{};
 };
 
 }  // namespace pbzpm

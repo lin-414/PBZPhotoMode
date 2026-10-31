@@ -12,7 +12,6 @@ namespace pbzpm {
 // 面板上的按钮通过这些输出参数回传给 mod_app，由它统一执行，避免 UI 直接碰引擎。
 struct UiCommands {
     bool toggle_freeze{false};
-    bool hide_menu{false};
     bool exit_mode{false};
     bool apply_fov{false};
     double new_fov{0.0};

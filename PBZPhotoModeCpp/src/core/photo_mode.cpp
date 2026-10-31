@@ -106,7 +106,6 @@ bool PhotoMode::enter() {
 
     active_ = true;
     frozen_ = false;
-    menu_visible_ = true;
     pose_dirty_ = false;
     reassert_accum_ = 0.0;
     hud_retry_accum_ = 0.0;
@@ -176,7 +175,6 @@ void PhotoMode::leave(const char* reason) {
     }
 
     active_ = false;
-    menu_visible_ = false;
     pose_dirty_ = false;
 
     log(LogLevel::Info, std::string("退出摄影模式（") + (reason ? reason : "user") + "）");
@@ -343,7 +341,7 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         set_fov(fov_ - intent.wheel * cfg_.fov_step);
     }
 
-    // FOV 键/手柄十字键：一个按下沿走一格；正值 = 增大 FOV（拉远）
+    // FOV 键/手柄十字键：按下沿走一格，按住时 InputLogic 连发（延迟后按固定节奏补格）；正值 = 增大 FOV（拉远）
     if (intent.fov_nudge != 0) {
         set_fov(fov_ + intent.fov_nudge * cfg_.fov_step);
     }
@@ -372,6 +370,12 @@ void PhotoMode::tick(const Intent& intent, double dt) {
 
     if (intent.move_up != 0.0) {
         pose_.loc.z += intent.move_up * cfg_.vertical_speed * mult * dt;
+        pose_dirty_ = true;
+    }
+
+    // Q/E 滚转：roll_speed 度/秒，正 = 顺时针；Shift 加速 / Ctrl 减速照常生效
+    if (intent.roll != 0.0) {
+        pose_.rot.roll = wrap_angle_180(pose_.rot.roll + intent.roll * cfg_.roll_speed * mult * dt);
         pose_dirty_ = true;
     }
 

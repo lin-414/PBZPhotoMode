@@ -4,26 +4,25 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.5.0 |
-| 核心层测试 | 527 项，全部通过 |
-| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停已验证；v1.4.0 DInput 手柄、v1.5.0 超宽屏画幅解锁待验证 |
+| 版本 | v1.0.23 |
+| 核心层测试 | 521 项，全部通过 |
+| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停已验证；v1.4.0 DInput 手柄、v1.5.0 超宽屏画幅解锁、v1.6.0 交互提示隐藏待验证 |
 
 ## 项目结构
 
 ```
-src/core/      纯逻辑，不碰引擎 —— 已完成，298 项断言全绿
+src/core/      纯逻辑，不碰引擎 —— 已完成
   config        配置解析（含容错、范围夹紧、默认配置生成）
   vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…）
   input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿）
-  math3         前/右向量、俯仰夹紧、偏航回绕
+  math3         前/右向量、俯仰夹紧、偏航/滚转回绕
   photo_mode    进/退/每帧状态机（含失败回滚、幂等退出、1 秒视角守护）
-  menu_model    菜单数据与文字渲染（ImGui 与文字兜底共用）
 
 src/engine/    引擎适配层 —— 已完成，随 DLL 在实机运行
-  ue4ss_port    EnginePort 的 UE4SS 反射实现（所有 UE 调用集中在 12 个 /// P1 辅助函数里）
+  ue4ss_port    EnginePort 的 UE4SS 反射实现（相机/输入钩子/HUD 隐藏/时间冻结/画幅解锁）
 
-src/mod_app    CppUserModBase 子类：配置加载、输入绑定、每帧 tick、ImGui 绘制
-src/ui_tab     ImGui 面板（滑块/按钮，纯展示 + 回传命令）
+src/mod_app    CppUserModBase 子类：配置加载、输入绑定、每帧 tick
+src/ui_tab     UE4SS 控制台诊断面板（滑块/按钮，纯展示 + 回传命令；游戏内无菜单，纯快捷键操作）
 ```
 
 ### 立刻可以验证的部分
@@ -32,7 +31,7 @@ src/ui_tab     ImGui 面板（滑块/按钮，纯展示 + 回传命令）
 tools\build_tests.bat
 ```
 
-不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 298 项，失败 0 项`。
+不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 509 项，失败 0 项`。
 
 ## 键位
 
@@ -41,12 +40,12 @@ tools\build_tests.bat
 | 进入/退出摄影模式 | `F2` |
 | 自由转视角 | 按住 `Alt` + 移动鼠标 |
 | 前后左右平移 | `W` `A` `S` `D` |
-| 升降 | `E` / `Q`，或 左键上移 / 右键下移 |
+| 升降 | 左键上移 / 右键下移（translate 模式；手柄 RT / LT） |
+| 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`roll_speed` 可调）；手柄 `RB` / `LB` |
 | 加速 / 减速 | `Shift` / `Ctrl` |
-| 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-` |
+| 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-`（单击一格，按住约 0.35 秒后连发） |
 | 重置相机视角 | `R`（回到进入摄影模式时的位置/朝向/FOV） |
 | 冻结时间 | `F`（进入时按 `auto_pause_time` 自动冻结） |
-| 隐藏菜单 | `T` |
 
 键位都能在 `config.ini` 里改（`[keys]` 段）。
 
@@ -55,6 +54,8 @@ tools\build_tests.bat
 - **Xbox 手柄**：XInput 读取（`XInputGetState` 轮询，强制加载 System32 的 DLL，绕开游戏目录代理）。
 - **DualSense / DualShock4**：**不是 XInput 设备**，Windows 把它们枚举成 DirectInput 手柄——1.4.0 起由 DInput8 轮询后端读取（USB/蓝牙均可），与 XInput 翻译成同一份 `PadState`，键位写法与 Xbox 完全一致。XInput 槽位优先，避免 Xbox 手柄在两套后端重复计数。
 - 映射（`core/gamepad.cpp`）：DIJOYSTATE2 按钮 0..13 → □╳○△/L1R1/L2R2/CREATE/OPTIONS/**L3=LS/R3=RS**/PS；轴 lX/lY/lZ/lRz=双摇杆（Y 取反）、lRx/lRy=L2/R2 模拟量；rgdwPOV=十字键。
+- 固定键位：RT/LT 升降；**RB/LB 滚转**（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；**L3/R3 变速**（LS 加速 / RS 减速；两杆同按是进出模式组合键，此时不触发变速）。
+- 十字键上/下调 FOV（`pad_fov_up` / `pad_fov_down` 可改）：单击一格，按住约 0.35 秒后连发，松开即停。
 - 接入诊断：`DInput 手柄已接入：<名>（VID_…&PID_…）首读：按钮=… 摇杆=… POV=…`（一次性，原始值，映射对不上真机时用它定位）；`手柄=<后端摘要>` 在每秒输入诊断行里。
 
 ## 配置文件
@@ -213,3 +214,16 @@ tools\build_tests.bat
 - 每秒诊断行新增 `画幅锁=开/关(比例)`，真机验证解锁是否生效一眼可查。
 - 想保留 16:9 构图（比如要裁成 16:9 输出）的用户可在 `config.ini` 里把 `ultrawide_unlock` 改为 `false`。
 - 版本 `1.5.0-cpp`；核心层测试 503 → **527 项全绿**（新增画幅解锁进退/失败/热重载用例）。
+
+## 1.6.0 这次改了什么（进入摄影模式隐藏交互提示）
+
+- 需求：进入摄影模式后，对准场景互动物（铃铛/拾取点）时的“E”键提示图标不会消失。
+- 根因：该提示是 `PBZInteractComponent` 挂的**世界空间 UMG**（组件属性 `InteractWidgetComponent`），
+  不在 `SetHideUIForPV` / HUD 根控件的覆盖范围内；且 `freeze_mode=pause` 暂停下游戏 UI 不再刷新，
+  已画出来的提示必须隐藏控件组件本身才会消失。
+- 实现（双路径，退出都还原）：① 游戏自带设置开关 `bSceneInteractPromptVisible`（运行时按候选类探测，
+  优先调 `SetSceneInteractPromptVisible`，参数名对不上直写属性）——管住之后新出现的提示；
+  ② 枚举 `PBZInteractComponent` 的 `InteractWidgetComponent` 并 `SetVisibility(false)`——管住此刻已画出的。
+- `[effects]` 新增 `hide_interact_prompt = true`（想保留提示可改 `false`）。
+- 失败不阻断进入摄影模式：两路都失败只打一次性 Warn（真机排障把日志发回来）。
+- 版本 `1.6.0-cpp`；核心层测试 527 → **544 项全绿**（新增交互提示隐藏用例）。

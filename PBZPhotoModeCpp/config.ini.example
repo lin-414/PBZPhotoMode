@@ -7,8 +7,6 @@
 [keys]
 ; 进入/退出摄影模式
 key_toggle = F2
-; 显示/隐藏菜单
-key_menu = T
 ; 冻结/恢复时间
 key_freeze = F
 ; 重置相机到进入摄影模式时的位置/朝向/FOV
@@ -33,6 +31,8 @@ block_game_input = true
 ; 左键上移/右键下移：translate=相机上下平移，look=俯仰
 mouse_vertical_mode = translate
 vertical_speed = 200
+; Q/E 滚转相机速度（度/秒）：E 顺时针，Q 逆时针；Shift 加速 / Ctrl 减速同样生效
+roll_speed = 60
 
 ; ================================================================
 ; 手柄支持（v1.0.15 新增；v1.4.0 起原生支持 DualSense/DualShock4，USB 与蓝牙均可）
@@ -47,15 +47,15 @@ pad_enabled = true
 ; 也认 PS 叫法（CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS）
 ; 多个按钮用 + 连接（同时按住触发）；写 NONE 表示解绑该功能
 pad_toggle = LS+RS
-; 显示/隐藏菜单
-pad_menu = START
 ; 冻结/恢复时间
 pad_freeze = X
 ; 重置相机到进入摄影模式时位置/朝向/FOV
 pad_reset = Y
-; FOV 加减（十字键上/下）
+; FOV 加减（十字键上/下；单击一格，按住先延迟约 0.35 秒再连发）
 pad_fov_up = UP
 pad_fov_down = DOWN
+; 固定键位（不占配置项）：RT/LT 升降；RB/LB 滚转相机（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；
+; L3/R3 变速（LS 加速 / RS 减速；两杆同时按住是进出模式组合键，此时不触发变速）
 ; 右摇杆转视角速度（度/秒，全行程）
 pad_look_speed = 180
 ; 左摇杆移动速度占 move_speed 的比例
@@ -86,16 +86,8 @@ restore_fov_on_exit = true
 restore_view_on_exit = true
 
 [ui]
-; UE4SS 控制台里的 ImGui 面板（需要 UE4SS 控制台窗口）
+; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作
 imgui_tab = true
-; 没有 ImGui 时用文字菜单兜底
-hud_fallback = false
-; WBP 资产菜单：加载随模组分发的 WidgetBlueprint 图形菜单（失败自动落回文字面板）
-menu_asset = true
-; WBP 资产菜单的对象路径（在 UE 编辑器里制作，cook 进 pak）
-menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu
-; 开发者通道：把本模组 paks/ 内的 pak 转拷进游戏 ~mods（图形资产来自独立模组 PBZPhotoModeUI）
-menu_pak_autocopy = true
 
 [misc]
 log_level = info

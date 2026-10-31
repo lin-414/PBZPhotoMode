@@ -28,7 +28,7 @@ echo [2/3] Compiling tests
 cl /nologo /std:c++20 /EHsc /W4 /permissive- /utf-8 /MD ^
    /Fe:build\pbzpm_tests.exe /Fo:build\ /Fd:build\ ^
    tests\main.cpp ^
-   src\core\config.cpp src\core\gamepad.cpp src\core\input_logic.cpp src\core\menu_bridge.cpp src\core\menu_model.cpp src\core\photo_mode.cpp src\core\vk.cpp ^
+   src\core\config.cpp src\core\gamepad.cpp src\core\input_logic.cpp src\core\photo_mode.cpp src\core\vk.cpp ^
    /I. /Isrc
 if errorlevel 1 (
     echo [ERROR] compile failed

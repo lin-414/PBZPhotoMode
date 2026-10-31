@@ -1,7 +1,6 @@
-# 打 zip（两个独立模组）：
+# 打 zip（仅主模组；图形菜单资产模组 PBZPhotoModeUI 已随图形菜单路线判死移除，不再打包）：
 #   dist/PBZPhotoModeCpp  → dist/PBZPhotoModeCpp_<版本>.zip   （UE4SS DLL 主模组）
-#   dist/PBZPhotoModeUI   → dist/PBZPhotoModeUI_<版本>.zip    （图形菜单资产 pak 模组）
-# 用法：python tools/pack.py <版本>   （如 1.5.0-cpp；UI 包版本同号发布）
+# 用法：python tools/pack.py <版本>   （如 1.0.20-cpp）
 import os
 import shutil
 import sys
@@ -32,4 +31,3 @@ def pack(root, zip_path, prefix):
 
 
 pack('dist/PBZPhotoModeCpp', 'dist/PBZPhotoModeCpp_%s.zip' % version, 'PBZPhotoModeCpp')
-pack('dist/PBZPhotoModeUI', 'dist/PBZPhotoModeUI_%s.zip' % version, 'PBZPhotoModeUI')

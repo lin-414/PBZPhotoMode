@@ -10,13 +10,11 @@ if (MSVC)
 endif()
 
 # ---------------------------------------------------------------- 纯核心层
-# 不含任何 UE4SS/UE 头文件：配置解析、输入状态机、数学、摄影模式状态机、菜单模型。
+# 不含任何 UE4SS/UE 头文件：配置解析、输入状态机、数学、摄影模式状态机。
 add_library(pbzpm_core STATIC
     src/core/config.cpp
     src/core/gamepad.cpp
     src/core/input_logic.cpp
-    src/core/menu_bridge.cpp
-    src/core/menu_model.cpp
     src/core/photo_mode.cpp
     src/core/vk.cpp
 )
@@ -30,21 +28,16 @@ if (PBZPM_BUILD_TESTS)
     add_test(NAME pbzpm_core COMMAND pbzpm_tests)
 endif()
 
-# ---------------------------------------------------------------- ImGui（自带拷贝：游戏内图形菜单用，DX11/DX12/Win32 后端）
+# ---------------------------------------------------------------- ImGui（自带拷贝：仅 UE4SS 控制台诊断面板用，纯核心源文件）
+# 游戏内图形菜单已移除（v1.8.0 判死、v1.8.1 代码清除），不再需要 DX11/DX12/Win32 后端。
 set(PBZPM_IMGUI_SOURCES
     third_party/imgui/imgui.cpp
     third_party/imgui/imgui_draw.cpp
     third_party/imgui/imgui_tables.cpp
     third_party/imgui/imgui_widgets.cpp
-    third_party/imgui/backends/imgui_impl_dx11.cpp
-    third_party/imgui/backends/imgui_impl_dx12.cpp
-    third_party/imgui/backends/imgui_impl_win32.cpp
 )
 add_library(pbzpm_imgui STATIC ${PBZPM_IMGUI_SOURCES})
 target_include_directories(pbzpm_imgui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
-# 禁用 win32 后端自带的 XInput 轮询：1.0.18 的教训——绝不能隐式加载 System32 的 XInput 代理 DLL；
-# 手柄导航由 imgui_overlay 自己喂事件。
-target_compile_definitions(pbzpm_imgui PRIVATE IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
 if (MSVC)
     set_source_files_properties(${PBZPM_IMGUI_SOURCES} PROPERTIES COMPILE_OPTIONS "/W3")
 endif()
@@ -61,9 +54,7 @@ if (PBZPM_WITH_UE4SS)
 
     add_library(PBZPhotoModeCpp SHARED
         dllmain.cpp
-        src/engine/imgui_overlay.cpp
         src/engine/ue4ss_port.cpp
-        src/game_menu.cpp
         src/mod_app.cpp
         src/ui_tab.cpp
         src/win_input.cpp
@@ -71,8 +62,6 @@ if (PBZPM_WITH_UE4SS)
     target_compile_definitions(PBZPhotoModeCpp PRIVATE PBZPM_WITH_UE4SS=1)
     # 用 PUBLIC：UE4SS 的头文件目录是通过 INTERFACE 传播的，PRIVATE 会拿不到 <Mod/CppUserModBase.hpp>
     # pbzpm_imgui 放在 UE4SS 前面：两边各有一份 ImGui，链接顺序保证符号解析用我们这份
-    # 注意：不链 d3d11/d3d12/dxgi——imgui_overlay 运行时 LoadLibrary + GetProcAddress，
-    # 避免这些 DLL 提前出现在导入表里（1.1.1 启动闪退教训）。
     target_link_libraries(PBZPhotoModeCpp PUBLIC pbzpm_imgui UE4SS pbzpm_core)
     set_target_properties(PBZPhotoModeCpp PROPERTIES OUTPUT_NAME "PBZPhotoModeCpp")
 endif()

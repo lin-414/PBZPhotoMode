@@ -8,18 +8,15 @@
 
 #include "core/config.h"
 #include "core/input_logic.h"
-#include "core/menu_bridge.h"
 #include "core/photo_mode.h"
 
 namespace pbzpm {
 
 class Ue4ssPort;
 class Win32InputSource;
-class ImGuiOverlay;
-struct Umg2Commands;
-struct WbpCommands;
 
 // UE4SS mod 本体：把输入/引擎事件翻译成 core 层 Intent，再把结果交给 PhotoMode。
+// 游戏内无任何菜单界面（v1.8.0 起纯快捷键）；UI 只有 UE4SS 控制台里的诊断面板。
 class PhotoModeMod final : public RC::CppUserModBase {
 public:
     PhotoModeMod();
@@ -43,19 +40,6 @@ private:
     void ensure_axis_hook();
     void handle_intent(const Intent& intent, double dt);
     void handle_toggle();
-    void update_overlay();
-    void publish_menu_snapshot();
-    void apply_menu_actions();
-    void apply_umg2_commands(const Umg2Commands& commands);
-    void apply_wbp_commands(const WbpCommands& commands);
-    // WBP 资产菜单：光标 → 面板内坐标（悬停静音与按钮命中判定共用，umg2 同款缩放机器）
-    bool panel_cursor_local(float& px, float& py);
-    // 开菜单沿解析一次 UI 缩放（umg2_scale.txt 覆盖 > 物理/Slate 视口 > DPI），并打映射日志
-    void resolve_panel_scale();
-    // pak 自动安装：把 mod 目录 paks/ 的三件套拷进游戏 ProjectPBZ\Content\Paks\~mods
-    void ensure_pak_installed();
-    // 图形菜单延迟初始化：首次进入摄影模式才安装钩子（1.1.1：不要在游戏 RHI 初始化期碰 D3D）
-    void ensure_overlay_started();
     void log_input_diagnostics(const Intent& intent, double dt);
     auto mod_directory() -> std::string;
 
@@ -65,31 +49,9 @@ private:
     KeyMap keys_{};
     InputLogic input_{};
     Win32InputSource* input_source_{nullptr};
-    // 游戏内图形菜单（D3D 钩子 + 独立 ImGui context）；nullptr/不可用时退回 UMG 文字菜单
-    ImGuiOverlay* overlay_{nullptr};
-    // 菜单「重置视角」按钮：下一帧注入一次 reset_view intent
-    bool menu_reset_view_{false};
-    // UMG 菜单的 Esc 关闭沿检测
-    bool esc_prev_{false};
-    // UMG 交互菜单：左键按下沿跟踪 + 指针是否在面板上（上一帧判定，用于输入门控）
-    bool lmb_prev_{false};
-    bool umg2_cursor_in_panel_{false};
-    // 菜单打开沿检测（开菜单时解析一次 UI 缩放并打一条映射日志）
-    bool umg2_menu_open_prev_{false};
-    float umg2_scale_override_{0.0f};  // 0 = 未覆盖（umg2_scale.txt）
-    float umg2_scale_cached_{0.0f};    // 0 = 未定（物理/Slate 或 DPI 推算）
-    double umg2_last_miss_log_{0.0};   // 点击未命中日志的节流
-    // WBP 资产菜单：桥 + 打开沿（悬停静音与 umg2 共用 umg2_cursor_in_panel_ / 缩放缓存）
-    WbpBridge wbp_bridge_{};
-    bool wbp_menu_open_prev_{false};
-    bool pak_copy_done_{false};
-    // 图形菜单延迟初始化状态
-    bool overlay_tried_{false};
-    bool overlay_disabled_{false};
 
     std::mutex mutex_{};
     bool tick_hook_installed_{false};
-    bool overlay_ok_{false};
     double attach_retry_timer_{0.0};
 
     // 引擎侧鼠标增量（InputAxis 钩子喂进来，引擎 Tick 里取走）
@@ -98,12 +60,10 @@ private:
     double axis_dy_{0.0};
     double axis_wheel_{0.0};
     bool axis_move_active_{false};
-    bool axis_wheel_active_{false};
     bool axis_hook_tried_{false};
     double engine_dx_{0.0};
     double engine_dy_{0.0};
     bool engine_delta_ok_{false};
-    bool engine_move_seen_{false};
     bool engine_delta_logged_{false};
     double engine_peak_dx_{0.0};
     double engine_peak_dy_{0.0};

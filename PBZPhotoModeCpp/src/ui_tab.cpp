@@ -7,7 +7,6 @@
 #include <string>
 
 #include "core/gamepad.h"
-#include "core/menu_model.h"
 #include "core/version.h"
 
 namespace pbzpm {
@@ -21,14 +20,14 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
         return;
     }
 
-    const MenuModel model = build_menu_model(mode, keys);
-
-    if (model.status_frozen) {
-        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "状态：%s", model.status.c_str());
-    } else if (model.status == "LIVE") {
-        ImGui::TextColored(ImVec4(0.4f, 0.95f, 0.5f, 1.0f), "状态：%s", model.status.c_str());
+    // 状态行：OFF / LIVE / FROZEN（与 core 的机器值一致，tests 锁定）
+    const char* status = !mode.active() ? "OFF" : (mode.frozen() ? "FROZEN" : "LIVE");
+    if (mode.frozen()) {
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.2f, 1.0f), "状态：%s", status);
+    } else if (mode.active()) {
+        ImGui::TextColored(ImVec4(0.4f, 0.95f, 0.5f, 1.0f), "状态：%s", status);
     } else {
-        ImGui::TextDisabled("状态：%s", model.status.c_str());
+        ImGui::TextDisabled("状态：%s", status);
     }
 
     ImGui::Separator();
@@ -63,10 +62,6 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
 
     if (ImGui::Button(mode.frozen() ? "恢复时间" : "冻结时间")) {
         commands.toggle_freeze = true;
-    }
-    ImGui::SameLine();
-    if (ImGui::Button("隐藏菜单")) {
-        commands.hide_menu = true;
     }
 
     ImGui::Separator();
@@ -124,8 +119,17 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
 
     ImGui::Separator();
 
-    for (const std::string& hint : model.hints) {
-        ImGui::TextDisabled("%s", hint.c_str());
+    // 键位提示（游戏内无菜单，这里就是唯一的操作速查）
+    ImGui::TextDisabled("ALT + 鼠标  自由转视角");
+    ImGui::TextDisabled("WASD 平移    Q/E 滚转    Shift/Ctrl 变速");
+    ImGui::TextDisabled("滚轮 FOV    左键上移  右键下移");
+    ImGui::TextDisabled("%s 重置相机视角（回到进入时）", vk_to_name(keys.reset).c_str());
+    ImGui::TextDisabled("%s 冻结时间    %s 退出", vk_to_name(keys.freeze).c_str(), vk_to_name(keys.toggle).c_str());
+    if (cfg.pad_enabled) {
+        ImGui::TextDisabled("手柄 %s 进/出    左摇杆移动  右摇杆视角", pad_combo_name(keys.pad_toggle).c_str());
+        ImGui::TextDisabled("RT/LT 升降    L3/R3 变速    %s/%s FOV（按住连调）    %s 冻结  %s 重置",
+                            pad_combo_name(keys.pad_fov_up).c_str(), pad_combo_name(keys.pad_fov_down).c_str(),
+                            pad_combo_name(keys.pad_freeze).c_str(), pad_combo_name(keys.pad_reset).c_str());
     }
 
     ImGui::Separator();

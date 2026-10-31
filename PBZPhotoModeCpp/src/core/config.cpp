@@ -119,14 +119,12 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
     const auto assign = [&result](Config& cfg, const std::string& key, const std::string& value) {
         std::string error;
         if (key == "key_toggle") set_string(cfg.key_toggle, value, error, key.c_str());
-        else if (key == "key_menu") set_string(cfg.key_menu, value, error, key.c_str());
         else if (key == "key_freeze") set_string(cfg.key_freeze, value, error, key.c_str());
         else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
         else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
         else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
         else if (key == "pad_enabled") set_bool(cfg.pad_enabled, value, error, key.c_str());
         else if (key == "pad_toggle") set_string(cfg.pad_toggle, value, error, key.c_str());
-        else if (key == "pad_menu") set_string(cfg.pad_menu, value, error, key.c_str());
         else if (key == "pad_freeze") set_string(cfg.pad_freeze, value, error, key.c_str());
         else if (key == "pad_reset") set_string(cfg.pad_reset, value, error, key.c_str());
         else if (key == "pad_fov_up") set_string(cfg.pad_fov_up, value, error, key.c_str());
@@ -140,6 +138,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "look_sensitivity") set_double(cfg.look_sensitivity, value, error, key.c_str());
         else if (key == "pitch_limit") set_double(cfg.pitch_limit, value, error, key.c_str());
         else if (key == "vertical_speed") set_double(cfg.vertical_speed, value, error, key.c_str());
+        else if (key == "roll_speed") set_double(cfg.roll_speed, value, error, key.c_str());
         else if (key == "invert_y") set_bool(cfg.invert_y, value, error, key.c_str());
         else if (key == "free_look_requires_alt") set_bool(cfg.free_look_requires_alt, value, error, key.c_str());
         else if (key == "block_game_input") set_bool(cfg.block_game_input, value, error, key.c_str());
@@ -166,10 +165,6 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
             else if (v == "pause") cfg.freeze_mode = FreezeMode::Pause;
             else error = "freeze_mode 只能是 dilation 或 pause：" + value;
         } else if (key == "imgui_tab") set_bool(cfg.imgui_tab, value, error, key.c_str());
-        else if (key == "hud_fallback") set_bool(cfg.hud_fallback, value, error, key.c_str());
-        else if (key == "menu_asset") set_bool(cfg.menu_asset, value, error, key.c_str());
-        else if (key == "menu_asset_path") set_string(cfg.menu_asset_path, value, error, key.c_str());
-        else if (key == "menu_pak_autocopy") set_bool(cfg.menu_pak_autocopy, value, error, key.c_str());
         else if (key == "log_level") {
             const std::string v = lower(value);
             if (v == "error") cfg.log_level = LogLevel::Error;
@@ -243,6 +238,10 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         result.warnings.push_back("move_speed 必须为正，已回退 400");
         result.cfg.move_speed = 400.0;
     }
+    if (result.cfg.roll_speed <= 0.0) {
+        result.warnings.push_back("roll_speed 必须为正，已回退 60");
+        result.cfg.roll_speed = 60.0;
+    }
     if (result.cfg.freeze_dilation <= 0.0 || result.cfg.freeze_dilation > 1.0) {
         result.warnings.push_back("freeze_dilation 应在 (0, 1]，已回退 0.0001");
         result.cfg.freeze_dilation = 0.0001;
@@ -286,8 +285,6 @@ std::string default_config_text() {
         << "[keys]\n"
         << "; 进入/退出摄影模式\n"
         << "key_toggle = " << c.key_toggle << "\n"
-        << "; 显示/隐藏菜单\n"
-        << "key_menu = " << c.key_menu << "\n"
         << "; 冻结/恢复时间\n"
         << "key_freeze = " << c.key_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
@@ -310,7 +307,9 @@ std::string default_config_text() {
         << "block_game_input = true\n"
         << "; 左键上移/右键下移：translate=相机上下平移，look=俯仰\n"
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
-        << "vertical_speed = " << c.vertical_speed << "\n\n"
+        << "vertical_speed = " << c.vertical_speed << "\n"
+        << "; Q/E 滚转相机速度（度/秒）：E 顺时针，Q 逆时针；Shift 加速 / Ctrl 减速同样生效\n"
+        << "roll_speed = " << c.roll_speed << "\n\n"
         << "[gamepad]\n"
         << "; 手柄支持总开关（false=不轮询手柄）\n"
         << "pad_enabled = " << (c.pad_enabled ? "true" : "false") << "\n"
@@ -319,13 +318,11 @@ std::string default_config_text() {
         << "; 也认 PS 叫法（CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS）\n"
         << "; 多个按钮用 + 连接（同时按住触发）；写 NONE 表示解绑该功能\n"
         << "pad_toggle = " << c.pad_toggle << "\n"
-        << "; 显示/隐藏菜单\n"
-        << "pad_menu = " << c.pad_menu << "\n"
         << "; 冻结/恢复时间\n"
         << "pad_freeze = " << c.pad_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
         << "pad_reset = " << c.pad_reset << "\n"
-        << "; FOV 加减（十字键上/下）\n"
+        << "; FOV 加减（十字键上/下；单击一格，按住先延迟约 0.35 秒再连发）\n"
         << "pad_fov_up = " << c.pad_fov_up << "\n"
         << "pad_fov_down = " << c.pad_fov_down << "\n"
         << "; 右摇杆转视角速度（度/秒，全行程）\n"
@@ -355,16 +352,8 @@ std::string default_config_text() {
         << "restore_fov_on_exit = true\n"
         << "restore_view_on_exit = true\n\n"
         << "[ui]\n"
-        << "; UE4SS 控制台里的 ImGui 面板（需要 UE4SS 控制台窗口）\n"
-        << "imgui_tab = true\n"
-        << "; 没有 ImGui 时用文字菜单兜底\n"
-        << "hud_fallback = false\n"
-        << "; WBP 资产菜单：加载随模组分发的 WidgetBlueprint 图形菜单（失败自动落回文字面板）\n"
-        << "menu_asset = true\n"
-        << "; WBP 资产菜单的对象路径（在 UE 编辑器里制作，cook 进 pak）\n"
-        << "menu_asset_path = /Game/PBZPhotoMode/WBP_PBZPhotoMenu\n"
-        << "; 开发者通道：把本模组 paks/ 内的 pak 转拷进游戏 ~mods（图形资产来自独立模组 PBZPhotoModeUI）\n"
-        << "menu_pak_autocopy = true\n\n"
+        << "; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作\n"
+        << "imgui_tab = true\n\n"
         << "[misc]\n"
         << "log_level = " << log_level_name(c.log_level) << "\n"
         << "dry_run = false\n";
