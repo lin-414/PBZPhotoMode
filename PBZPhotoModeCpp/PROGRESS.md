@@ -1,15 +1,15 @@
-# 进度存档（2026-10-31 更新）
+# 进度存档（2026-11-01 更新）
 
 接着做的入口：读这份文件 → 看「下一步」→ 直接干。
 
 ## 一句话状态
 
-**C++ 版 1.0.37 已编译**（1.0.36 之上：**输入手感减速**——方向键/十字键平移乘 `arrow_pan_mult` 默认 0.5、俯仰 `pitch_speed` 60→30；按住 Ctrl（手柄 RS 按下）时鼠标/右摇杆视角乘 `slow_look_mult` 默认 0.1；`pad_look_speed` 180→60。此前版本线：语音静音双保险、字幕压制、敌人血条/交互提示隐藏、超宽屏、DInput 手柄、FOV 连发、滚转等全量保留）。
-核心层 **686 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.37 待实机验证**：方向键/十字键平移与俯仰的新手感；Ctrl+鼠标 与 RS 按下+右摇杆的精调转速；旧 config.ini 显式写了 pitch_speed/pad_look_speed 的要手动同步。
+**C++ 版 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现**——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
+核心层 **754 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
 
 ## 交付流程（2026-10-31 起固定）
 
-- **只出包，不部署**：构建完成后把产物打进 `dist/PBZPhotoModeCpp_<版本>-cpp.zip`（结构：`PBZPhotoModeCpp/{dlls/PBZPhotoModeCpp.dll, config.ini, enabled.txt, README.md}`），**不要**把 DLL/README/config 覆盖到游戏目录——用户用模组管理器自行安装 zip。
+- **只出包，不部署**：构建完成后把产物打进 `dist/PBZPhotoModeCpp_<版本>-cpp.zip`（结构：`PBZPhotoModeCpp/{dlls/PBZPhotoModeCpp.dll, languages/*.json, config.ini, enabled.txt, README.md}`），**不要**把 DLL/README/config 覆盖到游戏目录——用户用模组管理器自行安装 zip。1.0.52 起 `tools/pack.py` 会自动把仓库 `languages/` 同步进发行目录。
 - 游戏目录 `platform\steam\ue4ss\Mods\PBZPhotoModeCpp\` 当前留着 1.0.19 那份（供本次实机验证），之后构建/交付流程不再碰它。
 
 ## 已完成
@@ -24,6 +24,159 @@
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
 | 文档 | `docs/README.md`、`docs/BUILD.md`（含 6 条编译踩坑表）、`docs/P1_CHECKLIST.md` |
+
+## v1.0.62 修了什么（2026-11-01 分类树韩语节点全显问号：框架默认字体合并 Malgun）
+
+实机（0.5.0+ 分类树框架）反馈：语言切到 한국어 后，左树「PBZ Photo Mode」下的节点名整串 `???`（逐条比对 = 词典里六个分组键的韩文译文，顺序与 schema 一致），而右侧自绘页韩文正常。
+
+**根因**：树节点名由框架用**它自己的字体**渲染——框架启动只按它自己的语言加载一个字体（中文环境 = msyh 雅黑，无谚文字形；`overlay.cpp InitImGui` 候选表 msyh/msyhbd/segoeui 都不含谚文），我们注册的韩语节点名（`node_names_`，词典译文）整串缺字形 → `?`。右侧自绘页正常是因为 `ensure_page_font()` 推了「雅黑 + Malgun」合并字体——但那只对我们画的页面生效，框架画的树管不着。
+
+**修复（客户端侧，框架无需重编译）**：`ensure_imgui()` 指纹校验通过后，往**框架默认字体**（`FontDefault`，缺省 Fonts[0]）按 `MergeMode` 合并 `C:/Windows/Fonts/malgun.ttf`（谚文来自 Malgun，汉字/假名/拉丁仍以雅黑优先，尺寸取 base->LegacySize 保持基线一致）。ImGui 1.92 动态图集按需光栅化，合并后框架自绘的树节点从下一帧起即可显示韩语；一条 Info/Warn 日志记录合并结果。
+
+- 自绘页的专用页面字体保留不动（双保险，行为不变）。
+- 核心层 2084 项全绿；DLL 增量编译通过。
+- **待实机验证**：韩语下左树节点显示正常（菜单内切语言无需重启）；系统缺 malgun.ttf 时看 UE4SS.log 告警。
+
+## v1.0.53 改了什么（2026-11-01 词典键改稳定命名键，en-US 为基准词典）
+
+按需求把 1.0.52 的「中文原文当键」换成「稳定命名键 + 英文基准」：所有译本直接对照 en-US.json 翻译，键名不再承载任何语言文本。
+
+- **键**：全部 `#` 前缀命名键，共 96 个——18 个原有 #UI 键（#btn_enter、#pose…）不动；6 个分组 `#group_*`；43 个设置项用 `#` + config 键名（`#pad_enabled`、`#fov_default`…）；4 个枚举选项（#freeze_mode_timescale / #freeze_mode_pause / #mouse_vert_translate / #mouse_vert_look）；25 个控制台面板键 `#console_*`。pbzfm_schema_map.cpp 的 53 处中文 label/分组/选项脚本精确替换成键名，字符串字面量零中文校验通过。
+- **UE4SS 控制台诊断面板同批迁移**：ui_tab.cpp / mod_app.cpp render_tab_impl 的面板文案全部进词典（与 PBZFM 菜单同一设置的滑条直接复用既有键 #move_speed / #yaw_speed / #pad_look_speed 等；文案不同的才新增 #console_*）；滑条 fmt 里的中文单位（"%.0f 度/s"）改纯 ASCII fmt，单位并入词典标签。`pbzfm_` 改声明期构造（首帧即可用词典），render_tab_impl 每帧节流重扫；`PbzfmClient::lang()` 暴露共享实例。仅「正在等待游戏引擎初始化…」一条保留代码内兜底（初始化窗口期词典未扫描，控制台瞬显）。UE4SS.log 日志与 config.ini 生成注释仍为中文（诊断/文档，非界面文本）。
+- **词典**：四份文件键集完全一致（各 96 词条 + `__display`）。en-US.json = 基准（键 → 英文原文）；zh-CN.json 的中文全部来自原先硬编码在代码里的文本（转存进词典）；ja/ko 复用旧译文重新挂键。补译 3 条 1.0.46 改名遗漏（偏航左/右转、方向键转向速度——此前 en/ja/ko 界面这几处一直回落显示中文）。
+- **查译链**：当前语言 → en-US（基准兜底）→ 原样返回键名；语言列表 en-US 排第一，语言无法确定时回落 en-US。commit_settings 的日志文案改用解析后文本（不再打原始键名）。
+- `menu_language` 默认仍 auto（跟随 PBZFM 菜单语言），PBZFM 也没有时才回落 en-US。
+- 核心层 2084 项全绿（schema 回环测试不依赖 label 文本）；DLL 增量编译通过。
+- **待实机验证**：PBZFM 菜单与 UE4SS 控制台面板默认显示英文；四语言切换正常；对照 en-US.json 改译文/新增语言文件热生效；缺 languages 目录时告警 + 键名退化。
+
+## v1.0.52 改了什么（2026-11-01 四语言词典外部化：DLL 不再内嵌文本）
+
+PBZFM 自绘页的 i18n 词典原先以原始字符串字面量编译进 DLL（pbzfm_client_lang.cpp 里四段 kJson*，约 320 行），改一个译文都要重编译。按需求改为全部从外部 JSON 加载，DLL 里不再有任何界面文本：
+
+- **新仓库目录 `languages/`**：zh-CN.json / en-US.json / ja-JP.json / ko-KR.json，内容用脚本从原内嵌字面量**逐字提取**并做了一次清理（zh 18 条、en/ja/ko 各 71 条，含 `__display`）；清理项：起草 en/ja/ko 时照抄框架语言文件残留的 **24 个 PBZFM 框架演示页键**（title / page_settings / btn_test / ui_scale / quality 等，与 `_ref/PBZ-Framework-Menu/assets/languages/en-US.json` 逐键重合、译文逐字相同）——本项目代码从不查询它们（T() 只查 #命名键与 schema 中文 label），框架界面文本也由框架自己的 PBZFM\languages\*.json 加载，故整批删除，zh-CN 本就没有。并同步进 `dist/PBZPhotoModeCpp/languages/`；`tools/pack.py` 打包时自动同步，zip 里随包分发。
+- **pbzfm_client_lang.cpp 重写**（549 → 约 220 行）：删除 kJson* 四段与 EnsureBuiltins；`RescanLanguages` 成为唯一词典来源（扫 `<mod 目录>\languages\*.json`，2 秒节流热重载保留）；已知四种语言展示顺序优先、其余按 id 追加；`T()` 查译链改为 当前语言 → zh-CN（按 id 查找，不再依赖 langs_[0]）→ 原样返回；`langs_` 为空（目录缺失/全坏词典）时各访问器安全退化，页面显示键名。
+- **日志**：接入 PBZFM 后词典数为 0 时打 Warn（提示整个目录安装、勿只拷 DLL）；接入日志的「内置 zh/en/ja/ko 词典」措辞改为「词典从 languages/*.json 加载」。
+- **文档**：dist README 新增「PBZFM 菜单语言（外部词典）」一节（改译文/加语言/升级覆盖安装说明）；版本行与测试数同步。
+- 核心层测试不受影响（i18n 属 UE4SS 层）：**2084 项全绿**；DLL MSVC+Ninja 增量编译通过。
+- **待实机验证**：PBZFM 菜单四语言切换正常；手改 languages/*.json 译文约 2 秒热生效；删掉 languages 目录后告警 + 键名退化；外部新语言（任意文件名）出现在下拉列表尾部。
+
+## v1.0.51 修了什么（2026-11-01 dilation 判死 + POV 监测 idle 门控）
+
+1.0.50 实验包（config 已改 dilation）实机判读，两条：
+
+1. **dilation 冻结在本作判死**：每次冻结后每秒 `检测到时间缩放被游戏改写，已重新冻结`，3 秒后 `冻结压不住，已停止自动重试`——游戏有代码持续把时间缩放强制写回 1.0（绕过 Min/Max 夹紧，疑似每帧直写 WorldSettings.TimeDilation），模组每秒抢一次抢不过。**表现为用户看到的“冻结后人物继续动”。pause 模式不受影响（此前会话几分钟稳定），仍是唯一可用冻结。** 配置已回退 pause。
+2. **POV 微动首份数据被相机输入污染**（8.9~16.9 位移 = 用户在转相机），无法下结论。
+
+**1.0.51 修复**：`pov_watch_tick(bool camera_idle)`——PhotoMode 传入本帧是否动过相机（pose_dirty_），非 idle 帧不累计并清空上一帧样本；监测值从此只来自“没人动相机”的连续帧。实机判读标准：**冻结后不碰任何输入，若 `视角微动:位移` 仍非零 = 自定义相机管理器在暂停期推视角实锤**；恒 0.000 且布料仍闪 = 残余源只在材质侧（Time 节点 WPO，反射层无解，只能从材质参数入手——下一步预案：枚举角色布料 MID 的标量参数找风/摆动幅度项）。
+
+- 核心层 2084 项全绿（POV 监测 idle 断言）。
+
+## v1.0.50 修了什么（2026-11-01 POV 微动监测 + 排除 MPC）
+
+1.0.49 实机判读：**MPC 腿转正并排除**——快照 34 集/347 参数（ReturnValue 修复生效），冻结全程 `变化:无`，风源全程 0.00。但用户反馈**布料大部分区域仍闪烁** → 嫌疑收窄到两个：
+
+1. **材质 Time 节点 WPO**（暂停原理上关不掉——材质时钟不随世界暂停；只有 dilation 能冻住它）；
+2. **自定义相机管理器残余微动**（PBZPlayerCameraManager 不挂引擎 modifier 数组，但自身代码可能仍在暂停期推视角 → 全画面边缘 shimmer + 阴影爬动）。
+
+**1.0.50 新增 POV 微动监测**（`pov_watch_tick`，受 freeze_diag 门控）：冻结期每帧读相机管理器算出的最终 POV（`ViewTarget.POV`——含自定义管理器加的一切），与摄影相机 Actor 的静态位姿对照；`freeze_diag_sample` 尾部新增 `视角微动:位移x 旋转y°`（上一诊断周期的最大逐帧偏差），诊断行尾带 `[暂停]/[缩放]` 标签。非零 = 实锤有代码在暂停期推视角。
+
+- **判决实验（无需改码）**：config `freeze_mode=dilation` 冻一次——布料安静 = Time 节点 WPO 实锤（Time 随 dilation 走），拍照用 dilation 冻结即可治；照闪 = 看 1.0.50 的 `视角微动` 数值。
+- 核心层 2080 → 2083 项全绿（POV 监测的冻结期/解冻/关闭三态断言）。
+
+## v1.0.49 修了什么（2026-11-01 MPC 取值修复：Get 的出参实为返回值）
+
+1.0.48 实机诊断一锤定音：`UltraDynamicWeather_Parameters 数组头[Data=… Num=59 Max=60] 提名=59`——数组遍历与参数名提取**全通**（UDW 天气集合 59 个参数，正是布料/植被摆动的主力嫌疑）；断点在取值环节：`GetScalarParameterValue 签名=object:WorldContextObject,object:Collection,other:ParameterName,float:ReturnValue(ret)`——
+
+**根因**：本作的 `GetScalarParameterValue/GetVectorParameterValue` 把唯一的出参编译成了**返回值**（属性名 `ReturnValue`），没有 `OutValue` 出参。我们按 `OutValue` 读 → 永远失败 → 每个参数被静默 continue → 快照恒 0。
+
+**修复**：
+- `mpc_get_scalar`：`OutValue` 读不到回落 `ReturnValue`（旧签名 bool+OutValue 不受影响——OutValue 在前且命中即返回）；
+- `mpc_get_vector`：同款回落（读 FLinearColor 的 R/G/B/A）；
+- `mpc_set_scalar/set_vector`：值参数名 `Value` 对不上时按位置（第 4 个参数）兜底，类型校验仍由 write_number 把关。
+
+- **待实机验证**：`MPC 快照：34 个集合、N 个参数` N 应 >0（仅 UDW 就有 59 标量 + 向量）；冻结诊断的 `MPC 变化` 开始真实工作——UDW 参数在冻结期若仍在变，就是天气驱动布料的实证，`freeze_mpc` 每帧写回会压住它；核心层 2080 项全绿。
+
+## v1.0.48 修了什么（2026-11-01 MPC 快照 0 参数：逐环节诊断）
+
+1.0.47 实机（UE4SS.log）判读：① `IsA` 修复生效——MPC 首个集合 UltraDynamicWeather_Parameters 的 ScalarParameters 字段类=ArrayProperty，判定链已通；② 但快照仍 0 参数 → 断点在更深的环节；③ **相机管理器定论**：`属性未找到，管理器=PBZPlayerCameraManager`——游戏用自定义相机管理器，属性链里真没有 CameraModifiers（不是 IsA 问题），修饰器腿在 PBZ 关闭，StopAllCameraShakes 照常执行。
+
+MPC 0 参数剩三个候选断点：参数名提取失败（数组遍历）／Kismet 取值失败（函数缺失或签名不符）／集合真空参数（cooked 资产数据不在实例上）。**1.0.48 在快照 0 参数时逐环节打证据**：
+
+- `MPC 诊断：GetScalarParameterValue 签名=…` / `GetVectorParameterValue 签名=…`（缺失则 Warn）——签名不符是「每个参数读值都被静默 continue」的头号嫌疑；
+- `MPC 诊断：<集合名> 数组头[Data=%llx Num=%d Max=%d] 提名=N`（前三个集合）——原始内存与 helper 双读：原始 Num>0 而提名 0 → 数组遍历断；提名>0 而快照 0 → 取值断；都 0 → 集合真空参数（此时 MPC 腿需换数据源）。
+
+- **待实机验证**：跑一次冻结，把 `MPC 诊断` 那几行发回来即可定位；核心层 2080 项全绿（只动引擎层诊断）。
+
+## v1.0.47 修了什么（2026-11-01 冻结治理实机排障：IsA 数组判定失灵）
+
+1.0.46 实机（UE4SS.log，v1.0.45-cpp 运行）反馈两条异常：① `相机管理器无 CameraModifiers 数组`（但同管理器 ViewTarget 可读、StopAllCameraShakes 签名校验通过——管理器确是 PlayerCameraManager 系，属性不该缺）；② `MPC 快照：34 个集合、0 个参数`（34 个集合全部 0 参数不可能）。
+
+**根因（一个，解释两条）**：UE4SS 的 `FField::IsA<T>()` = `GetClass().IsChildOf(T::StaticClass())`，其中 `T::StaticClass()` 依赖 UE4SS 的 `FFieldClassRegistrar` 注册表（`IMPLEMENT_FIELD_CLASS` 的 StaticClassStorage）。注册未命中时 StaticClass 返回空 variant，`IsChildOf` 对空恒 false——**IsA 对该类型永远静默 false，无任何报错**。代码库里 float/bool/struct 的 IsA 有老路径喂过（早已验证可用），`IsA<FArrayProperty>` 是 1.0.41 首次使用、首次实机即踩中。
+
+**修复**：新增 `as_array_property(FProperty*)`——先走 IsA，再用字段类名（`prop->GetClass().GetFName()`，纯引擎数据）兜底判定 "ArrayProperty"，命中才 static_cast（类型正确，无 UB）。替换 4 处判定点：`mpc_read_param_names`、`freeze_camera_shakes`、诊断里的 CameraModifiers 与 CameraShakes。
+
+**配套诊断**（防再瞎）：① MPC 快照 0 参数时打首个集合名 + ScalarParameters 字段类名；② 相机管理器缺 CameraModifiers 时打管理器类名 + 该属性字段类名（字段类=ArrayProperty = 判定问题；未找到 = 游戏自定义管理器真没有）。
+
+- **待实机验证**：MPC 快照参数数应 >0（34 个集合的真实参数量）、冻结诊断的 MPC 变化检测开始工作；若相机管理器仍无 CameraModifiers，新日志会给管理器类名。
+- 核心层测试 2080 项全绿（本版只动引擎层，测试数不变）。
+
+## v1.0.46 修了什么（2026-11-01 方向键/十字键左右：平移改转向）
+
+需求：摄影模式里方向键左/右（键盘）与十字键左/右（手柄）原来横向平移相机，改为**左右转视角（偏航）**——与上/下俯仰组成完整的“方向键转视角”簇，横移交给 WASD / 左摇杆。
+
+- **实现**：`Intent` 新增 `yaw_axis`（+1 右转 / -1 左转，电平语义与 `pitch_axis` 相同：方向键或十字键按住持续转，无按下沿）；`InputLogic::build` 键盘块 `out.yaw_axis = yaw_right - yaw_left`，手柄块 `+= pad_yaw_right - pad_yaw_left`；`PhotoMode::tick` 在俯仰块后按 **`yaw_speed` × mult × dt** 积分（`wrap_yaw` 回绕，Shift 加速 / Ctrl 减速与俯仰同规则）。
+- **配置**：新 `[control] yaw_speed`（默认 **90 度/秒**，非正回退 90；PBZFM 菜单「相机与移动」页滑条 5..270）；`arrow_pan_mult` 废弃（写了记 warning 忽略）。键名 `key_pan_left/right` → `key_yaw_left/right`、`pad_pan_left/right` → `pad_yaw_left/right`，**旧键名在 parse_config 里映射到新字段继续生效**（老 config.ini 自定义键位不丢）；`config_ini_text`/`default_config_text`/`config.ini.example` 同步。
+- **UI**：UE4SS 诊断面板「方向键平移倍率」滑条改「方向键转向速度」（度/秒）；键位速查「方向键 左右转视角/上下俯仰」；PBZFM 菜单键位页标签「偏航：左转/右转（按住）」；手柄速查「%s/%s 左右转（按住）」。
+- **测试**：核心层 2069 → **2080 项全绿**（新增：旧键名兼容映射、方向键左右偏航 intent 与同按抵消/不再并入 move_right、十字键左右偏航、tick 偏航积分与 Ctrl 减速用例）。
+- **待实机验证**：方向键左右与十字键左右转向方向（右 = 右转）与手感（嫌慢/快改 `yaw_speed`）；Shift/Ctrl 变速；旧 config.ini 兼容（改过 `key_pan_*` 的玩家键位应原样迁移）。
+
+## v1.0.45 修了什么（2026-11-01 进入 FOV 跟随当前镜头 + 进出扫描提速）
+
+实机反馈：进入摄影模式**先卡一下**，然后**FOV 变大**。UE4SS.log 实测：首次进入 17:32:02.358 → 03.485「时间已冻结」≈ 1.13s；第二次进入 16.450 → 16.878 ≈ 0.43s（一次性诊断/音频普查不再重跑）。两处根因都定位并修复：
+
+**根因 ① FOV 恒落默认 90（自 C++ v1.0.11 初始提交就有）**：`read_pov` 从相机管理器读到位置+朝向后 `return any;` 提前返回（注释写「FOV 还是走下面的分支统一处理」但代码没落下去），861-874 行的 FOV 分支被跳过，`pov.fov` 恒为 `CameraPose` 默认 90（engine_port.h）。且兜底用的 `DefaultFOV` 本身就是 UE 默认 90，不反映游戏当前镜头。修法：同处调 `GetFOVAngle`（返回当前 CameraCache 的真实 FOV，游戏相机蓝图/瞄准改过的值也在里面）→ 兜底 `CameraCache.FOV`（≤5.4）/ `CameraCache.Lens.FieldOfView`（5.5+）→ 再兜底摄影相机旧值/`DefaultFOV`；`fov_default` 只在全部读不到时生效。新增 `read_return_number` / `read_camera_cache_fov` 两个静态助手。
+
+**根因 ② 进入路径上的全对象扫描**（自动暂停之前同步跑，卡顿即此）：
+- 日志空档定位：敌人血条(16.454)→字幕设置(16.739) 的 **285ms = lockon 扫描**（`lockon_absent_` 在 leave 时重置、每次进入必重扫，本场景零命中仍全扫）；字幕开关(16.739)→字幕控件(16.875) 的 **136ms = 字幕全扫**（逐对象 narrow+lower）。
+- 修法：判定只依赖类 → **按 UClass 缓存**（`LockonClassVerdict` / `SubtitleClassVerdict`，`unordered_map`；对象几十万、类 ~1 万）。逐对象只剩有效性检查+哈希查找；CDO 跳过改查**对象自身名前缀**（`Default__`），不再逐个 `GetFullName` 外链展开；类名未命中的可视组件才做资产名检查。还原路径 `collect_lockon_superset`（退出时）同步接入缓存。
+- 预期：进入/退出的这两段扫描从 ~285ms+~136ms 降到几十毫秒内（待实机验证）。
+
+构建：MSVC 19.44 + Ninja 增量编译通过；核心层测试 **2069 项全绿**。
+
+## v1.0.44 修了什么（2026-11-01 隐藏锁定标记）
+
+实机反馈：锁定敌人后进摄影模式，敌人身上的**锁定白点**仍在——`SetHideUIForPV` 的订阅者、HUD 布局、血条设置（`MonsterHealthBarMode` 只管血条）都不覆盖它。
+
+新配置项 `hide_lockon_marker`（默认开，PBZFM 菜单「隐藏」页同名开关）：进入摄影模式时全量扫描对象数组，按**类名/资产名关键词**（lockon / lock / targetmark / reticle / crosshair / mark / target / aim，`_`/`-` 归一，`block` 排除）收网：
+
+- **UMG 控件**（UserWidget 派生）：类名命中 → Collapsed（原 ESlateVisibility 记账）；
+- **可视组件**（Widget/Niagara/Particle/Decal/Sprite/Mesh 派生）：类名或引用资产名（`WidgetClass`/`NiagaraSystem`/`Template`/`StaticMesh`/`SkeletalMesh`/`DecalMaterial`，按类缓存属性）命中 → 组件 bVisible=false 记账；
+- 退出摄影模式全部按原值还原（重新枚举做存活校验）；隐藏清单逐条记日志，误收可从日志看见；
+- **白点的真实类名离线证不了**：全量扫描零命中时确认完成（进模式后输入被屏蔽、无法再锁定，重扫无益）并打一次性诊断——①可见 UserWidget 清单 ②可视组件类清单 ③玩家 pawn 名下锁定/目标语义组件清单——把日志发回来即可收敛关键词；
+- 隐藏失败（有目标但藏不住）才按秒重试（上限 10 次，同 HUD/提示/血条）。
+
+实现注记：`EnginePort::set_lockon_marker_visible`（engine_port.h 注释写明设计依据）+ `Ue4ssPort` 实现（放在字幕节后，复用 `class_chain_contains`/`set_widget_visibility`/`set_component_visibility`/`lower_ascii`）；core 侧 `lockon_hidden_` 记账与 enter/leave 幂等条件、每秒重试块与血条同构。核心层测试新增 `test_photo_mode_lockon_marker`（3 组场景）。
+
+## v1.0.41 修了什么（2026-11-01 冻结期残余微动治理）
+
+实机反馈：冻结画面后布料边缘持续闪烁（运动中冻结几乎必现）、人物脸部阴影处爬动。
+诊断结论：冻结=停世界，但渲染与相机管理层每帧照跑——每帧变化源被 TSR/TAA 放大成边缘闪烁。三个变化源三条对策（全部 config 可关，默认开）：
+
+| 变化源 | 机制 | 对策（新配置项） |
+| --- | --- | --- |
+| 相机修饰器/shake | 真实时间驱动，暂停照常推视角 → 阴影贴图每帧重新对齐 → 脸部阴影爬动 | `stop_camera_shakes_on_freeze`：StopAllCameraShakes(立即) + 遍历 CameraModifiers 逐个 DisableModifier，按冻结前 bDisabled 还原 |
+| 风源推材质 WPO | 布料/植被摆动幅度源走材质时间，暂停拦不住 | `freeze_wind`：WindDirectionalSource 的 Strength/Speed/MinGustAmt/MaxGustAmt 存原值归零（钟照走、幅度归零=位移恒零），解冻还原 |
+| 实时驱动改写 MPC | 游戏代码每帧改写材质参数集合推 WPO | `freeze_mpc`：冻结抓全量快照（KismetMaterialLibrary 走 CollectionInstance），冻结期每帧写回赢回写入权，解冻释放 |
+
+配套 `freeze_diag`（默认开）：冻结期每秒一条「冻结诊断」日志 = 风源强度/速度 + MPC 参数与上一拍的变化（freeze_mpc 生效时应为「无」，仍在变 = 有驱动源在抢写入权）+ 相机修饰器/shake 状态。用于定位还剩哪个变化源没压住。
+
+实现注记：
+- 引擎层新 API：`freeze_camera_shakes / freeze_wind / mpc_take_snapshot / mpc_hold_snapshot / mpc_release_snapshot / freeze_diag_sample`（engine_port.h + ue4ss_port.cpp）；数组遍历用 UE4SS `FScriptArrayHelper_InContainer`，MPC 读写走 `KismetMaterialLibrary.Get/SetScalarParameterValue`（运行时正路，改资产默认值不影响实例）。
+- `invoke_set_bool`：单 bool 参数调用带签名校验——DisableModifier 参数写不进去就等于发 bDisable=0（启用），方向相反，宁可不调。
+- 硬编码 Time 节点振幅、不引用风/MPC 的材质救不了（反射层关不掉材质时钟）：这类布料用 `freeze_mode=dilation` 兜底（Time 随 dilation 走）。
+- 冻结/解冻/退出严格按「相机→风→MPC」冻结、「MPC→风→相机」还原；治理失败不记账、解冻不做对应还原（与 pause 失败回退同语义）。
+- 核心层测试新增 `test_photo_mode_freeze_treatment`（6 组场景）。
+- 2026-11-01 并入：**滚转归零快捷键**（键盘 `Z` / 手柄 `LB+RB` 同按，用户确认），详见文末「1.0.41 并入」节。
 
 ## v1.0.1 修了什么（2026-10-30 第二次提交）
 
@@ -1545,3 +1698,163 @@ OFL 许可跟着资产走。
 3. 按住 Ctrl 移动鼠标（Alt+鼠标）：视角应只有约 1/10 转速，松开恢复；手柄按下右摇杆 RS 不松、再拨右摇杆同理。
 4. 右摇杆正常视角转速约为原来的 1/3（180→60 度/秒）。
 5. **若用户现有 config.ini 显式写了 `pitch_speed = 60` 或 `pad_look_speed = 180`，需手动改成 30/60 或删掉这两行**——显式值会盖过新默认。
+
+### 1.0.41 并入：滚转归零快捷键（2026-11-01，用户确认：键盘 Z / 手柄 LB+RB）
+
+需求原文：是否需要新增快捷键用于重置相机旋转。结论：加，但语义定为「滚转归零（水平校正）」而不是第二个整体重置——R 已整体还原位置/朝向/FOV，Q/E 滚转后想回正只有按 R（丢构图）或盲调（面板此前没有滚转读数）。
+
+改动（核心层 + UI，引擎层未动）：
+- 键盘 `Z`（`key_roll_reset`，可改）；手柄 `LB+RB` 同按（`pad_roll_reset`，可改）。选 LB+RB 是零冲突组合：两肩键同按本来滚转增量互抵为净零（RB−LB=0），拿按下沿做归零不占任何现有按键。
+- 语义：只把 `roll` 置 0，位置/俯仰/偏航/FOV 不动（`PhotoMode::tick` 新分支，日志「滚转已归零（位置/俯仰/偏航/FOV 不变）」）；与 R 同帧时 R 先整体还原快照、再归零滚转。
+- 诊断面板「朝向」行补滚转读数（`ui_tab.cpp`，此前只有俯仰/偏航）；键位提示、手柄帮助行同步。
+- 顺手修两处 1.0.27 起过期的注释（俯仰键 Z/X → 方向键）：`input_logic.h` Intent 注释、`input_logic.cpp` 俯仰注释。
+- 配置文本：`config.h` 默认值、`config.cpp` 解析/`default_config_text`、`config.ini.example`、dist `config.ini`（gen_config 重新生成）全部同步；README（根 + docs + dist）键位表更新。
+- 测试：核心层 735 → **754 项全绿**。新增：默认值断言（Z / LB+RB）、keymap 解析（roll_reset='Z'）、键盘 Z 按下沿 → reset_roll（松开不复发、与 reset_view 不串扰）、手柄 LB+RB 同按 → reset_roll 且滚转增量净零、PhotoMode 滚转归零场景（roll 15→0，位置/俯仰/偏航/FOV 不变，日志断言）。
+- DLL 已重编链接通过（build-dll/PBZPhotoModeCpp.dll，产物含新日志串）；已按交付流程打包 `dist/PBZPhotoModeCpp_1.0.41-cpp.zip`（只出包未部署）。
+
+实机验证要点：
+1. Q/E 滚歪画面后按 `Z`：地平线应立即回正，站位、朝向、FOV、画面构图全部不动。
+2. 手柄 RB/LB 滚歪后 `LB+RB` 同按一次：同上；注意是**同时按住两肩键**（单击即触发，不必长按）。
+3. `R` 行为不变（整体回到进入时）；同帧连按 R 和 Z 极端场景不必专门测（先还原快照再归零，日志两条都有）。
+4. UE4SS 控制台面板「朝向」行应显示三项：俯仰/偏航/滚转。
+
+### 1.0.42 并入：接入 PBZ-Framework-Menu 游戏内菜单框架（2026-11-01）
+
+需求：接入 https://github.com/lin-414/PBZ-Framework-Menu （影之刃零模组菜单框架：DirectComposition 覆盖窗 + ImGui + C API/schema 系统，不碰游戏交换链、不影响 FSR3 帧生成）。框架侧注册 API 已就绪（sdk/pbzfm.h），其 README「下一阶段 5」点名把本模组的 ImGui 诊断面板接成第一个客户端。
+
+改动（新增文件 + 接线，引擎层与摄影模式核心逻辑未动）：
+- `third_party/pbzfm/pbzfm.h`：框架 SDK 头内置拷贝（纯 C ABI；客户端运行时 `GetModuleHandleW(L"PBZFM.dll")` + GetProcAddress 解析，零链接依赖）。
+- `src/pbzfm_schema_map.h/.cpp`（新增，随 `pbzpm_core` 编译与测试）：「菜单 schema ↔ Config 字段」唯一映射表——10 个键盘键位、11 个行为/隐藏开关、6 个冻结增强开关、2 个枚举（冻结方式 / 鼠标竖直行为）、16 个数值参数；一张表同时驱动注册、播种、写回与单测。
+- `src/pbzfm_client.h/.cpp`（新增，仅 DLL 构建）：后台线程轮询 PBZFM.dll（250ms × 2400 次 ≈ 10 分钟，UE4SS 的 mod 加载顺序不定；超时安静退回纯快捷键）；注册「PBZ Photo Mode」分区 =「设置」schema 页 +「运行状态」自绘页（widget API：状态/位姿/键位速查 + FOV 滑条 + 进出/冻结/重置/重载按钮，不依赖框架的 ImGui 版本）。
+- `mod_app`：实现 `PbzfmClient::Host` 五入口（mod_dir / current_config / submit_config / submit_command / log）；`pbzfm_apply_pending()` 在引擎 Tick（持 mutex_）消化——配置换入 + `build_keymap` 重建 + 三个实时开关（hide_player / block_game_input / hide_game_hud）就地生效，动作全部走既有路径（`handle_toggle` / `toggle_freeze` / tick 的 reset_view 分支 / `set_fov` / `reload_config`）；每帧发布诊断快照；析构先停客户端线程。
+- `config.cpp/h`：`default_config_text` 重构为 `config_ini_text(const Config&)`（原硬编码的 12 个布尔值改为随 c. 序列化），新增 `save_config_file`——菜单写回与「缺省自动写出」共用同一份序列化器，格式与旧文件完全一致。
+- **值的流向（config.ini 是唯一真源）**：启动时用 config.ini 现值播种菜单（框架的存储恢复时序有缺陷——ConfigCreate 时条目还没加，data/pbzphotomode.json 不会在启动回灌，本接入不受影响且顺带规避）；菜单改动 → 客户端镜像 → 写回 config.ini + 提交引擎 Tick 应用；手动改 config.ini 后菜单点「重新载入」即同步（sync_from_config 重播种）。
+- **线程模型**：框架渲染/变更回调只在框架线程提交数据（命令队列 + pending config + 快照镜像，各自小锁）；所有引擎交互回到引擎 Tick 线程执行。播种/同步用 syncing_ 屏蔽 OnChange 防回环；键捕获给出键名表表达不了的键（如鼠标侧键）时拒绝应用并回滚菜单显示值。
+- **踩坑**：pbzfm.h 拉进 `<windows.h>`，其 `max` 宏打坏之后才解析的 UE4SS 头（UnrealString.hpp 的 `std::numeric_limits<int32_t>::max()` 直接编译炸）→ pbzfm_client.h 里 NOMINMAX + undef min/max 兜底；Host::log 内联实现解引用了仅前置声明的 Ue4ssPort → 实现挪到 cpp。
+- 测试：核心层 **2003 项全绿**。新增 `test_pbzfm_fields_roundtrip`（字段表元数据/键唯一/读改写回环/不可命名键拒绝/越界夹紧/默认键名可解析）与 `test_pbzfm_config_writeback`（config_ini_text 全字段零告警往返 + save/load 一致 + 与 default_config_text 同源）；build_tests.bat 同步加编译单元。
+- 版本 1.0.42-cpp；DLL 重编链接通过（build-dll/PBZPhotoModeCpp.dll，829,952 B）。
+
+实机验证要点：
+1. 装 PBZFM（其 dist 包解到 `ue4ss\Mods\`）+ 本模组，进游戏按 PBZFM 呼出键（默认 F8）：侧栏应出现「PBZ Photo Mode」，含「设置」「运行状态」两页；日志有「已接入 PBZFM 菜单框架」。
+2. 设置页改「移动速度」「进入时自动暂停时间」「进入/退出键」：改键位立即生效；改隐藏类开关后进摄影模式应按新值执行；改动后 `PBZPhotoModeCpp\config.ini` 应已同步更新。
+3. 摄影模式进行中：运行状态页 FOV 滑条实时变焦；冻结/恢复、重置视角、退出按钮等效对应快捷键；位姿读数随相机走。
+4. 手动改 config.ini → 菜单点「重新载入 config.ini」→ 菜单显示值应变成文件值。
+5. 卸载/不装 PBZFM：日志出现「未检测到 PBZFM 菜单框架（可选组件）」，纯快捷键行为与 1.0.41 完全一致。
+
+### 1.0.42 跟进：菜单多语言（2026-11-01）
+
+框架侧（PBZ-FM 仓库）按方案落地：磁盘语言表加载修复（Resolve 补 .json 后缀）、语言下拉扩到 zh-CN/en-US/ja-JP/ko-KR（各带内嵌兜底）、韩语 UI 优先加载 Malgun Gothic、侧栏/页签/schema 六处 label 渲染过 I18n::T()（文本即 key，查不到原样返回）。配套回归测试在框架 tests/i18n_test.cpp。
+
+客户端侧配合改动（本仓库）：
+- **schema 条目/分组/页名**：注册时用中文原文当 key，配合框架语言文件的「文本即 key」条目翻译，客户端零改动。55 条客户端条目（分组 6 + 条目 39 + 页名 2 + 分区名 1 + 枚举选项 4 + 版本行等）已按 en/ja/ko 生成于 `_ref/pbzfm-language-packs/{en-US,ja-JP,ko-KR}.json`（含框架自带 24 key 的完整文件，已按 key 清单与 dump 输出逐字校验；注意框架的扁平 JSON 解析器不支持注释）。
+- **「运行状态」自绘页**：渲染回调里画的固定文本不走框架 T()，客户端自己翻——`pbzfm_client.cpp` 内置 zh/en/ja/ko 四套文案表，语言读 `ue4ss\Mods\PBZFM\PBZFM.ini` 的 `[framework] language`（与本模组目录同级；自绘页每次渲染至多每秒重读一次，热切语言即时跟随；读不到保持 zh-CN）。
+- 枚举选项文本目前框架未过 T()（RenderSchemaForm 的 SCH_ENUM 只翻译了 label），选项暂以原文显示；框架把 `opts.push_back(i18n.T(o.c_str()))` 补上后，语言包里的 4 条选项条目即自动生效。
+- 实机验证增补：切 en-US/ja-JP/ko-KR 后，PBZ Photo Mode 分区名下的「设置/状态」页与设置项应翻译；运行状态页按钮/状态行应跟随 PBZFM.ini 的 language（改完语言保存后 1 秒内刷新）。
+- **（已被 1.0.43 取代）**：此路线实机未生效，1.0.43 起客户端自治 i18n，见下节。
+
+### 1.0.43 重构：PBZFM 设置页改客户端自绘 + 自治 i18n（外部词典，2026-11-01）
+
+背景：1.0.42 的「框架语言文件 + 文本即 key」路线实机未生效（依赖框架侧语言文件正确安装与加载时序，排障链路长）。用户决定：i18n 全部由本项目实现，语言切换做进本项目在 PBZFM 里的设置页。
+
+改动（schema 路线整体退场）：
+- **弃用框架 schema 注册页**：ConfigCreate / ConfigAddXxx / ConfigOnChange / 播种 SetXxx 全部移除，PBZFM 的 `data/pbzphotomode.json` 不再使用（残留文件无害）。config.ini 仍是唯一真源、菜单写回它。
+- **设置页/状态页改客户端自绘**：走 SDK 的 `PBZFM_GetImGuiContext()` 通道直接画进框架帧。两边 `third_party/imgui` 均为 1.92.1（IMGUI_VERSION_NUM 19210），`static_assert` 钉死版本；`ensure_imgui()` 用 `BackendPlatformName == "pbzfm_dc_overlay"` 指纹校验上下文，不匹配只告警一次并跳过自绘页。我们的 imgui 静态副本各持 current-context 指针，SetCurrentContext 只影响本线程语义，与 UE4SS 控制台面板互不干扰。
+- **pbzfm_client_lang.h/.cpp（新增，仅 DLL 构建）**：客户端词典管理器。
+  - 内置 zh-CN/en-US/ja-JP/ko-KR 嵌入 JSON（95 条/语言；zh 只含 `#命名键`，设置项 label 的 key 本身就是中文、identity 兜底）；
+  - **外部词典**：`PBZPhotoModeCpp\languages\*.json`——扁平 UTF-8 JSON，key = 中文原文（与注册 label 一字不差），`__display` = 菜单显示名（可选，缺省文件名）；同名 id 覆盖内置，新文件名即新语言；
+  - 查译链：当前语言 → 内置 zh（`#` 键兜底）→ 原样返回；解析器与框架同款扁平语义（**不支持注释**），坏词典整份跳过保留现状；
+  - 重扫 2 秒节流（自绘页每帧调用），设置页有「重新载入词典」按钮强制重扫。
+- **设置页内容**：语言下拉（含「跟随 PBZFM 菜单」项）+「重新载入词典」+ 全部 39 项设置。键位捕获客户端自实现：镜像框架输入层的 VkToImGuiKey 映射（两边同为 1.92.1 布局），遍历候选 VK 查 `IsKeyPressed`，5 秒超时自动取消（Esc 会直接关菜单）。提交语义与原 schema 相同：Bool/Enum/键位即时提交，Float 松手提交（IsItemDeactivatedAfterEdit），每次提交写回 config.ini + submit_config。
+- **状态页**：状态/按钮/提示/位姿格式全部走 `#` 命名键词典。
+- **语言持久化**：config.ini 新增 `[ui] menu_language`（默认 `auto`=跟随 PBZFM.ini 的 language；或词典 id）。核心层 parse（空值报错）/config_ini_text/往返测试同步。
+- 页签文本注册时固化、由框架渲染，用四语并写的中性标签「设置 · Settings」「状态 · Status」；分区名保持 "PBZ Photo Mode"。
+- 框架侧已做的 T() 渲染对本模组不再关键（我们不再注册 schema 条目），语言包文件也不再需要；`_ref/pbzfm-language-packs/` 留档作废。
+- 版本 1.0.43-cpp；核心层测试 **2005 项全绿**（menu_language 往返 2 项新增）；DLL 重编通过；dist 重打包。
+
+外部词典格式示例（`PBZPhotoModeCpp\languages\de-DE.json`）：
+
+    {
+      "__display": "Deutsch",
+      "进入/退出摄影模式": "Fotomodus betreten/verlassen",
+      "移动速度（单位/秒）": "Bewegungsgeschwindigkeit (Einheiten/s)"
+    }
+
+实机验证要点：
+1. F8 → PBZ Photo Mode →「设置 · Settings」页首行「语言」下拉：切 en-US/ja-JP/ko-KR 应当帧生效（不需要框架语言文件）；「跟随 PBZFM 菜单」时随 PBZFM 的语言走。
+1a. **韩文字体**：框架启动时只按 PBZFM 自己的语言加载一个字体（中文环境 = 雅黑，无谚文），语言下拉里的「한국어」与整页韩语会显示 ?。1.0.43 起自绘页懒建「雅黑 + Malgun Gothic」合并字体（谚文来自 Malgun，汉字/假名/拉丁以雅黑优先，动态图集按需光栅化），画页面前 PushFont、结束 PopFont；字体大小用 `LegacySize`（18px）与框架视觉一致并同样受界面缩放影响。系统缺 Malgun 时告警一次、韩语退化显示。
+2. 选定的语言写回 config.ini `[ui] menu_language`；重启游戏后保持。
+3. 往 `PBZPhotoModeCpp\languages\` 放一个新词典（如 de-DE.json），不重启、点「重新载入词典」或等 2 秒，下拉里应出现并可用。
+4. 键位捕获：点键位按钮显示「按下新按键…」，按 F7 应绑定成功（5 秒不按自动取消）；被游戏/菜单占用的 Esc 会直接关菜单。
+5. 改设置项 → config.ini 同步更新、摄影模式内实时生效（与 1.0.42 相同）。
+
+### 1.0.54 并入：适配 PBZ-Framework-Menu 0.4.0（SDK v2，2026-11-01）
+
+框架从接入基线（i18n 8b68f3a）前进到 0.4.0：SDK v2 纯增量（菜单事件/和弦热键/生命周期/纹理/侧栏搜索/主题 JSON），ImGui 仍为 1.92.1。核对结论与适配：
+
+- **破坏点（已修）**：SDK 内置头同步到 0.4.0 版 `third_party/pbzfm/pbzfm.h`。新版 `PBZFM_LoadApi` 语义变化——成功返回 1（旧版 0）、版本判定改 `GetAbiVersion() >= PBZFM_ABI_VERSION`（v2 框架报 2；旧头用 ==1 判定会在 0.4.0 上永远加载失败）、v2 新导出解析为可选字段（旧框架上为 NULL，须判空调用）。我们只用了必需核（SetSection/AddSectionItem/GetImGuiContext 等），签名全部未变，同步头后即兼容 0.3.x 与 0.4.0。
+- **采用 v2 菜单事件**：注册 `OnMenuEvent`（判空），关菜单当帧置 `menu_closed_tick_`，`render_key_field` 入口消费——改键捕获跨开/关菜单不再残留「按下新按键…」（原有 5 秒超时兜底保留）。日志行附框架版本（`VersionString` 可选，缺失退回 ABI 版本号）。
+- **核对未变项**：ImGui 1.92.1/19210（自绘通道与 static_assert 不受影响）；`VkToImGuiKey` 映射逐字未变（键位捕获镜像仍有效）；自绘页渲染契约未变（RegistryMutex 持锁下 BeginTabItem → pg.fn）；`PBZFM.ini` 的 `[framework] language` 键未变（menu_language=auto 跟随仍有效）。框架新增的侧栏搜索/主题 JSON/纹理 API 与本模组无交互。
+- 版本 1.0.54-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 对着 0.4.0 框架：日志应出现「已接入 PBZFM 菜单框架 v0.4.0…」（不再是永远「未检测到」）。
+2. 开/关一次菜单后再进设置页：改键按钮不应停留在「按下新按键…」状态。
+3. 其余行为（自绘两页、词典、韩文字体、写回 config.ini）与 1.0.53 一致。
+
+### 1.0.57 修复：0.5.0 分类树点击分组节点崩溃 + 树节点名显示原始键（2026-11-01）
+
+实机（crash_2026_11_01_21_53_33）确认两处 1.0.55/56 引入的问题：
+
+- **崩溃（1.0.56 分组子节点点击即崩）**：`RenderGroupThunk` 的 userdata 携带的是**组名**（`#group_keys` 等静态字符串），但 thunk 里把它 cast 成了 `PbzfmClient*` 并当 this 调 `render_group_page`——成员 `std::mutex::lock()` 对着 .rdata 里的字符串地址上锁，dump 落在 `RtlAcquireSRWLockExclusive` 读 0x1（近空指针），与转储完全吻合。修复：实例指针走文件级 `g_client_self`（start() 登记，本 mod 进程单实例），thunk 只把 userdata 当组名传给 `render_group_page`。
+- **树节点名显示原始键**：1.0.44–53 起字段表的组名已是 `#命名键`（`#group_keys` → 「快捷键（键盘）」靠词典翻译），而树节点名由框架原样渲染、不过 T()。修复：注册前先 `refresh_language()`（menu_language，auto=跟随 PBZFM.ini），用**翻译后的名字**注册节点——「PBZ Photo Mode/<设置>/<快捷键（键盘）>/…」；新增词典键 `#node_settings`/`#node_status`（四份词典同步，99 条/语言），「设置 · Settings」双语拼接废弃。注意：**树节点名注册后固化**，游戏内切语言不重命名（重启生效），页内内容仍实时切换。
+- 版本 1.0.57-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 对 0.5.0 框架：展开「PBZ Photo Mode → 设置」应见六个分组子节点，**点击任一分组不再崩溃**，页面只显示该组设置项。
+2. 树节点名应显示当前语言的文字（中文环境 =「设置」「快捷键（键盘）」等，不再是 #group_keys，也没有中英拼接）；切换 UI 语言后树节点名要重启游戏才变，页内内容即时变。
+3. 状态页、语言页、键位捕获、写回 config.ini 行为不变。
+
+### 1.0.58：树节点名随语言热改名（2026-11-01 实机反馈「切英文左侧不同步」）
+
+1.0.57 的树节点名注册后固化，切语言只有页内内容变。利用 0.5.0 的 `RenameSection`（v2 可选导出，按路径寻址、改名保留子树）实现热改名：
+
+- 注册时把每个节点的当前显示名记进 `node_names_`（"settings"/"status"/"#group_*"），分组键序记 `group_keys_`；
+- `refresh_language()` 每帧比对生效语言 id（menu_language 或 auto 跟随的 PBZFM.ini），变化时 `rename_tree_for_language()`：**先改分组**（路径含旧父名，必须用旧名寻址）、再改「设置」与「状态」兄弟节点；改名成功才更新 node_names_（失败静默保留原名，不刷重试）；结束重设调用线程 current（框架文档建议）。
+- 旧框架判空跳过（0.4.x 回退页签的页名是页 label，API 改不了，维持注册时语言）。
+- 版本 1.0.58-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 语言下拉切 English：左侧树应立即变为 PBZ Photo Mode → Settings →（Keyboard bindings / Behavior / Hide… / Camera & movement / Gamepad）+ Status；切回中文同步变回。
+2. auto 模式下改 PBZFM 自己的语言，1 秒内本模组树节点跟随。
+3. 改名后各节点点击仍正常渲染（回归 1.0.57 的崩溃修复）。
+
+### 1.0.59：语言独立成顶层节点（2026-11-01 实机反馈「语言选项只在点开设置时出现」）
+
+分类树调整：语言下拉（+ 重新载入词典）从「设置」分类页拆出，独立为顶层节点「语言」（`#node_language`，四词典同步：语言/Language/言語/언어）；「设置」变为**纯分类**——不再注册页面，仅由六个分组子节点的注册路径自动创建（点击只做展开/收起）。改名热更新覆盖 language 节点。0.4.x 回退整页不变（语言切换仍在页首）。
+
+- 版本 1.0.59-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 侧栏顶层应为「语言 / 设置 / 状态」三项；语言项点击即见语言下拉，不再需要先点开设置。
+2. 「设置」点击只展开/收起分组；六个分组页渲染与提交不变。
+3. 语言改名热更新覆盖「语言」节点本身（切 English 后应变 Language）。
+
+### 1.0.60：分组子节点升为顶层，删除「设置」分类（2026-11-01 用户要求）
+
+分类树拍平一层：「PBZ Photo Mode」下直接是 语言 / 快捷键（键盘） / 行为 / 隐藏（进入摄影模式时） / 冻结增强 / 相机与移动 / 手柄 / 状态 八个顶层节点（无「设置」中间层）。分组注册路径、热改名路径同步去掉 settings 父段；`node_names_` 不再记录 settings（词典键 `#node_settings` 保留未用）。0.4.x 回退整页不变。
+
+- 版本 1.0.60-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 顶层应为八个节点（语言 + 六分组 + 状态），点分组直接渲染；语言热改名覆盖除品牌根外的全部顶层节点。
+
+框架 0.5.0：侧栏改分类树（SKSE Menu Framework 3 的 PageTree 风格），注册 API 走嵌套路径（'/' 分段、缺失中间节点自动创建），v3 为**可选导出**（SetSectionPath/AddSectionItemPath/ConfigCreatePath），必需核与 v1/v2 全部未动。
+
+- **无需强制适配**：v1 单段注册保持根节点语义，旧客户端在 0.5.0 上照常工作（我们的节点变「多页节点」，内容区仍是页内页签）。内置 SDK 头同步到 v3（纯增量，OnMenuEvent/VersionString 等 v2 可选字段不变）。
+- **采用分类树（判空回退）**：`AddSectionItemPath` 可用时挂成三级树——「PBZ Photo Mode」→「设置 · Settings」（分类页，只剩语言切换 + 词典重扫）→ 六个分组子节点（快捷键/行为/隐藏/冻结增强/相机与移动/手柄，各自只画本组字段）；「状态 · Status」为根的另一个子节点。旧框架自动回退为根节点 + 页内页签（整页 = 语言 + 全部分组分隔线）。
+- 版本 1.0.55-cpp；DLL 重编链接通过；dist 重打包。
+
+实机验证要点：
+1. 对 0.5.0 框架：侧栏「PBZ Photo Mode」应显示展开箭头，展开后见「设置 · Settings」「状态 · Status」两个子节点；日志报框架 v0.5.0。
+2. 对 0.4.0/0.3.x 框架：回退为根节点 + 页签，与 1.0.54 一致。
+3. 框架仓库工作区尚有未提交的 src/layout.h、src/menu.cpp 改动（树渲染迭代中），若其后行为再变需复核。

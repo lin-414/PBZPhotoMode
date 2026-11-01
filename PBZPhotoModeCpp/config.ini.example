@@ -11,15 +11,17 @@ key_toggle = F2
 key_freeze = F
 ; 重置相机到进入摄影模式时的位置/朝向/FOV
 key_reset = R
+; 滚转归零（水平校正）：只把滚转回 0，位置/俯仰/偏航/FOV 不动
+key_roll_reset = Z
 ; FOV 加减（小键盘 +/-，也可写 OEM_PLUS / OEM_MINUS）
 key_fov_up = ADD
 key_fov_down = SUBTRACT
 ; 俯仰（按住持续转）：方向键上 = 仰视 / 下 = 俯视
 key_pitch_up = UP
 key_pitch_down = DOWN
-; 左右平移（按住持续移，速度 = move_speed × arrow_pan_mult）：方向键左 / 右
-key_pan_left = LEFT
-key_pan_right = RIGHT
+; 左右转视角（按住持续转，速度 = yaw_speed）：方向键左 = 左转 / 右 = 右转
+key_yaw_left = LEFT
+key_yaw_right = RIGHT
 
 [control]
 ; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速
@@ -43,8 +45,8 @@ vertical_speed = 200
 roll_speed = 60
 ; 方向键上/下（与手柄十字键上/下）俯仰速度（度/秒）；Shift 加速 / Ctrl 减速同样生效
 pitch_speed = 30
-; 方向键/十字键左右平移速度占 move_speed 的比例（1 = 与 WASD/左摇杆同速）
-arrow_pan_mult = 0.5
+; 方向键左/右（与手柄十字键左/右）转向速度（度/秒）；Shift 加速 / Ctrl 减速同样生效
+yaw_speed = 90
 
 ; ================================================================
 ; 手柄支持（v1.0.15 新增；v1.4.0 起原生支持 DualSense/DualShock4，USB 与蓝牙均可）
@@ -63,15 +65,17 @@ pad_toggle = LS+RS
 pad_freeze = X
 ; 重置相机到进入摄影模式时位置/朝向/FOV
 pad_reset = Y
+; 滚转归零（水平校正）：只把滚转回 0；LB+RB 同时按住触发
+pad_roll_reset = LB+RB
 ; FOV 加减（A/B；十字键已全部让位给视角调节；单击一格，按住先延迟约 0.35 秒再连发）
 pad_fov_up = A
 pad_fov_down = B
 ; 俯仰（按住持续转）：十字键上 = 仰视 / 下 = 俯视
 pad_pitch_up = UP
 pad_pitch_down = DOWN
-; 左右平移（按住持续移）：十字键左 / 右
-pad_pan_left = LEFT
-pad_pan_right = RIGHT
+; 左右转视角（按住持续转）：十字键左 = 左转 / 右 = 右转
+pad_yaw_left = LEFT
+pad_yaw_right = RIGHT
 ; 固定键位（不占配置项）：RT/LT 升降；RB/LB 滚转相机（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；
 ; L3/R3 变速（LS 加速 / RS 减速；两杆同时按住是进出模式组合键，此时不触发变速）；
 ; 按下右摇杆 RS 同时把右摇杆/鼠标视角速度放慢到 slow_look_mult 倍（精调）
@@ -98,6 +102,8 @@ hide_game_hud = true
 hide_interact_prompt = true
 ; 进入摄影模式时隐藏敌人（怪物）血条（切到游戏自带"仅锁定目标"显示模式，退出时还原原模式）
 hide_enemy_health_bars = true
+; 进入摄影模式时隐藏锁定标记（锁定敌人时其身上出现的白点，退出时还原）
+hide_lockon_marker = true
 ; 进入摄影模式时隐藏对话字幕（关游戏字幕设置 + 藏字幕显示控件，退出时还原）
 hide_subtitles = true
 ; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）
@@ -111,12 +117,27 @@ freeze_sequences = true
 ; 冻结时把所有 Wwise 音频组件的音量归零（对话/环境/音乐一并静音，可恢复）。
 ; 声音在冻结期间继续无声播放，解冻恢复音量后当前句从原处继续
 stop_wwise_on_freeze = true
+; 冻结时停用相机修饰器并立即结束相机 shake。它们用真实时间驱动，世界暂停拦不住，
+; 是冻结画面边缘抖动/脸部阴影爬动的主变化源；解冻时按冻结前状态还原
+stop_camera_shakes_on_freeze = true
+; 冻结时把风源（WindDirectionalSource）的风强/风速归零——材质顶点摆动（布料/植被）
+; 的幅度源，世界暂停与时间缩放都拦不住；解冻还原原值
+freeze_wind = true
+; 冻结时钉住材质参数集合（MPC）当前值，冻结期每帧写回快照，压制实时驱动参数
+; 继续推布料/植被摆动；解冻释放
+freeze_mpc = true
+; 冻结期每秒输出一条冻结诊断（风源/MPC 参数变化/相机修饰器状态），
+; 定位布料与阴影闪烁还剩哪个变化源没压住
+freeze_diag = true
 restore_fov_on_exit = true
 restore_view_on_exit = true
 
 [ui]
 ; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作
 imgui_tab = true
+; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id
+;（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）
+menu_language = auto
 
 [misc]
 log_level = info

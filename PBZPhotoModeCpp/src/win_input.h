@@ -4,6 +4,9 @@
 
 #ifdef PBZPM_WITH_UE4SS
 
+#include <atomic>
+#include <mutex>
+
 #include "core/gamepad.h"
 
 namespace pbzpm {
@@ -90,30 +93,47 @@ private:
     int cursor_move_frames_{0};
     bool foreground_{false};
 
-    // 手柄（XInput + DInput）：只在引擎 Tick 线程的 poll() 里访问，无需加锁
+    // 手柄（XInput 部分）：只在引擎 Tick 线程的 poll() 里访问，无需加锁
     int pad_slot_active_{-1};  // 已锁定并独占轮询的槽位；-1 = 尚未发现手柄
     int pad_scan_pos_{0};      // 未锁定时每帧扫描一个槽位，最坏 4 帧轮完
     int pad_fail_frames_{0};   // 锁定槽位连续读失败的帧数（满 3 次判定拔出）
     PadState pad_last_{};      // 最近一份有效快照（读失败的帧继续喂它，避免组合键抖动）
 
-    // DInput 后端（DualSense/DualShock4 等）：与上面同线程约定。
+    // DInput 后端（DualSense/DualShock4 等）：探测与轮询全部在专用 DInput 线程里。
+    // EnumDevices 一次要几十毫秒起步（设备多/蓝牙栈时更久），放在游戏线程就是
+    // 用户反馈的“每 3-5 秒卡一次”（限流 2 秒 + 探测耗时）；挪到后台线程后游戏线程
+    // 只在 poll() 里取一份现成快照。
     // DualSense 不是 XInput 设备，XInputGetState 永远读不到；走 DirectInput8 轮询。
     // 选轮询而不是 Raw Input 事件：本作鼠标 raw input 出现过“注册成功但事件永不到达”，
     // GetDeviceState 是主动拉状态，不可能被事件派发饿死。
-    void* dinput_api_{nullptr};    // IDirectInput8W*
-    void* dinput_dev_{nullptr};    // IDirectInputDevice8W*
-    void* dinput_hwnd_{nullptr};   // 合作级窗口（poll 线程自建的隐藏窗口）
-    bool dinput_com_{false};       // 已在本线程 CoInitializeEx
-    bool dinput_api_failed_{false};  // DirectInput8Create 失败过，不再重试
-    bool dinput_present_{false};   // 设备已获取且最近一次读取成功
-    bool dinput_dumped_{false};    // 一次性诊断已产出
-    int dinput_fail_frames_{0};    // 连续读取失败帧数（满 3 次释放重枚举）
-    unsigned long dinput_last_probe_{0};  // 上次枚举/获取尝试的 GetTickCount（限流 2 秒）
+    void* dinput_thread_{nullptr};  // std::thread*（DInput 探测+轮询线程）
+    std::atomic<bool> dinput_quit_{false};     // 线程退出标志（uninstall 置位）
+    // 探测/轮询开关（poll 每帧同步）：手柄功能开着且 XInput 没锁定槽位才活跃。
+    // Xbox 手柄在 XInput 与 DInput 里各出现一份，XInput 已锁定时 DInput 必须完全停手，
+    // 否则后台线程每 2 秒对同一设备枚举+SetDataFormat 失败，诊断串反复回游戏线程落盘
+    std::atomic<bool> dinput_active_{false};
+    std::atomic<bool> dinput_present_{false};  // 设备已获取且最近一次读取成功
+    mutable std::mutex dinput_mutex_;          // 保护以下三个跨线程字段
+    PadState dinput_snapshot_{};               // 最近一次成功读取的手柄状态
     std::wstring dinput_name_;     // 设备产品名（如 "Wireless Controller"）
     std::wstring dinput_vidpid_;   // "VID_054C&PID_0CE6" 样式，诊断用
     std::string dinput_diag_;      // 待取的一次性诊断
 
-    bool poll_dinput(PadState& out);
+    // 以下字段只在 DInput 线程里访问，无需加锁（DInput 的 COM 对象不能跨线程用）
+    void* dinput_api_{nullptr};    // IDirectInput8W*
+    void* dinput_dev_{nullptr};    // IDirectInputDevice8W*
+    void* dinput_hwnd_{nullptr};   // 合作级窗口（DInput 线程自建的隐藏窗口）
+    bool dinput_com_{false};       // 已在 DInput 线程 CoInitializeEx
+    bool dinput_api_failed_{false};  // DirectInput8Create 失败过，不再重试
+    bool dinput_dumped_{false};    // 一次性诊断已产出
+    int dinput_fail_frames_{0};    // 连续读取失败拍数（满 3 次释放重枚举）
+    unsigned long dinput_last_probe_{0};  // 上次枚举/获取尝试的 GetTickCount（限流 2 秒）
+    std::string dinput_last_diag_{};  // 最近一次已发布的失败诊断（相同内容不重复发布）
+
+    void dinput_thread_main();
+    void dinput_thread_tick();
+    void dinput_set_diag(std::string text);
+    void dinput_append_diag(std::string text);
     bool ensure_dinput_runtime();
     bool dinput_probe();
     void dinput_release_device();

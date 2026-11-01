@@ -67,6 +67,7 @@ private:
     bool hud_hidden_{false};
     bool prompt_hidden_{false};
     bool bars_hidden_{false};
+    bool lockon_hidden_{false};
     bool subtitles_hidden_{false};
     bool aspect_unlocked_{false};
     bool postfx_saved_{false};
@@ -78,6 +79,12 @@ private:
     bool sequences_paused_{false};
     // 冻结时把 Wwise 组件音量归零了（解冻/退出时要恢复，声音是可恢复静音）
     bool wwise_paused_{false};
+    // 冻结时停用了相机修饰器/结束 shake（解冻/退出时按原状态还原）
+    bool shakes_frozen_{false};
+    // 冻结时风源参数归零了（解冻/退出时要还原原值）
+    bool wind_frozen_{false};
+    // MPC 快照钉住生效中（冻结期每帧写回，解冻/退出时释放）
+    bool mpc_hold_active_{false};
     // 冻结期每秒校验暂停/时间缩放是否被游戏改写；连续 3 次失守后停止对抗并告警
     double freeze_check_accum_{0.0};
     int freeze_reassert_count_{0};
@@ -86,7 +93,14 @@ private:
     double hud_retry_accum_{0.0};
     double prompt_retry_accum_{0.0};
     double bars_retry_accum_{0.0};
+    double lockon_retry_accum_{0.0};
     double subtitles_retry_accum_{0.0};
+    // 每秒重试的可见性设置（HUD/交互提示/血条）失败计数：每次重试在引擎侧都要按候选
+    // 类名做全对象数组扫描（一次几十毫秒），无限重试等于周期性卡顿，连续失败就放弃
+    int hud_retry_count_{0};
+    int prompt_retry_count_{0};
+    int bars_retry_count_{0};
+    int lockon_retry_count_{0};
     bool pose_dirty_{false};
     bool pov_fallback_used_{false};
     std::string last_error_{};

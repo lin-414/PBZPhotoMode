@@ -11,6 +11,8 @@ namespace {
 
 constexpr double kPitchSpeedDegPerSec = 30.0;
 constexpr double kMaxFrameDt = 0.25;
+// 延迟隐藏类设置的每秒重试上限：重试本身要全对象扫描，拖帧比隐藏失败更伤体验
+constexpr int kMaxVisibilityRetries = 10;
 
 }  // namespace
 
@@ -94,6 +96,10 @@ bool PhotoMode::enter() {
         bars_hidden_ = engine_.set_enemy_health_bars_visible(false);
         if (!bars_hidden_) log(LogLevel::Warn, "隐藏敌人血条失败");
     }
+    if (cfg_.hide_lockon_marker) {
+        lockon_hidden_ = engine_.set_lockon_marker_visible(false);
+        if (!lockon_hidden_) log(LogLevel::Warn, "隐藏锁定标记失败");
+    }
     if (cfg_.hide_subtitles) {
         subtitles_hidden_ = engine_.set_subtitles_visible(false);
         if (!subtitles_hidden_) log(LogLevel::Warn, "隐藏对话字幕失败");
@@ -115,6 +121,9 @@ bool PhotoMode::enter() {
     active_ = true;
     frozen_ = false;
     sequences_paused_ = false;
+    shakes_frozen_ = false;
+    wind_frozen_ = false;
+    mpc_hold_active_ = false;
     freeze_check_accum_ = 0.0;
     freeze_reassert_count_ = 0;
     freeze_reassert_gave_up_ = false;
@@ -123,7 +132,12 @@ bool PhotoMode::enter() {
     hud_retry_accum_ = 0.0;
     prompt_retry_accum_ = 0.0;
     bars_retry_accum_ = 0.0;
+    lockon_retry_accum_ = 0.0;
     subtitles_retry_accum_ = 0.0;
+    hud_retry_count_ = 0;
+    prompt_retry_count_ = 0;
+    bars_retry_count_ = 0;
+    lockon_retry_count_ = 0;
 
     char buf[160]{};
     std::snprintf(buf, sizeof(buf), "进入摄影模式 fov=%.1f%s", fov_, pov_fallback_used_ ? "（默认位姿）" : "");
@@ -139,12 +153,25 @@ bool PhotoMode::enter() {
 
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
-        !hud_hidden_ && !prompt_hidden_ && !bars_hidden_ && !subtitles_hidden_ && !aspect_unlocked_ &&
+        !hud_hidden_ && !prompt_hidden_ && !bars_hidden_ && !lockon_hidden_ && !subtitles_hidden_ && !aspect_unlocked_ &&
         !postfx_saved_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
     if (frozen_) {
+        // 逆序还原冻结期压住的变化源（MPC → 风 → 相机），再恢复时间/剧情/音频
+        if (mpc_hold_active_) {
+            engine_.mpc_release_snapshot();
+            mpc_hold_active_ = false;
+        }
+        if (wind_frozen_) {
+            engine_.freeze_wind(false);
+            wind_frozen_ = false;
+        }
+        if (shakes_frozen_) {
+            engine_.freeze_camera_shakes(false);
+            shakes_frozen_ = false;
+        }
         if (sequences_paused_) {
             engine_.pause_sequences(false);
             sequences_paused_ = false;
@@ -179,6 +206,10 @@ void PhotoMode::leave(const char* reason) {
     if (bars_hidden_) {
         engine_.set_enemy_health_bars_visible(true);
         bars_hidden_ = false;
+    }
+    if (lockon_hidden_) {
+        engine_.set_lockon_marker_visible(true);
+        lockon_hidden_ = false;
     }
     if (subtitles_hidden_) {
         engine_.set_subtitles_visible(true);
@@ -262,6 +293,35 @@ void PhotoMode::toggle_freeze() {
     freeze_check_accum_ = 0.0;
     freeze_reassert_count_ = 0;
     freeze_reassert_gave_up_ = false;
+
+    // 冻结期残余微动治理：世界暂停拦不住的“每帧变化源”。冻结顺序 = 相机 → 风 → MPC，
+    // 解冻严格逆序（MPC → 风 → 相机），与 leave() 的还原顺序一致。
+    if (mpc_hold_active_) {
+        engine_.mpc_release_snapshot();
+        mpc_hold_active_ = false;
+    }
+    if (wind_frozen_) {
+        engine_.freeze_wind(false);
+        wind_frozen_ = false;
+    }
+    if (shakes_frozen_) {
+        engine_.freeze_camera_shakes(false);
+        shakes_frozen_ = false;
+    }
+    if (want && cfg_.stop_camera_shakes_on_freeze) {
+        // shake/修饰器用真实时间驱动，暂停期间照常推视角：冻结画面边缘抖动（脸部阴影爬动）的主变化源
+        const CameraShakeFreezeReport report = engine_.freeze_camera_shakes(true);
+        shakes_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_wind) {
+        // 风强/风速归零：布料/植被 WPO 摆动的幅度源（钟照走、幅度归零 = 位移恒零）
+        const WindFreezeReport report = engine_.freeze_wind(true);
+        wind_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_mpc) {
+        const int held = engine_.mpc_take_snapshot();
+        mpc_hold_active_ = held > 0;
+    }
 
     // 剧情播放器一并处理：剧情系统常绕过世界暂停与时间缩放（画面像冻住、动作声音还在走）
     if (cfg_.freeze_sequences) {
@@ -359,6 +419,13 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         log(LogLevel::Info, "相机视角已重置（位置/朝向/FOV）");
     }
 
+    // 滚转归零（水平校正）：只动 roll，位置/俯仰/偏航/FOV 保留。
+    // 与 R 同帧时 R 先整体还原快照，这里再把滚转归零。
+    if (intent.reset_roll) {
+        pose_.rot.roll = 0.0;
+        pose_dirty_ = true;
+        log(LogLevel::Info, "滚转已归零（位置/俯仰/偏航/FOV 不变）");
+    }
 
     const double sens = cfg_.look_sensitivity;
     // 按住 Ctrl（键盘）/按下右摇杆 RS（手柄）时视角精调：鼠标与右摇杆转速一起乘 slow_look_mult
@@ -439,44 +506,77 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         pose_dirty_ = true;
     }
 
+    // 方向键左/右与十字键左/右偏航（1.0.46 起从左右平移改来）：yaw_speed 度/秒，正 = 右转；Shift/Ctrl 变速同规则。
+    if (intent.yaw_axis != 0.0) {
+        pose_.rot.yaw = wrap_yaw(pose_.rot.yaw + intent.yaw_axis * cfg_.yaw_speed * mult * dt);
+        pose_dirty_ = true;
+    }
+
     // Q/E 滚转：roll_speed 度/秒，正 = 顺时针；Shift 加速 / Ctrl 减速照常生效
     if (intent.roll != 0.0) {
         pose_.rot.roll = wrap_angle_180(pose_.rot.roll + intent.roll * cfg_.roll_speed * mult * dt);
         pose_dirty_ = true;
     }
 
+    // 本帧是否动了相机（位姿有写入）：POV 微动监测只统计“没人动相机”的连续帧
+    const bool camera_moved = pose_dirty_;
+
     if (!apply_pose_if_dirty()) {
         log(LogLevel::Warn, "应用相机位姿失败");
     }
 
     // HUD 是 UMG，可能比摄影模式晚建好；隐藏失败时每秒重试一次，
-    // 成功后由 hud_hidden_ 记住，退出时才会正确恢复。
-    if (cfg_.hide_game_hud && !hud_hidden_) {
+    // 成功后由 hud_hidden_ 记住，退出时才会正确恢复。重试有上限：
+    // 每次重试都要按候选类名全对象扫描，一直失败就一直拖帧
+    if (cfg_.hide_game_hud && !hud_hidden_ && hud_retry_count_ < kMaxVisibilityRetries) {
         hud_retry_accum_ += dt;
         if (hud_retry_accum_ >= 1.0) {
             hud_retry_accum_ = 0.0;
             hud_hidden_ = engine_.set_hud_visible(false);
             if (hud_hidden_) log(LogLevel::Info, "HUD 延迟隐藏成功");
+            else if (++hud_retry_count_ >= kMaxVisibilityRetries) {
+                log(LogLevel::Warn, "HUD 隐藏重试多次未成功，停止重试（重试会全对象扫描拖帧）；重进摄影模式可再试");
+            }
         }
     }
 
     // 交互提示同理：进入时可能还没挂出（或第一次没找到），每秒重试直到成功
-    if (cfg_.hide_interact_prompt && !prompt_hidden_) {
+    if (cfg_.hide_interact_prompt && !prompt_hidden_ && prompt_retry_count_ < kMaxVisibilityRetries) {
         prompt_retry_accum_ += dt;
         if (prompt_retry_accum_ >= 1.0) {
             prompt_retry_accum_ = 0.0;
             prompt_hidden_ = engine_.set_interact_prompts_visible(false);
             if (prompt_hidden_) log(LogLevel::Info, "交互提示延迟隐藏成功");
+            else if (++prompt_retry_count_ >= kMaxVisibilityRetries) {
+                log(LogLevel::Warn, "交互提示隐藏重试多次未成功，停止重试（重试会全对象扫描拖帧）；重进摄影模式可再试");
+            }
         }
     }
 
     // 敌人血条同理：设置对象/枚举可能比摄影模式晚就绪，每秒重试直到成功
-    if (cfg_.hide_enemy_health_bars && !bars_hidden_) {
+    if (cfg_.hide_enemy_health_bars && !bars_hidden_ && bars_retry_count_ < kMaxVisibilityRetries) {
         bars_retry_accum_ += dt;
         if (bars_retry_accum_ >= 1.0) {
             bars_retry_accum_ = 0.0;
             bars_hidden_ = engine_.set_enemy_health_bars_visible(false);
             if (bars_hidden_) log(LogLevel::Info, "敌人血条延迟隐藏成功");
+            else if (++bars_retry_count_ >= kMaxVisibilityRetries) {
+                log(LogLevel::Warn, "敌人血条隐藏重试多次未成功，停止重试（重试会全对象扫描拖帧）；重进摄影模式可再试");
+            }
+        }
+    }
+
+    // 锁定标记同理：扫描要全对象遍历，隐藏失败（控件藏不住）才重试；场上确认无可识别的
+    // 锁定对象时引擎侧直接确认完成，不会走到这里
+    if (cfg_.hide_lockon_marker && !lockon_hidden_ && lockon_retry_count_ < kMaxVisibilityRetries) {
+        lockon_retry_accum_ += dt;
+        if (lockon_retry_accum_ >= 1.0) {
+            lockon_retry_accum_ = 0.0;
+            lockon_hidden_ = engine_.set_lockon_marker_visible(false);
+            if (lockon_hidden_) log(LogLevel::Info, "锁定标记延迟隐藏成功");
+            else if (++lockon_retry_count_ >= kMaxVisibilityRetries) {
+                log(LogLevel::Warn, "锁定标记隐藏重试多次未成功，停止重试（重试会全对象扫描拖帧）；重进摄影模式可再试");
+            }
         }
     }
 
@@ -507,6 +607,11 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     // 冻结期每秒校验：剧情/游戏系统可能擅自解除暂停或改写时间缩放（画面像冻住但世界还在走）。
     // 连续 3 次重新冻结都压不住就停止对抗，只留告警——继续每秒硬写会和剧情系统打摆。
     if (frozen_) {
+        // MPC 参数钉住：冻结期每帧把快照写回（实时驱动代码每帧改写，必须每帧赢回写入权）
+        if (mpc_hold_active_) engine_.mpc_hold_snapshot();
+        // POV 微动监测：冻结期每帧采样相机管理器最终 POV（诊断用，受 freeze_diag 门控；
+        // 只统计没人动相机的帧，用户转相机时清样本不累计）
+        if (cfg_.freeze_diag) engine_.pov_watch_tick(!camera_moved);
         freeze_check_accum_ += dt;
         if (freeze_check_accum_ >= 1.0) {
             freeze_check_accum_ = 0.0;
@@ -526,6 +631,11 @@ void PhotoMode::tick(const Intent& intent, double dt) {
                     log(reok ? LogLevel::Info : LogLevel::Warn,
                         frozen_with_pause_ ? "检测到暂停被游戏解除，已重新暂停" : "检测到时间缩放被游戏改写，已重新冻结");
                 }
+            }
+
+            // 冻结诊断：每秒一条（风源/MPC 参数变化/相机修饰器/视角微动），定位布料与阴影闪烁的残留变化源
+            if (cfg_.freeze_diag) {
+                log(LogLevel::Info, engine_.freeze_diag_sample() + (frozen_with_pause_ ? " [暂停]" : " [缩放]"));
             }
         }
     }

@@ -16,6 +16,13 @@ def pack(root, zip_path, prefix):
     if 'dlls' in os.listdir(root):
         os.makedirs(os.path.join(root, 'dlls'), exist_ok=True)
         shutil.copyfile('build-dll/PBZPhotoModeCpp.dll', os.path.join(root, 'dlls', 'PBZPhotoModeCpp.dll'))
+    # 语言词典随包分发：仓库 languages/ 同步进发行目录（DLL 从 <mod 目录>/languages/*.json 加载）
+    if os.path.isdir('languages'):
+        lang_dst = os.path.join(root, 'languages')
+        os.makedirs(lang_dst, exist_ok=True)
+        for f in sorted(os.listdir('languages')):
+            if f.endswith('.json'):
+                shutil.copyfile(os.path.join('languages', f), os.path.join(lang_dst, f))
     if os.path.exists(zip_path):
         os.remove(zip_path)
     with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as z:

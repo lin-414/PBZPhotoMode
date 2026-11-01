@@ -4,7 +4,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.36 |
+| 版本 | v1.0.44 |
 | 核心层测试 | 668 项，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
@@ -40,11 +40,13 @@ tools\build_tests.bat
 | 进入/退出摄影模式 | `F2` |
 | 自由转视角 | 按住 `Alt` + 移动鼠标 |
 | 前后左右平移 | `W` `A` `S` `D` |
+| 方向键转向/俯仰 | 方向键 左/右转视角（`yaw_speed`，默认 90 度/秒）、上/下俯仰（`pitch_speed`，默认 30 度/秒） |
 | 升降 | 左键上移 / 右键下移（translate 模式；手柄 RT / LT） |
 | 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`roll_speed` 可调）；手柄 `RB` / `LB` |
 | 加速 / 减速 | `Shift` / `Ctrl` |
 | 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-`（单击一格，按住约 0.35 秒后连发） |
 | 重置相机视角 | `R`（回到进入摄影模式时的位置/朝向/FOV） |
+| 滚转归零 | `Z`（只把滚转回 0，位置/朝向/FOV 不动）；手柄 `LB+RB` 同按（`key_roll_reset` / `pad_roll_reset` 可改） |
 | 冻结时间 | `F`（进入时按 `auto_pause_time` 自动冻结） |
 
 键位都能在 `config.ini` 里改（`[keys]` 段）。
@@ -55,7 +57,7 @@ tools\build_tests.bat
 - **DualSense / DualShock4**：**不是 XInput 设备**，Windows 把它们枚举成 DirectInput 手柄——1.4.0 起由 DInput8 轮询后端读取（USB/蓝牙均可），与 XInput 翻译成同一份 `PadState`，键位写法与 Xbox 完全一致。XInput 槽位优先，避免 Xbox 手柄在两套后端重复计数。
 - 映射（`core/gamepad.cpp`）：DIJOYSTATE2 按钮 0..13 → □╳○△/L1R1/L2R2/CREATE/OPTIONS/**L3=LS/R3=RS**/PS；轴 lX/lY/lZ/lRz=双摇杆（Y 取反）、lRx/lRy=L2/R2 模拟量；rgdwPOV=十字键。
 - 固定键位：RT/LT 升降；**RB/LB 滚转**（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；**L3/R3 变速**（LS 加速 / RS 减速；两杆同按是进出模式组合键，此时不触发变速）。
-- 十字键上/下调 FOV（`pad_fov_up` / `pad_fov_down` 可改）：单击一格，按住约 0.35 秒后连发，松开即停。
+- 十字键：上/下俯仰（`pitch_speed`）、左/右转视角（`yaw_speed`，1.0.46 起从左右平移改来）；FOV 在 `A` / `B`（`pad_fov_up` / `pad_fov_down` 可改）：单击一格，按住约 0.35 秒后连发，松开即停。
 - 接入诊断：`DInput 手柄已接入：<名>（VID_…&PID_…）首读：按钮=… 摇杆=… POV=…`（一次性，原始值，映射对不上真机时用它定位）；`手柄=<后端摘要>` 在每秒输入诊断行里。
 
 ## 配置文件
@@ -71,11 +73,32 @@ tools\build_tests.bat
 
 具体步骤见 `docs/BUILD.md`，API 核对清单见 `docs/P1_CHECKLIST.md`。
 
+## 游戏内设置菜单（PBZ-Framework-Menu，可选）
+
+1.0.42 起本模组是 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（游戏内 ImGui 菜单框架，DirectComposition 覆盖窗实现，不碰游戏交换链、不影响 FSR3 帧生成）的**第一个客户端模组**。两个模组各自解压进 `ue4ss\Mods\`（enabled.txt 启用，互不改 mods.txt）后：
+
+- 游戏内按 PBZFM 的呼出键（默认 `F8`）打开菜单，侧栏出现「**PBZ Photo Mode**」分区（1.0.43 起两页均由本模组自绘，ImGui 版本与框架 1.92.1 对齐）
+- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 静音 / 剧情暂停 / 相机震动 / 风源 / MPC / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
+- **「状态 · Status」页**：OFF / LIVE / FROZEN 状态、位置与朝向读数、键位速查；FOV 滑条（实时变焦）与「进入/退出摄影模式」「冻结/恢复时间」「重置视角」「重新载入 config.ini」按钮
+- **多语言**：内置 zh-CN / en-US / ja-JP / ko-KR；**外部词典**放 `PBZPhotoModeCpp\languages\<id>.json`——UTF-8 扁平 JSON，key=中文原文、value=译文，可选 `__display` 当显示名；同名覆盖内置、新文件名即新语言，游戏内热重载（点按钮或等 2 秒）。翻译缺失的条目回落中文。韩文渲染用自建「雅黑 + Malgun Gothic」合并字体，不受框架启动字体限制
+- 手柄组合键绑定（多按钮同按）在菜单里表达不了，仍写在 `config.ini` 的 `[gamepad]` 节
+
+**值的流向**：`config.ini` 是唯一真源。模组启动时用 config.ini 现值播种菜单；菜单里的改动写回 config.ini 并实时应用；手动改过 config.ini 后点菜单里的「重新载入 config.ini」，菜单显示值会跟着文件走。卸载 PBZFM 后模组照常工作（纯快捷键，日志提示「未检测到 PBZFM 菜单框架」）。
+
+实现：`src/pbzfm_client.*`（运行时 GetProcAddress 接入 PBZFM.dll，零链接依赖）+ `src/pbzfm_schema_map.*`（菜单 ↔ Config 字段映射表，随核心层单测）。菜单回调在框架线程只提交数据，所有引擎交互回到引擎 Tick 线程执行。
+
 ## 路线图
 
 - **P0**：核心逻辑 + 单元测试 → 完成
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
 - **P2**：PostProcess 快照还原、滤镜、连拍、录像
+
+## 1.0.44 这次改了什么（隐藏锁定标记）
+
+- 需求：锁定敌人后进摄影模式，敌人身上的**锁定白点**仍在——`SetHideUIForPV` 订阅者、HUD 布局、血条设置（`MonsterHealthBarMode` 只管血条）都不覆盖它。
+- 实现（新配置 `hide_lockon_marker`，默认开，PBZFM 菜单「隐藏」页同名开关）：进入摄影模式全量扫描对象数组，类名/资产名命中锁定·目标·标记关键词（`_`/`-` 归一、`block` 排除）的 UMG 控件 Collapsed、可视组件（Widget/Niagara/Particle/Decal/Sprite/Mesh）bVisible=false，退出全部按原值还原；隐藏清单逐条记日志。
+- 白点的真实类名离线证不了：零命中时直接确认完成（进模式后无法再锁定，重扫无益），并打一次性诊断（可见 UserWidget 清单 / 可视组件清单 / 玩家 pawn 名下锁定·目标组件清单）——白点仍在时把日志发回来收敛关键词。
+- 隐藏失败（有目标藏不住）才按秒重试，上限 10 次（同 HUD/提示/血条）。
 
 ## 1.0.3 这次改了什么
 

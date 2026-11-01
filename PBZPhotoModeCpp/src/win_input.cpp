@@ -81,8 +81,8 @@ void load_xinput() {
 // DualSense/DualShock4 在 Windows 上不是 XInput 设备，XInputGetState 四个槽位永远读不到；
 // 它们被系统枚举成 DirectInput 手柄，走 DInput8 轮询（GetDeviceState 主动拉状态，
 // 不会像 Raw Input 事件那样被吞——本作鼠标 raw input 出过“注册成功但一个事件都不来”）。
-// 动态加载 dinput8.dll 而不是链 dinput.lib：不给构建加依赖。设备对象全在 poll() 线程里
-// 创建/获取/轮询，遵守 win_input.h 的无锁约定。
+// 动态加载 dinput8.dll 而不是链 dinput.lib：不给构建加依赖。设备对象全在专用 DInput 线程里
+// 创建/获取/轮询（见 dinput_thread_main），快照经互斥量交给引擎 Tick 线程。
 using PFN_DirectInput8Create = HRESULT(WINAPI*)(HINSTANCE, DWORD, REFIID, LPVOID*, LPVOID);
 PFN_DirectInput8Create g_dinput_create = nullptr;
 std::wstring g_dinput_module_path;
@@ -417,39 +417,59 @@ bool Win32InputSource::pad_dinput_ready() const {
 
 std::string Win32InputSource::pad_backend() const {
     if (pad_slot_active_ >= 0) return "XInput 槽位 " + std::to_string(pad_slot_active_);
-    if (dinput_dev_ != nullptr) {
-        return "DInput: " + narrow(dinput_name_) + "（" + narrow(dinput_vidpid_) + "）";
+    if (dinput_present_.load(std::memory_order_relaxed)) {
+        std::wstring name;
+        std::wstring vidpid;
+        {
+            std::lock_guard<std::mutex> lock(dinput_mutex_);
+            name = dinput_name_;
+            vidpid = dinput_vidpid_;
+        }
+        return "DInput: " + narrow(name) + "（" + narrow(vidpid) + "）";
     }
     return "无";
 }
 
 bool Win32InputSource::take_pad_dinput_diag(std::string& out) {
+    std::lock_guard<std::mutex> lock(dinput_mutex_);
     if (dinput_diag_.empty()) return false;
     out = std::move(dinput_diag_);
     dinput_diag_.clear();
     return true;
 }
 
+// 诊断串只在 DInput 线程里写、游戏线程里取，跨线程走互斥量。
+// 相同内容的失败诊断只发布一次：探测每 2 秒重试，重复发布会让游戏线程反复写
+// UE4SS.log（1.0.38 实机：Xbox 手柄在场时 SetDataFormat 每两秒败一次，日志刷了 68 行）
+void Win32InputSource::dinput_set_diag(std::string text) {
+    if (text == dinput_last_diag_) return;
+    dinput_last_diag_ = text;
+    std::lock_guard<std::mutex> lock(dinput_mutex_);
+    dinput_diag_ = std::move(text);
+}
+
+void Win32InputSource::dinput_append_diag(std::string text) {
+    std::lock_guard<std::mutex> lock(dinput_mutex_);
+    if (!dinput_diag_.empty()) dinput_diag_ += "；";
+    dinput_diag_ += std::move(text);
+}
+
 bool Win32InputSource::ensure_dinput_runtime() {
     if (dinput_api_ != nullptr) return true;
     if (dinput_api_failed_) return false;
-    if (!dinput_com_) {
-        // 游戏主线程通常已初始化 COM；结果忽略（S_FALSE / RPC_E_CHANGED_MODE 都无害），
-        // 也不做 CoUninitialize——DLL 存活期与进程一致。
-        ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-        dinput_com_ = true;
-    }
+    // COM 单元由 dinput_thread_main 在线程入口初始化；本函数只创建 IDirectInput8 与窗口
     auto* api = static_cast<IDirectInput8W*>(dinput_api_);
     const HRESULT hr = g_dinput_create(::GetModuleHandleW(nullptr), DIRECTINPUT_VERSION, IID_IDirectInput8W,
                                        reinterpret_cast<void**>(&api), nullptr);
     if (FAILED(hr) || api == nullptr) {
         dinput_api_failed_ = true;
-        dinput_diag_ = "DInput 初始化失败：DirectInput8Create hr=" + hex8(static_cast<unsigned long>(hr));
+        dinput_set_diag("DInput 初始化失败：DirectInput8Create hr=" + hex8(static_cast<unsigned long>(hr)));
         return false;
     }
     dinput_api_ = api;
 
-    // 合作级窗口：poll 线程自建隐藏窗口（raw sink 窗口在另一个线程，不跨线程用）
+    // 合作级窗口：DInput 线程自建隐藏窗口（设备对象与窗口必须同线程；raw sink 窗口
+    // 在另一个线程，不跨线程用）
     constexpr wchar_t kDInputWindowClass[] = L"PBZPM_DInputSink";
     WNDCLASSEXW wc{};
     wc.cbSize = sizeof(wc);
@@ -458,14 +478,14 @@ bool Win32InputSource::ensure_dinput_runtime() {
     wc.lpszClassName = kDInputWindowClass;
     if (::RegisterClassExW(&wc) == 0 && ::GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
         dinput_api_failed_ = true;
-        dinput_diag_ = "DInput 初始化失败：窗口类注册失败";
+        dinput_set_diag("DInput 初始化失败：窗口类注册失败");
         return false;
     }
     HWND hwnd = ::CreateWindowExW(0, kDInputWindowClass, L"", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr,
                                   wc.hInstance, nullptr);
     if (hwnd == nullptr) {
         dinput_api_failed_ = true;
-        dinput_diag_ = "DInput 初始化失败：合作级窗口创建失败";
+        dinput_set_diag("DInput 初始化失败：合作级窗口创建失败");
         return false;
     }
     dinput_hwnd_ = hwnd;
@@ -484,7 +504,7 @@ bool Win32InputSource::dinput_probe() {
 
     const auto fail = [&](const char* reason, IDirectInputDevice8W* dev, HRESULT hr) {
         if (dev != nullptr) dev->Release();
-        dinput_diag_ = std::string("DInput 设备初始化失败：") + reason + " hr=" + hex8(static_cast<unsigned long>(hr));
+        dinput_set_diag(std::string("DInput 设备初始化失败：") + reason + " hr=" + hex8(static_cast<unsigned long>(hr)));
         return false;
     };
 
@@ -514,13 +534,16 @@ bool Win32InputSource::dinput_probe() {
     if (FAILED(hr)) return fail("Acquire", dev, hr);
 
     dinput_dev_ = dev;
-    dinput_name_ = candidate.name;
-    dinput_vidpid_ = candidate.vidpid;
+    {
+        std::lock_guard<std::mutex> lock(dinput_mutex_);
+        dinput_name_ = candidate.name;
+        dinput_vidpid_ = candidate.vidpid;
+    }
     dinput_fail_frames_ = 0;
     dinput_dumped_ = false;
     if (!range_ok) {
-        dinput_diag_ = "DInput 设备已接入但量程设置部分失败：" + narrow(candidate.name) + "（" +
-                       narrow(candidate.vidpid) + "），摇杆幅度可能异常";
+        dinput_set_diag("DInput 设备已接入但量程设置部分失败：" + narrow(candidate.name) + "（" +
+                        narrow(candidate.vidpid) + "），摇杆幅度可能异常");
     }
     return true;
 }
@@ -532,37 +555,96 @@ void Win32InputSource::dinput_release_device() {
         dev->Release();
     }
     dinput_dev_ = nullptr;
-    dinput_name_.clear();
-    dinput_vidpid_.clear();
-    dinput_present_ = false;
+    {
+        std::lock_guard<std::mutex> lock(dinput_mutex_);
+        dinput_name_.clear();
+        dinput_vidpid_.clear();
+    }
+    dinput_present_.store(false, std::memory_order_relaxed);
     dinput_fail_frames_ = 0;
 }
 
-bool Win32InputSource::poll_dinput(PadState& out) {
-    out = PadState{};
-    if (!ensure_dinput_runtime()) return false;
+// 睡眠顺带 pump 本线程的消息：DInput 的背景协作级别不依赖窗口消息，pump 只是保险
+auto dinput_thread_wait(unsigned long milliseconds) -> void {
+    const unsigned long long deadline = ::GetTickCount64() + milliseconds;
+    MSG msg{};
+    for (;;) {
+        const unsigned long long now = ::GetTickCount64();
+        if (now >= deadline) return;
+        const DWORD wait = static_cast<DWORD>(deadline - now);
+        const DWORD result = ::MsgWaitForMultipleObjects(0, nullptr, FALSE, wait, QS_ALLINPUT);
+        if (result == WAIT_OBJECT_0) {
+            while (::PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE) != 0) {
+                ::TranslateMessage(&msg);
+                ::DispatchMessageW(&msg);
+            }
+        } else if (result == WAIT_FAILED) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(wait));
+            return;
+        }
+    }
+}
 
+// DInput 专用线程入口：COM 单元/IDirectInput8/合作级窗口/设备对象全在本线程创建与使用
+//（DInput 的 COM 对象不能跨线程调用），重量级的 EnumDevices 探测从此不再占用游戏主线程。
+void Win32InputSource::dinput_thread_main() {
+    ::CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    dinput_com_ = true;
+
+    while (!dinput_quit_.load(std::memory_order_relaxed)) {
+        if (!dinput_active_.load(std::memory_order_relaxed)) {
+            // 手柄功能关着或 XInput 已锁定槽位（Xbox 手柄不该被 DInput 再数一遍）：
+            // 释放设备并清快照，条件重新满足后再探测
+            dinput_release_device();
+            {
+                std::lock_guard<std::mutex> lock(dinput_mutex_);
+                dinput_snapshot_ = PadState{};
+                dinput_present_.store(false, std::memory_order_relaxed);
+            }
+            dinput_thread_wait(100);
+            continue;
+        }
+        dinput_thread_tick();
+        dinput_thread_wait(10);
+    }
+
+    dinput_release_device();
+    if (dinput_hwnd_ != nullptr) ::DestroyWindow(static_cast<HWND>(dinput_hwnd_));
+    dinput_hwnd_ = nullptr;
+    if (dinput_com_) ::CoUninitialize();
+    dinput_com_ = false;
+}
+
+// 一拍：设备在手就拉一次状态（Poll+GetDeviceState，微秒级）；没设备就按 2 秒限流做一次探测
+void Win32InputSource::dinput_thread_tick() {
     auto* dev = static_cast<IDirectInputDevice8W*>(dinput_dev_);
     if (dev == nullptr) {
-        if (!dinput_probe()) return false;
-        dev = static_cast<IDirectInputDevice8W*>(dinput_dev_);
-        if (dev == nullptr) return false;
+        if (!ensure_dinput_runtime()) return;
+        dinput_probe();  // 枚举到候选设备会一路 CreateDevice/SetProperty/Acquire
+        return;
     }
 
     dev->Poll();  // HID 设备无需轮询（返回 DI_NOEFFECT），失败由 GetDeviceState 兜底
     DIJOYSTATE2 js{};
     const HRESULT hr = dev->GetDeviceState(sizeof(js), &js);
     if (FAILED(hr)) {
-        // 设备丢失/被抢：先补一次 Acquire；连续 3 帧仍读不到就释放重枚举（对齐 XInput 拔出判定）
+        // 设备丢失/被抢：先补一次 Acquire；连续 3 拍仍读不到就释放重枚举（对齐 XInput 拔出判定）
         if (++dinput_fail_frames_ >= 3) {
             dinput_release_device();
+            std::lock_guard<std::mutex> lock(dinput_mutex_);
+            dinput_snapshot_ = PadState{};
+            dinput_present_.store(false, std::memory_order_relaxed);
         } else {
             dev->Acquire();
         }
-        return false;
+        return;
     }
     dinput_fail_frames_ = 0;
-    out = dinput_to_pad(js);
+    const PadState pad = dinput_to_pad(js);
+
+    std::lock_guard<std::mutex> lock(dinput_mutex_);
+    dinput_snapshot_ = pad;
+    dinput_present_.store(true, std::memory_order_relaxed);
 
     if (!dinput_dumped_) {
         // 一次性诊断：映射与真机有出入时，这行能直接看出按钮位/轴/POV 的原始值
@@ -579,7 +661,6 @@ bool Win32InputSource::poll_dinput(PadState& out) {
         if (!dinput_diag_.empty()) dinput_diag_ += "；";
         dinput_diag_ += buf;
     }
-    return true;
 }
 
 bool Win32InputSource::install(bool enable_wheel_hook) {
@@ -599,10 +680,29 @@ bool Win32InputSource::install(bool enable_wheel_hook) {
         if (g_raw_ready.load()) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    // DInput 探测/轮询独立成线程：EnumDevices 一次几十毫秒起步，留在游戏线程就是
+    // “每 2 秒卡一次”的周期性卡顿（1.0.37 用户反馈的根因）。dinput8 没加载成功就不起线程。
+    if (g_dinput_create != nullptr) {
+        auto* dinput_thread = new std::thread(&Win32InputSource::dinput_thread_main, this);
+        dinput_thread_ = dinput_thread;
+    }
     return true;
 }
 
 void Win32InputSource::uninstall() {
+    // DInput 线程先收：置退出标志后线程会在一拍内自行释放设备并结束
+    dinput_quit_.store(true);
+    dinput_active_.store(false);
+    auto* dinput_thread = static_cast<std::thread*>(dinput_thread_);
+    if (dinput_thread != nullptr) {
+        if (dinput_thread->joinable()) {
+            dinput_thread->join();
+        }
+        delete dinput_thread;
+        dinput_thread_ = nullptr;
+    }
+
     auto* thread = static_cast<std::thread*>(thread_);
     if (thread == nullptr) return;
     thread_ = nullptr;
@@ -731,16 +831,18 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
                 }
             }
         }
-        // XInput 没锁到槽位时才轮 DInput，避免 Xbox 手柄被两套后端同时计数
+        // XInput 没锁到槽位时才用 DInput 快照，避免 Xbox 手柄被两套后端同时计数。
+        // DInput 的探测/轮询在专用线程里做（EnumDevices 要几十毫秒，不能占游戏线程），
+        // 这里只取最近一份快照
         if (pad_slot_active_ < 0 && g_dinput_create != nullptr) {
-            PadState dpad{};
-            dinput_present_ = poll_dinput(dpad);
-            pad_last_ = dinput_present_ ? dpad : PadState{};
+            std::lock_guard<std::mutex> lock(dinput_mutex_);
+            pad_last_ = dinput_present_.load(std::memory_order_relaxed) ? dinput_snapshot_ : PadState{};
         }
     } else {
-        dinput_present_ = false;
         pad_last_ = PadState{};
     }
+    // DInput 线程的活跃条件：手柄开着且 XInput 没锁定槽位（本帧扫描后的状态）
+    dinput_active_.store(gamepad_enabled && pad_slot_active_ < 0, std::memory_order_relaxed);
     if (!active) pad_last_ = PadState{};  // 切后台时强制松开，避免组合键卡住
     logic.on_gamepad(pad_last_);
 }

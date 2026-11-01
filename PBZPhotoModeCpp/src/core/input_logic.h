@@ -17,22 +17,24 @@ struct KeyMap {
     int toggle{0x71};    // F2
     int freeze{'F'};
     int reset{'R'};
+    int roll_reset{'Z'};  // 滚转归零（水平校正）
     int fov_up{0x6B};    // ADD
     int fov_down{0x6D};  // SUBTRACT
     int pitch_up{0x26};    // 仰视（抬头）：方向键上
     int pitch_down{0x28};  // 俯视（低头）：方向键下
-    int pan_left{0x25};    // 左平移：方向键左
-    int pan_right{0x27};   // 右平移：方向键右
+    int yaw_left{0x25};    // 左转视角：方向键左（1.0.46 起从左右平移改来）
+    int yaw_right{0x27};   // 右转视角：方向键右
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
     std::vector<PadButton> pad_toggle{PadButton::LS, PadButton::RS};  // 默认：左右摇杆同时按下
     std::vector<PadButton> pad_freeze{PadButton::X};
     std::vector<PadButton> pad_reset{PadButton::Y};
+    std::vector<PadButton> pad_roll_reset{PadButton::LB, PadButton::RB};  // 同按：滚转归零（同按滚转本来就净零）
     std::vector<PadButton> pad_fov_up{PadButton::A};         // A = 增大 FOV（十字键已全部让位给视角调节）
     std::vector<PadButton> pad_fov_down{PadButton::B};       // B = 缩小 FOV
     std::vector<PadButton> pad_pitch_up{PadButton::Up};      // 十字键上 = 仰视
     std::vector<PadButton> pad_pitch_down{PadButton::Down};  // 十字键下 = 俯视
-    std::vector<PadButton> pad_pan_left{PadButton::Left};    // 十字键左 = 左平移
-    std::vector<PadButton> pad_pan_right{PadButton::Right};  // 十字键右 = 右平移
+    std::vector<PadButton> pad_yaw_left{PadButton::Left};    // 十字键左 = 左转视角（1.0.46 起从平移改来）
+    std::vector<PadButton> pad_yaw_right{PadButton::Right};  // 十字键右 = 右转视角
     bool all_resolved{true};
 };
 
@@ -47,7 +49,8 @@ struct Intent {
     double move_right{};    // D/A  -> +1/-1
     double move_up{};       // 左右键（translate 模式）+ 手柄 RT/LT
     double roll{};          // Q/E 滚转：E=+1 顺时针 / Q=-1 逆时针
-    double pitch_axis{};    // 俯仰：+1 仰视 / -1 俯视（Z/X 或十字键上/下按住；tick 里乘 pitch_speed × dt）
+    double pitch_axis{};    // 俯仰：+1 仰视 / -1 俯视（方向键或十字键上/下按住；tick 里乘 pitch_speed × dt）
+    double yaw_axis{};      // 偏航：+1 右转 / -1 左转（方向键或十字键左/右按住；tick 里乘 yaw_speed × dt）
     bool pitch_up_click{};  // look 模式：左键
     bool pitch_down_click{};// look 模式：右键
     bool boost{};           // Shift
@@ -55,6 +58,7 @@ struct Intent {
     bool toggle_mode{};
     bool toggle_freeze{};
     bool reset_view{};  // R：回到进入摄影模式时的位姿/FOV
+    bool reset_roll{};  // 滚转归零（水平校正）：roll 置 0，位置/俯仰/偏航/FOV 不动
     int fov_nudge{};    // FOV 步进：+1 增大 / -1 缩小（FOV 键或手柄十字键的按下沿；按住时连发折算成多格）
     double pad_look_dx{};  // 手柄右摇杆转速（度/秒，正值 = 向右；tick 里乘 dt）
     double pad_look_dy{};  // 手柄右摇杆转速（度/秒，正值 = 向下；invert_y 在 tick 里处理）

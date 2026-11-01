@@ -49,6 +49,7 @@ public:
     bool set_hud_visible(bool visible) override;
     bool set_interact_prompts_visible(bool visible) override;
     bool set_enemy_health_bars_visible(bool visible) override;
+    bool set_lockon_marker_visible(bool visible) override;
     bool set_subtitles_visible(bool visible) override;
 
     bool unlock_aspect_ratio() override;
@@ -61,6 +62,15 @@ public:
     SequenceFreezeReport pause_sequences(bool paused) override;
     int wwise_component_count() override;
     int pause_wwise_voices(bool pause) override;
+    void pov_watch_tick(bool camera_idle) override;
+
+    CameraShakeFreezeReport freeze_camera_shakes(bool frozen) override;
+    WindFreezeReport freeze_wind(bool frozen) override;
+    int mpc_take_snapshot() override;
+    int mpc_hold_snapshot() override;
+    void mpc_release_snapshot() override;
+    std::string freeze_diag_sample() override;
+
     // 尽早挂上 Post 钩子截获 PlayingID（mod_app 引擎 tick 里每 2 秒重试直到成功）
     bool install_voice_hooks();
 
@@ -136,7 +146,55 @@ private:
     bool audio_dump_done_{false};
     void dump_audio_objects_once();
 
+    // ---- 冻结期残余微动治理的状态（进入/退出摄影模式之外不持有，冻结还原即清空）----
+    // 相机修饰器冻结前的 bDisabled 状态，恢复时按原值写回
+    std::vector<std::pair<RC::Unreal::UObject*, bool>> camera_modifier_states_;
+    // 风源组件冻结前的参数值（读不到的项 has_=false，还原时跳过）
+    struct WindParamBackup {
+        RC::Unreal::UObject* component{nullptr};
+        bool has_strength{false};
+        double strength{0.0};
+        bool has_speed{false};
+        double speed{0.0};
+        bool has_min_gust{false};
+        double min_gust{0.0};
+        bool has_max_gust{false};
+        double max_gust{0.0};
+    };
+    std::vector<WindParamBackup> wind_backups_;
+    // MPC 快照：冻结时抓的各集合参数值，冻结期每帧写回
+    struct MpcParamValue {
+        std::string name;
+        bool is_vector{false};
+        // 标量只用 value[0]；向量 = RGBA。连续数组方便整段传给 Kismet 的 FLinearColor 读写
+        float value[4]{0.0f, 0.0f, 0.0f, 0.0f};
+    };
+    struct MpcCollectionSnapshot {
+        RC::Unreal::UObject* collection{nullptr};
+        std::string name;
+        std::vector<MpcParamValue> params;
+    };
+    std::vector<MpcCollectionSnapshot> mpc_snapshots_;
+    // 冻结诊断：MPC 上一拍样本（两次诊断之间比对参数变化）
+    std::vector<MpcCollectionSnapshot> mpc_diag_last_;
+    bool mpc_diag_has_last_{false};
+    bool wind_missing_logged_{false};   // 风源组件属性缺失只告警一次
+    bool mpc_unavailable_logged_{false}; // KismetMaterialLibrary 不可用只告警一次
+    // POV 微动监测状态（pov_watch_tick 累积，freeze_diag_sample 报告并清零）
+    bool pov_watch_has_last_{false};
+    double pov_last_loc_[3]{0.0, 0.0, 0.0};
+    double pov_last_rot_[3]{0.0, 0.0, 0.0};
+    double pov_max_loc_delta_{0.0};
+    double pov_max_rot_delta_{0.0};
+
     mutable RC::Unreal::UObject* controller_cache_{nullptr};
+    // 每帧高频反射查找的缓存：UFunction 挂在类上、进程内稳定，不会失效；
+    // miss 也记下来，类上没有的函数就不必每帧重找
+    RC::Unreal::UFunction* mouse_delta_fn_{nullptr};
+    bool mouse_delta_fn_missing_{false};
+    RC::Unreal::UFunction* set_view_target_fn_{nullptr};
+    bool set_view_target_fn_missing_{false};
+    bool set_view_target_cached(RC::Unreal::UObject* pc, RC::Unreal::UObject* target);
     bool view_verified_{false};
     bool pose_apply_failure_logged_{false};
     // 被隐藏的 UMG HUD 根控件（控件指针 + 原始 ESlateVisibility 值），退出时原样恢复
@@ -159,6 +217,18 @@ private:
     RC::Unreal::UObject* bars_setting_owner_{nullptr};
     bool bars_setting_missing_logged_{false};
 
+    // 锁定标记（锁定敌人身上的白点）：被隐藏的 UMG 控件（指针 + 原 ESlateVisibility）与
+    // 可视组件（指针 + 原 bVisible），退出摄影模式时按原值还原。
+    // 渲染载体离线不可证（SetHideUIForPV 订阅者、HUD 布局、血条设置都不覆盖它），运行时按
+    // 类名/资产名关键词全量扫描锁定与目标家族；零命中时确认完成并打一次性诊断清单，
+    // 真实类名靠实机日志收敛（同字幕控件的做法）。
+    std::vector<std::pair<RC::Unreal::UObject*, int>> lockon_widgets_;
+    std::vector<std::pair<RC::Unreal::UObject*, bool>> lockon_components_;
+    bool lockon_absent_{false};         // 本会话已确认场上没有可隐藏的锁定对象（进模式后玩家无法再锁定）
+    bool lockon_absent_logged_{false};  // “未找到锁定标记”只告警一次
+    bool lockon_diag_dumped_{false};    // 一次性诊断（可见控件/可视组件/玩家组件清单）每会话只打一次
+    void dump_lockon_diagnostics();
+
     // 字幕设置（bSubtitlesEnabled）：进入时保存的原开关状态，退出时写回。
     // touched 与 saved 分离：设置类上可能只有 setter 没有 property（1.0.30 实机：
     // PBZSettingsShared 只有函数，属性在引擎 GlobalUserParam 上）——只要动过开关就必须还原，
@@ -175,8 +245,8 @@ private:
     bool subtitle_diag_dumped_{false};
     bool subtitle_scanned_{false};  // 本次摄影模式会话是否做过全量扫描（每秒重申只用快速路径）
     bool subtitle_visible_dumped_{false};  // 可见 UserWidget 清单只打一次
-    int subtitle_reassert_count_{0};  // 重申计数（每 10 次做一次全量扫描，收编对话中途新出现的控件类）
-    // 实机发现过的字幕控件类名（进入时全量扫描记录；每秒重申只按这些名字 FindAllOf，避免全对象扫描拖帧）
+    int subtitle_reassert_count_{0};  // 重申计数（每 30 次做一次全量扫描，收编对话中途新出现的控件类）
+    // 实机发现过的字幕控件类名（进入时全量扫描记录；每秒重申合并成一次全数组遍历按这些名字匹配）
     std::vector<std::string> subtitle_widget_class_names_;
     void collect_subtitle_widgets_impl(std::vector<RC::Unreal::UObject*>& out, bool full_scan);
     void dump_subtitle_setting_diagnostics(RC::Unreal::UObject* owner);

@@ -9,6 +9,8 @@
 
 namespace pbzpm {
 
+class PbzmI18n;
+
 // 面板上的按钮通过这些输出参数回传给 mod_app，由它统一执行，避免 UI 直接碰引擎。
 struct UiCommands {
     bool toggle_freeze{false};
@@ -18,8 +20,9 @@ struct UiCommands {
 };
 
 // 画一帧面板。config 的改动会写回 cfg（下次进入生效）并同步给 mode。
+// 文案取自 lang（外部 languages/*.json；与 PBZFM 自绘页共用同一份词典实例）。
 void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, bool& request_reload_config,
-                           UiCommands& commands);
+                           UiCommands& commands, PbzmI18n& lang);
 
 }  // namespace pbzpm
 

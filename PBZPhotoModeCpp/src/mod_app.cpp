@@ -28,6 +28,9 @@ namespace pbzpm {
 // 引擎 GetInputMouseDelta 给的是「像素 ÷ 游戏鼠标灵敏度」，量级只有 0.1~0.2；
 // 乘这个系数放回像素量级，再交给 core 的 look_sensitivity（度/单位）换算成角度。
 constexpr double kEngineMouseScale = 40.0;
+// 语音钩子重试上限（每 2 秒一次，300 次 = 10 分钟）：每次重试做两遍全对象数组扫描，
+// 挂不上就说明环境有问题，无限重试等于周期性卡顿
+constexpr int kMaxVoiceHookRetries = 300;
 namespace {
 
 // 单调时钟：冻结时间时引擎 delta 会变成 0，但相机还要能动，所以 dt 用真实时间算
@@ -55,6 +58,7 @@ PhotoModeMod::PhotoModeMod() {
 }
 
 PhotoModeMod::~PhotoModeMod() {
+    if (pbzfm_) pbzfm_->stop();  // 先停框架客户端线程，再拆输入/引擎侧
     if (input_source_ != nullptr) {
         input_source_->uninstall();
     }
@@ -84,6 +88,9 @@ void PhotoModeMod::reload_config() {
     }
     if (mode_) {
         mode_->set_config(cfg_);
+    }
+    if (pbzfm_) {
+        pbzfm_->sync_from_config(cfg_);  // 菜单显示值跟着 config.ini 走
     }
 }
 
@@ -116,6 +123,9 @@ void PhotoModeMod::on_unreal_init() {
     if (!input_source_->install(wheel_hook)) {
         port_->log(LogLevel::Warn, "鼠标钩子安装失败：滚轮 FOV / 按住 Alt 转视角可能不可用");
     }
+    // 排障开关：mod 目录里放一个 debug_input_diag.txt 才开启每秒输入诊断日志
+    // （诊断行要做反射摘要 + 日志落盘，1.0.38 实机摄影模式里每秒一次，默认关）
+    input_diag_enabled_ = std::filesystem::exists(std::filesystem::path(mod_directory()) / "debug_input_diag.txt");
 
     bind_engine_tick();
     last_tick_time_ = monotonic_seconds();
@@ -137,6 +147,9 @@ void PhotoModeMod::on_unreal_init() {
     }
     load_message += " 进入摄影模式";
     port_->log(LogLevel::Info, load_message);
+
+    // PBZFM 菜单框架（可选组件）：后台线程轮询 PBZFM.dll，装了就注册设置页与诊断页
+    pbzfm_->start(this);
 }
 
 void PhotoModeMod::on_ui_init() {
@@ -156,25 +169,28 @@ void PhotoModeMod::render_tab_bridge(RC::CppUserModBase* owner) {
 
 void PhotoModeMod::render_tab_impl() {
     if (!mode_ || !port_) {
+        // 初始化窗口期词典尚未扫描：仅此一条保留代码内兜底文案
         ImGui::TextUnformatted("正在等待游戏引擎初始化…");
         return;
     }
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    ImGui::TextUnformatted(mode_->active() ? "摄影模式：运行中" : "摄影模式：未启用");
+    pbzfm_->lang().RescanLanguages(mod_dir(), false);  // 内部 2 秒节流，热加载
+    PbzmI18n& lang = pbzfm_->lang();
+    ImGui::TextUnformatted(mode_->active() ? lang.T("#console_state_on") : lang.T("#console_state_off"));
     if (cfg_.pad_enabled) {
-        ImGui::Text("快捷键 %s 或手柄 %s 进入 / 退出；%s 冻结时间", vk_to_name(keys_.toggle).c_str(),
+        ImGui::Text(lang.T("#console_hotkey_pad_fmt"), vk_to_name(keys_.toggle).c_str(),
                     pad_combo_name(keys_.pad_toggle).c_str(), vk_to_name(keys_.freeze).c_str());
     } else {
-        ImGui::Text("快捷键 %s 进入 / 退出；%s 冻结时间", vk_to_name(keys_.toggle).c_str(),
+        ImGui::Text(lang.T("#console_hotkey_fmt"), vk_to_name(keys_.toggle).c_str(),
                     vk_to_name(keys_.freeze).c_str());
     }
     ImGui::Separator();
 
     UiCommands commands{};
     bool reload = false;
-    render_photo_mode_tab(*mode_, cfg_, keys_, reload, commands);
+    render_photo_mode_tab(*mode_, cfg_, keys_, reload, commands, lang);
 
     if (reload) {
         reload_config();
@@ -208,6 +224,115 @@ void PhotoModeMod::handle_toggle() {
         }
     }
     input_.reset();
+}
+
+// ---- PbzfmClient::Host（PBZFM 菜单框架桥） ----
+
+auto PhotoModeMod::mod_dir() -> std::string { return mod_directory(); }
+
+auto PhotoModeMod::current_config() -> Config {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cfg_;
+}
+
+auto PhotoModeMod::submit_config(const Config& cfg) -> void {
+    std::lock_guard<std::mutex> lock(pbzfm_mutex_);
+    pbzfm_pending_cfg_ = cfg;
+    pbzfm_cfg_dirty_ = true;
+}
+
+auto PhotoModeMod::submit_command(const PbzfmCommand& cmd) -> void {
+    std::lock_guard<std::mutex> lock(pbzfm_mutex_);
+    pbzfm_commands_.push_back(cmd);
+}
+
+auto PhotoModeMod::log(LogLevel level, const std::string& msg) -> void {
+    if (port_ != nullptr) port_->log(level, msg);
+}
+
+// PBZFM 菜单提交的配置与动作在这里消化（引擎 Tick 线程，持 mutex_）。
+// 框架的渲染/变更回调在框架线程触发，那边只做数据提交，绝不直接碰引擎。
+void PhotoModeMod::pbzfm_apply_pending() {
+    Config incoming{};
+    bool has_config = false;
+    std::vector<PbzfmCommand> commands;
+    {
+        std::lock_guard<std::mutex> lock(pbzfm_mutex_);
+        if (pbzfm_cfg_dirty_) {
+            incoming = pbzfm_pending_cfg_;
+            pbzfm_cfg_dirty_ = false;
+            has_config = true;
+        }
+        commands.swap(pbzfm_commands_);
+    }
+
+    if (has_config) {
+        // 三个有实时通道的开关记下旧值，改动了就地生效；其余字段走 set_config
+        // （下一轮冻结/下次进入/每秒重试路径按新配置执行）
+        const bool old_block = cfg_.block_game_input;
+        const bool old_player = cfg_.hide_player;
+        const bool old_hud = cfg_.hide_game_hud;
+        cfg_ = incoming;
+        keys_ = build_keymap(cfg_, nullptr);
+        if (mode_) {
+            mode_->set_config(cfg_);
+            if (mode_->active()) {
+                if (cfg_.hide_player != old_player) mode_->set_hide_player_live(cfg_.hide_player);
+                if (cfg_.block_game_input != old_block) mode_->set_block_game_input_live(cfg_.block_game_input);
+                if (cfg_.hide_game_hud != old_hud) mode_->set_hide_game_hud_live(cfg_.hide_game_hud);
+            }
+        }
+        port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
+    }
+
+    for (const PbzfmCommand& cmd : commands) {
+        switch (cmd.action) {
+            case PbzfmAction::ToggleMode:
+                handle_toggle();
+                break;
+            case PbzfmAction::ToggleFreeze:
+                if (mode_ && mode_->active()) mode_->toggle_freeze();
+                break;
+            case PbzfmAction::ResetView:
+                // 重置走 tick 的 reset_view 分支（与 R 键完全同一条路径）
+                if (mode_ && mode_->active()) {
+                    Intent reset;
+                    reset.reset_view = true;
+                    mode_->tick(reset, 0.0);
+                }
+                break;
+            case PbzfmAction::SetFov:
+                if (mode_) mode_->set_fov(cmd.value);
+                break;
+            case PbzfmAction::ReloadConfig:
+                reload_config();  // 内部会同步 PBZFM 菜单显示值
+                break;
+        }
+    }
+
+    // 诊断页快照（每帧覆盖写；全是标量与短字符串，代价可忽略）
+    if (pbzfm_) {
+        PbzfmSnapshot s;
+        s.active = mode_ != nullptr && mode_->active();
+        s.frozen = mode_ != nullptr && mode_->frozen();
+        s.fov = mode_ != nullptr ? mode_->fov() : cfg_.fov_default;
+        s.fov_min = cfg_.fov_min;
+        s.fov_max = cfg_.fov_max;
+        if (mode_ != nullptr) {
+            s.pos[0] = mode_->pose().loc.x;
+            s.pos[1] = mode_->pose().loc.y;
+            s.pos[2] = mode_->pose().loc.z;
+            s.pitch = mode_->pose().rot.pitch;
+            s.yaw = mode_->pose().rot.yaw;
+            s.roll = mode_->pose().rot.roll;
+        }
+        s.toggle_key = vk_to_name(keys_.toggle);
+        s.freeze_key = vk_to_name(keys_.freeze);
+        s.reset_key = vk_to_name(keys_.reset);
+        s.roll_reset_key = vk_to_name(keys_.roll_reset);
+        if (input_source_ != nullptr) s.pad_backend = input_source_->pad_backend();
+        pbzfm_->publish_snapshot(s);
+    }
 }
 
 // ViewTarget 没确认切过去时每秒重试一次：切不过去的话，后面所有相机操作都看不见效果
@@ -262,8 +387,10 @@ void PhotoModeMod::handle_intent(const Intent& intent, double dt) {
     mode_->tick(intent, dt);
 }
 
-// 每秒打一行输入诊断：真机出问题时，这一行就能判断是“输入没到”还是“到了但没生效”
+// 每秒打一行输入诊断：真机出问题时，这一行就能判断是“输入没到”还是“到了但没生效”。
+// 默认关闭（放 debug_input_diag.txt 开启）：摘要要走路反射、日志要落盘，摄影模式里每秒一次
 void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
+    if (!input_diag_enabled_) return;
     if (!mode_ || !mode_->active() || !port_ || input_source_ == nullptr) return;
     diag_accum_ += dt;
     if (diag_accum_ < 1.0) return;
@@ -294,9 +421,12 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     // 对话语音钩子：游戏加载后尽早挂到 PBZSoundFXSubsystem 的 Post 函数上，
     // 才能截获之后所有 PlayingID（冻结时的真暂停靠这份名单）
     voice_hook_accum_ += dt;
-    if (voice_hook_accum_ >= 2.0) {
+    if (voice_hook_accum_ >= 2.0 && voice_hook_attempts_ < kMaxVoiceHookRetries) {
         voice_hook_accum_ = 0.0;
-        port_->install_voice_hooks();
+        ++voice_hook_attempts_;
+        if (!port_->install_voice_hooks() && voice_hook_attempts_ == kMaxVoiceHookRetries) {
+            port_->log(LogLevel::Warn, "对话语音钩子重试多次仍未挂上，停止重试（冻结将退回时间缩放模式）");
+        }
     }
 
     if (input_source_ != nullptr) {
@@ -333,6 +463,9 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
             }
         }
     }
+
+    // PBZFM 菜单提交的配置与动作：在游戏线程消化（框架线程只提交数据）
+    pbzfm_apply_pending();
 
     // 首选引擎自己的鼠标增量（PlayerController::GetInputMouseDelta）：
     // 它就是游戏用来转视角的那份数据，不依赖 OS 钩子，前台/窗口化/光标捕获都不影响。

@@ -121,22 +121,29 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         if (key == "key_toggle") set_string(cfg.key_toggle, value, error, key.c_str());
         else if (key == "key_freeze") set_string(cfg.key_freeze, value, error, key.c_str());
         else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
+        else if (key == "key_roll_reset") set_string(cfg.key_roll_reset, value, error, key.c_str());
         else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
         else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
         else if (key == "key_pitch_up") set_string(cfg.key_pitch_up, value, error, key.c_str());
         else if (key == "key_pitch_down") set_string(cfg.key_pitch_down, value, error, key.c_str());
-        else if (key == "key_pan_left") set_string(cfg.key_pan_left, value, error, key.c_str());
-        else if (key == "key_pan_right") set_string(cfg.key_pan_right, value, error, key.c_str());
+        else if (key == "key_yaw_left") set_string(cfg.key_yaw_left, value, error, key.c_str());
+        else if (key == "key_yaw_right") set_string(cfg.key_yaw_right, value, error, key.c_str());
+        // 旧键名兼容（≤1.0.45 左右是平移，1.0.46 起改为转向）：老 config.ini 的自定义键位继续生效
+        else if (key == "key_pan_left") set_string(cfg.key_yaw_left, value, error, key.c_str());
+        else if (key == "key_pan_right") set_string(cfg.key_yaw_right, value, error, key.c_str());
         else if (key == "pad_enabled") set_bool(cfg.pad_enabled, value, error, key.c_str());
         else if (key == "pad_toggle") set_string(cfg.pad_toggle, value, error, key.c_str());
         else if (key == "pad_freeze") set_string(cfg.pad_freeze, value, error, key.c_str());
         else if (key == "pad_reset") set_string(cfg.pad_reset, value, error, key.c_str());
+        else if (key == "pad_roll_reset") set_string(cfg.pad_roll_reset, value, error, key.c_str());
         else if (key == "pad_fov_up") set_string(cfg.pad_fov_up, value, error, key.c_str());
         else if (key == "pad_fov_down") set_string(cfg.pad_fov_down, value, error, key.c_str());
         else if (key == "pad_pitch_up") set_string(cfg.pad_pitch_up, value, error, key.c_str());
         else if (key == "pad_pitch_down") set_string(cfg.pad_pitch_down, value, error, key.c_str());
-        else if (key == "pad_pan_left") set_string(cfg.pad_pan_left, value, error, key.c_str());
-        else if (key == "pad_pan_right") set_string(cfg.pad_pan_right, value, error, key.c_str());
+        else if (key == "pad_yaw_left") set_string(cfg.pad_yaw_left, value, error, key.c_str());
+        else if (key == "pad_yaw_right") set_string(cfg.pad_yaw_right, value, error, key.c_str());
+        else if (key == "pad_pan_left") set_string(cfg.pad_yaw_left, value, error, key.c_str());   // 旧键名兼容
+        else if (key == "pad_pan_right") set_string(cfg.pad_yaw_right, value, error, key.c_str());
         else if (key == "pad_look_speed") set_double(cfg.pad_look_speed, value, error, key.c_str());
         else if (key == "pad_move_scale") set_double(cfg.pad_move_scale, value, error, key.c_str());
         else if (key == "pad_deadzone") set_double(cfg.pad_deadzone, value, error, key.c_str());
@@ -149,7 +156,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "vertical_speed") set_double(cfg.vertical_speed, value, error, key.c_str());
         else if (key == "roll_speed") set_double(cfg.roll_speed, value, error, key.c_str());
         else if (key == "pitch_speed") set_double(cfg.pitch_speed, value, error, key.c_str());
-        else if (key == "arrow_pan_mult") set_double(cfg.arrow_pan_mult, value, error, key.c_str());
+        else if (key == "yaw_speed") set_double(cfg.yaw_speed, value, error, key.c_str());
         else if (key == "invert_y") set_bool(cfg.invert_y, value, error, key.c_str());
         else if (key == "free_look_requires_alt") set_bool(cfg.free_look_requires_alt, value, error, key.c_str());
         else if (key == "block_game_input") set_bool(cfg.block_game_input, value, error, key.c_str());
@@ -167,11 +174,16 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "hide_game_hud") set_bool(cfg.hide_game_hud, value, error, key.c_str());
         else if (key == "hide_interact_prompt") set_bool(cfg.hide_interact_prompt, value, error, key.c_str());
         else if (key == "hide_enemy_health_bars") set_bool(cfg.hide_enemy_health_bars, value, error, key.c_str());
+        else if (key == "hide_lockon_marker") set_bool(cfg.hide_lockon_marker, value, error, key.c_str());
         else if (key == "hide_subtitles") set_bool(cfg.hide_subtitles, value, error, key.c_str());
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
         else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
         else if (key == "freeze_sequences") set_bool(cfg.freeze_sequences, value, error, key.c_str());
         else if (key == "stop_wwise_on_freeze") set_bool(cfg.stop_wwise_on_freeze, value, error, key.c_str());
+        else if (key == "stop_camera_shakes_on_freeze") set_bool(cfg.stop_camera_shakes_on_freeze, value, error, key.c_str());
+        else if (key == "freeze_wind") set_bool(cfg.freeze_wind, value, error, key.c_str());
+        else if (key == "freeze_mpc") set_bool(cfg.freeze_mpc, value, error, key.c_str());
+        else if (key == "freeze_diag") set_bool(cfg.freeze_diag, value, error, key.c_str());
         else if (key == "restore_fov_on_exit") set_bool(cfg.restore_fov_on_exit, value, error, key.c_str());
         else if (key == "restore_view_on_exit") set_bool(cfg.restore_view_on_exit, value, error, key.c_str());
         else if (key == "freeze_mode") {
@@ -180,6 +192,10 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
             else if (v == "pause") cfg.freeze_mode = FreezeMode::Pause;
             else error = "freeze_mode 只能是 dilation 或 pause：" + value;
         } else if (key == "imgui_tab") set_bool(cfg.imgui_tab, value, error, key.c_str());
+        else if (key == "menu_language") {
+            if (value.empty()) error = "menu_language 不能为空（auto 或词典 id）";
+            else cfg.menu_language = value;
+        }
         else if (key == "log_level") {
             const std::string v = lower(value);
             if (v == "error") cfg.log_level = LogLevel::Error;
@@ -265,9 +281,9 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         result.warnings.push_back("slow_look_mult 应在 (0, 1]，已回退 0.1");
         result.cfg.slow_look_mult = 0.1;
     }
-    if (result.cfg.arrow_pan_mult < 0.0 || result.cfg.arrow_pan_mult > 3.0) {
-        result.warnings.push_back("arrow_pan_mult 应在 [0, 3]，已回退 0.5");
-        result.cfg.arrow_pan_mult = 0.5;
+    if (result.cfg.yaw_speed <= 0.0) {
+        result.warnings.push_back("yaw_speed 必须为正，已回退 90");
+        result.cfg.yaw_speed = 90.0;
     }
     if (result.cfg.freeze_dilation <= 0.0 || result.cfg.freeze_dilation > 1.0) {
         result.warnings.push_back("freeze_dilation 应在 (0, 1]，已回退 0.0001");
@@ -302,8 +318,7 @@ ConfigLoadResult load_config_file(const std::string& path) {
     return parse_config(buffer.str(), path.c_str());
 }
 
-std::string default_config_text() {
-    Config c;
+std::string config_ini_text(const Config& c) {
     std::ostringstream out;
     out << "; ================================================================\n"
         << "; " << PBZPM_VERSION << " 配置文件（UTF-8，可留空使用默认值）\n"
@@ -316,15 +331,17 @@ std::string default_config_text() {
         << "key_freeze = " << c.key_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
         << "key_reset = " << c.key_reset << "\n"
+        << "; 滚转归零（水平校正）：只把滚转回 0，位置/俯仰/偏航/FOV 不动\n"
+        << "key_roll_reset = " << c.key_roll_reset << "\n"
         << "; FOV 加减（小键盘 +/-，也可写 OEM_PLUS / OEM_MINUS）\n"
         << "key_fov_up = " << c.key_fov_up << "\n"
         << "key_fov_down = " << c.key_fov_down << "\n"
         << "; 俯仰（按住持续转）：方向键上 = 仰视 / 下 = 俯视\n"
         << "key_pitch_up = " << c.key_pitch_up << "\n"
         << "key_pitch_down = " << c.key_pitch_down << "\n"
-        << "; 左右平移（按住持续移，速度 = move_speed × arrow_pan_mult）：方向键左 / 右\n"
-        << "key_pan_left = " << c.key_pan_left << "\n"
-        << "key_pan_right = " << c.key_pan_right << "\n\n"
+        << "; 左右转视角（按住持续转，速度 = yaw_speed）：方向键左 = 左转 / 右 = 右转\n"
+        << "key_yaw_left = " << c.key_yaw_left << "\n"
+        << "key_yaw_right = " << c.key_yaw_right << "\n\n"
         << "[control]\n"
         << "; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速\n"
         << "move_speed = " << c.move_speed << "\n"
@@ -335,11 +352,11 @@ std::string default_config_text() {
         << "; 每单位鼠标位移转多少度\n"
         << "look_sensitivity = " << c.look_sensitivity << "\n"
         << "pitch_limit = " << c.pitch_limit << "\n"
-        << "invert_y = false\n"
+        << "invert_y = " << (c.invert_y ? "true" : "false") << "\n"
         << "; 必须按住 Alt 才能自由转视角\n"
-        << "free_look_requires_alt = true\n"
+        << "free_look_requires_alt = " << (c.free_look_requires_alt ? "true" : "false") << "\n"
         << "; 进入摄影模式时屏蔽角色移动/视角输入（退出时还原）\n"
-        << "block_game_input = true\n"
+        << "block_game_input = " << (c.block_game_input ? "true" : "false") << "\n"
         << "; 左键上移/右键下移：translate=相机上下平移，look=俯仰\n"
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
         << "vertical_speed = " << c.vertical_speed << "\n"
@@ -347,8 +364,8 @@ std::string default_config_text() {
         << "roll_speed = " << c.roll_speed << "\n"
         << "; 方向键上/下（与手柄十字键上/下）俯仰速度（度/秒）；Shift 加速 / Ctrl 减速同样生效\n"
         << "pitch_speed = " << c.pitch_speed << "\n"
-        << "; 方向键/十字键左右平移速度占 move_speed 的比例（1 = 与 WASD/左摇杆同速）\n"
-        << "arrow_pan_mult = " << c.arrow_pan_mult << "\n\n"
+        << "; 方向键左/右（与手柄十字键左/右）转向速度（度/秒）；Shift 加速 / Ctrl 减速同样生效\n"
+        << "yaw_speed = " << c.yaw_speed << "\n\n"
         << "[gamepad]\n"
         << "; 手柄支持总开关（false=不轮询手柄）\n"
         << "pad_enabled = " << (c.pad_enabled ? "true" : "false") << "\n"
@@ -361,15 +378,17 @@ std::string default_config_text() {
         << "pad_freeze = " << c.pad_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
         << "pad_reset = " << c.pad_reset << "\n"
+        << "; 滚转归零（水平校正）：只把滚转回 0；LB+RB 同时按住触发\n"
+        << "pad_roll_reset = " << c.pad_roll_reset << "\n"
         << "; FOV 加减（A/B；十字键已全部让位给视角调节；单击一格，按住先延迟约 0.35 秒再连发）\n"
         << "pad_fov_up = " << c.pad_fov_up << "\n"
         << "pad_fov_down = " << c.pad_fov_down << "\n"
         << "; 俯仰（按住持续转）：十字键上 = 仰视 / 下 = 俯视\n"
         << "pad_pitch_up = " << c.pad_pitch_up << "\n"
         << "pad_pitch_down = " << c.pad_pitch_down << "\n"
-        << "; 左右平移（按住持续移）：十字键左 / 右\n"
-        << "pad_pan_left = " << c.pad_pan_left << "\n"
-        << "pad_pan_right = " << c.pad_pan_right << "\n"
+        << "; 左右转视角（按住持续转）：十字键左 = 左转 / 右 = 右转\n"
+        << "pad_yaw_left = " << c.pad_yaw_left << "\n"
+        << "pad_yaw_right = " << c.pad_yaw_right << "\n"
         << "; 右摇杆转视角速度（度/秒，全行程）\n"
         << "pad_look_speed = " << c.pad_look_speed << "\n"
         << "; 左摇杆移动速度占 move_speed 的比例\n"
@@ -384,15 +403,17 @@ std::string default_config_text() {
         << "; 超宽屏（21:9/32:9）：进入摄影模式时解除游戏 16:9 画幅锁定（消除两侧黑边），退出还原\n"
         << "ultrawide_unlock = " << (c.ultrawide_unlock ? "true" : "false") << "\n\n"
         << "[effects]\n"
-        << "hide_player = false\n"
+        << "hide_player = " << (c.hide_player ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"
-        << "hide_game_hud = true\n"
+        << "hide_game_hud = " << (c.hide_game_hud ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏交互提示（可互物体旁的 E 键图标，退出时恢复）\n"
-        << "hide_interact_prompt = true\n"
+        << "hide_interact_prompt = " << (c.hide_interact_prompt ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏敌人（怪物）血条（切到游戏自带\"仅锁定目标\"显示模式，退出时还原原模式）\n"
-        << "hide_enemy_health_bars = true\n"
+        << "hide_enemy_health_bars = " << (c.hide_enemy_health_bars ? "true" : "false") << "\n"
+        << "; 进入摄影模式时隐藏锁定标记（锁定敌人时其身上出现的白点，退出时还原）\n"
+        << "hide_lockon_marker = " << (c.hide_lockon_marker ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏对话字幕（关游戏字幕设置 + 藏字幕显示控件，退出时还原）\n"
-        << "hide_subtitles = true\n"
+        << "hide_subtitles = " << (c.hide_subtitles ? "true" : "false") << "\n"
         << "; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）\n"
         << "auto_pause_time = " << (c.auto_pause_time ? "true" : "false") << "\n"
         << "; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停\n"
@@ -404,15 +425,50 @@ std::string default_config_text() {
         << "; 冻结时把所有 Wwise 音频组件的音量归零（对话/环境/音乐一并静音，可恢复）。\n"
         << "; 声音在冻结期间继续无声播放，解冻恢复音量后当前句从原处继续\n"
         << "stop_wwise_on_freeze = " << (c.stop_wwise_on_freeze ? "true" : "false") << "\n"
-        << "restore_fov_on_exit = true\n"
-        << "restore_view_on_exit = true\n\n"
+        << "; 冻结时停用相机修饰器并立即结束相机 shake。它们用真实时间驱动，世界暂停拦不住，\n"
+        << "; 是冻结画面边缘抖动/脸部阴影爬动的主变化源；解冻时按冻结前状态还原\n"
+        << "stop_camera_shakes_on_freeze = " << (c.stop_camera_shakes_on_freeze ? "true" : "false") << "\n"
+        << "; 冻结时把风源（WindDirectionalSource）的风强/风速归零——材质顶点摆动（布料/植被）\n"
+        << "; 的幅度源，世界暂停与时间缩放都拦不住；解冻还原原值\n"
+        << "freeze_wind = " << (c.freeze_wind ? "true" : "false") << "\n"
+        << "; 冻结时钉住材质参数集合（MPC）当前值，冻结期每帧写回快照，压制实时驱动参数\n"
+        << "; 继续推布料/植被摆动；解冻释放\n"
+        << "freeze_mpc = " << (c.freeze_mpc ? "true" : "false") << "\n"
+        << "; 冻结期每秒输出一条冻结诊断（风源/MPC 参数变化/相机修饰器状态），\n"
+        << "; 定位布料与阴影闪烁还剩哪个变化源没压住\n"
+        << "freeze_diag = " << (c.freeze_diag ? "true" : "false") << "\n"
+        << "restore_fov_on_exit = " << (c.restore_fov_on_exit ? "true" : "false") << "\n"
+        << "restore_view_on_exit = " << (c.restore_view_on_exit ? "true" : "false") << "\n\n"
         << "[ui]\n"
         << "; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作\n"
-        << "imgui_tab = true\n\n"
+        << "imgui_tab = " << (c.imgui_tab ? "true" : "false") << "\n"
+        << "; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id\n"
+        << ";（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）\n"
+        << "menu_language = " << c.menu_language << "\n\n"
         << "[misc]\n"
         << "log_level = " << log_level_name(c.log_level) << "\n"
-        << "dry_run = false\n";
+        << "dry_run = " << (c.dry_run ? "true" : "false") << "\n";
     return out.str();
+}
+
+std::string default_config_text() {
+    return config_ini_text(Config{});
+}
+
+bool save_config_file(const std::string& path, const Config& cfg, std::string* error) {
+    std::ofstream out(path, std::ios::binary | std::ios::trunc);
+    if (!out) {
+        if (error) *error = "无法打开文件写入：" + path;
+        return false;
+    }
+    const std::string text = config_ini_text(cfg);
+    out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    out.close();
+    if (!out) {
+        if (error) *error = "写入失败：" + path;
+        return false;
+    }
+    return true;
 }
 
 }  // namespace pbzpm

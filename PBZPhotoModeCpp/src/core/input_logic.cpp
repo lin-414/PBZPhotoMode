@@ -35,12 +35,13 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.toggle = resolve_key(cfg.key_toggle, map.toggle, "key_toggle", warnings, map.all_resolved);
     map.freeze = resolve_key(cfg.key_freeze, map.freeze, "key_freeze", warnings, map.all_resolved);
     map.reset = resolve_key(cfg.key_reset, map.reset, "key_reset", warnings, map.all_resolved);
+    map.roll_reset = resolve_key(cfg.key_roll_reset, map.roll_reset, "key_roll_reset", warnings, map.all_resolved);
     map.fov_up = resolve_key(cfg.key_fov_up, map.fov_up, "key_fov_up", warnings, map.all_resolved);
     map.fov_down = resolve_key(cfg.key_fov_down, map.fov_down, "key_fov_down", warnings, map.all_resolved);
     map.pitch_up = resolve_key(cfg.key_pitch_up, map.pitch_up, "key_pitch_up", warnings, map.all_resolved);
     map.pitch_down = resolve_key(cfg.key_pitch_down, map.pitch_down, "key_pitch_down", warnings, map.all_resolved);
-    map.pan_left = resolve_key(cfg.key_pan_left, map.pan_left, "key_pan_left", warnings, map.all_resolved);
-    map.pan_right = resolve_key(cfg.key_pan_right, map.pan_right, "key_pan_right", warnings, map.all_resolved);
+    map.yaw_left = resolve_key(cfg.key_yaw_left, map.yaw_left, "key_yaw_left", warnings, map.all_resolved);
+    map.yaw_right = resolve_key(cfg.key_yaw_right, map.yaw_right, "key_yaw_right", warnings, map.all_resolved);
 
     const auto resolve_combo = [&](const std::string& text, const std::vector<PadButton>& fallback, const char* label) {
         const PadCombo parsed = parse_pad_combo(text, fallback, label, warnings);
@@ -50,12 +51,13 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.pad_toggle = resolve_combo(cfg.pad_toggle, map.pad_toggle, "pad_toggle");
     map.pad_freeze = resolve_combo(cfg.pad_freeze, map.pad_freeze, "pad_freeze");
     map.pad_reset = resolve_combo(cfg.pad_reset, map.pad_reset, "pad_reset");
+    map.pad_roll_reset = resolve_combo(cfg.pad_roll_reset, map.pad_roll_reset, "pad_roll_reset");
     map.pad_fov_up = resolve_combo(cfg.pad_fov_up, map.pad_fov_up, "pad_fov_up");
     map.pad_fov_down = resolve_combo(cfg.pad_fov_down, map.pad_fov_down, "pad_fov_down");
     map.pad_pitch_up = resolve_combo(cfg.pad_pitch_up, map.pad_pitch_up, "pad_pitch_up");
     map.pad_pitch_down = resolve_combo(cfg.pad_pitch_down, map.pad_pitch_down, "pad_pitch_down");
-    map.pad_pan_left = resolve_combo(cfg.pad_pan_left, map.pad_pan_left, "pad_pan_left");
-    map.pad_pan_right = resolve_combo(cfg.pad_pan_right, map.pad_pan_right, "pad_pan_right");
+    map.pad_yaw_left = resolve_combo(cfg.pad_yaw_left, map.pad_yaw_left, "pad_yaw_left");
+    map.pad_yaw_right = resolve_combo(cfg.pad_yaw_right, map.pad_yaw_right, "pad_yaw_right");
     return map;
 }
 
@@ -145,12 +147,12 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
     out.move_forward = (key_held(kW) ? 1.0 : 0.0) - (key_held(kS) ? 1.0 : 0.0);
     out.move_right = (key_held(kD) ? 1.0 : 0.0) - (key_held(kA) ? 1.0 : 0.0);
 
-    // 方向键左右平移（与 A/D 同轴可叠加，速度按 arrow_pan_mult 折算，不影响 WASD）；方向键上下俯仰在 pitch_axis 里
-    out.move_right += ((key_held(keys.pan_right) ? 1.0 : 0.0) - (key_held(keys.pan_left) ? 1.0 : 0.0)) * cfg.arrow_pan_mult;
+    // 方向键左/右转视角（1.0.46 起从左右平移改为偏航，与上/下俯仰组成完整视角旋转簇）；WASD 平移不受影响
+    out.yaw_axis = (key_held(keys.yaw_right) ? 1.0 : 0.0) - (key_held(keys.yaw_left) ? 1.0 : 0.0);
     // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给鼠标左右键与手柄 RT/LT
     out.roll = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
 
-    // Z/X 俯仰：按住持续转（+1 仰视 / -1 俯视），不受 free_look_requires_alt 限制
+    // 方向键俯仰：按住持续转（+1 仰视 / -1 俯视），不受 free_look_requires_alt 限制
     out.pitch_axis = (key_held(keys.pitch_up) ? 1.0 : 0.0) - (key_held(keys.pitch_down) ? 1.0 : 0.0);
 
     // 左右键：translate 模式下是上下平移，look 模式下是俯仰
@@ -173,6 +175,7 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
     out.toggle_mode = key_pressed(keys.toggle);
     out.toggle_freeze = key_pressed(keys.freeze);
     out.reset_view = key_pressed(keys.reset);
+    out.reset_roll = key_pressed(keys.roll_reset);
 
     // FOV 步进：键盘 FOV 键 + 手柄十字键；按下沿立即一格，持续按住先延迟再连发
     out.fov_nudge += fov_axis_nudge(keys.fov_up, keys.pad_fov_up, dt, fov_up_repeat_);
@@ -183,6 +186,7 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
         out.toggle_mode = out.toggle_mode || pad_combo_pressed(keys.pad_toggle);
         out.toggle_freeze = out.toggle_freeze || pad_combo_pressed(keys.pad_freeze);
         out.reset_view = out.reset_view || pad_combo_pressed(keys.pad_reset);
+        out.reset_roll = out.reset_roll || pad_combo_pressed(keys.pad_roll_reset);
 
         // 左摇杆移动（模拟行程，deadzone 后 0..1）
         double lx = pad_.lx;
@@ -198,15 +202,16 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
         out.pad_look_dx = rx * cfg.pad_look_speed;
         out.pad_look_dy = -ry * cfg.pad_look_speed;
 
-        // RT 上 / LT 下（模拟量）；RB/LB 滚转（与 Q/E 同向：RB 顺时针 / LB 逆时针）
+        // RT 上 / LT 下（模拟量）；RB/LB 滚转（与 Q/E 同向：RB 顺时针 / LB 逆时针）；两键同按是滚转归零组合键
         out.move_up += pad_.rt - pad_.lt;
         out.roll += (pad_held(pad_, PadButton::RB) ? 1.0 : 0.0) - (pad_held(pad_, PadButton::LB) ? 1.0 : 0.0);
 
-        // 十字键上/下俯仰（上 = 仰视 / 下 = 俯视）；左/右平移按 arrow_pan_mult 折算（FOV 已移到 A/B）
+        // 十字键上/下俯仰（上 = 仰视 / 下 = 俯视）、左/右偏航（左 = 左转 / 右 = 右转，1.0.46 起从平移改来）；
+        // 十字键全部用于视角调节（FOV 已移到 A/B）
         out.pitch_axis += pad_combo_down(pad_, keys.pad_pitch_up) ? 1.0 : 0.0;
         out.pitch_axis -= pad_combo_down(pad_, keys.pad_pitch_down) ? 1.0 : 0.0;
-        out.move_right += pad_combo_down(pad_, keys.pad_pan_right) ? cfg.arrow_pan_mult : 0.0;
-        out.move_right -= pad_combo_down(pad_, keys.pad_pan_left) ? cfg.arrow_pan_mult : 0.0;
+        out.yaw_axis += pad_combo_down(pad_, keys.pad_yaw_right) ? 1.0 : 0.0;
+        out.yaw_axis -= pad_combo_down(pad_, keys.pad_yaw_left) ? 1.0 : 0.0;
 
         // 变速原在 LB/RB，随滚转让位到摇杆按下：LS 加速 / RS 减速；
         // 两杆同时按住是进出模式组合键，此时不触发变速

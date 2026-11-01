@@ -27,6 +27,7 @@ public:
     bool hud_visible{true};
     bool prompts_visible{true};
     bool bars_visible{true};
+    bool lockon_visible{true};
     bool subtitles_visible{true};
     int prompt_restore_count{0};
     bool postfx_saved{false};
@@ -52,6 +53,7 @@ public:
     bool fail_hud{false};
     bool fail_prompts{false};
     bool fail_bars{false};
+    bool fail_lockon{false};
     bool fail_subtitles{false};
     bool fail_postfx{false};
     bool fail_pause{false};
@@ -140,6 +142,12 @@ public:
         bars_visible = visible;
         return true;
     }
+    bool set_lockon_marker_visible(bool visible) override {
+        calls.push_back(visible ? "lockon_on" : "lockon_off");
+        if (fail_lockon && !visible) return false;
+        lockon_visible = visible;
+        return true;
+    }
     bool set_subtitles_visible(bool visible) override {
         calls.push_back(visible ? "subs_on" : "subs_off");
         if (fail_subtitles && !visible) return false;
@@ -192,6 +200,59 @@ public:
     int pause_wwise_voices(bool pause) override {
         calls.push_back(pause ? "wwise_pause" : "wwise_resume");
         return wwise_components;
+    }
+
+    // ---- 冻结期残余微动治理模拟 ----
+    int modifiers_found{0};      // CameraModifiers 数量
+    int modifiers_disabled{0};   // 冻结时本次停用的数量
+    int wind_sources{0};         // 风源数量（同时是冻结归零/还原成功数）
+    int mpc_params{0};           // MPC 快照参数数（>0 才进入每帧写回）
+    bool fail_camera_shakes{false};
+    bool fail_wind{false};
+    bool fail_mpc{false};
+    int mpc_snapshot_calls{0};
+    int mpc_hold_calls{0};
+    int mpc_release_calls{0};
+    CameraShakeFreezeReport freeze_camera_shakes(bool frozen) override {
+        calls.push_back(frozen ? "shakes_freeze" : "shakes_restore");
+        CameraShakeFreezeReport report{};
+        report.ok = !fail_camera_shakes;
+        report.found = modifiers_found;
+        report.acted = report.ok ? (frozen ? modifiers_disabled : modifiers_found) : 0;
+        return report;
+    }
+    WindFreezeReport freeze_wind(bool frozen) override {
+        calls.push_back(frozen ? "wind_freeze" : "wind_restore");
+        WindFreezeReport report{};
+        report.ok = !fail_wind;
+        report.found = wind_sources;
+        report.acted = report.ok ? wind_sources : 0;
+        return report;
+    }
+    int mpc_take_snapshot() override {
+        calls.push_back("mpc_snapshot");
+        ++mpc_snapshot_calls;
+        return fail_mpc ? 0 : mpc_params;
+    }
+    int mpc_hold_snapshot() override {
+        calls.push_back("mpc_hold");
+        ++mpc_hold_calls;
+        return mpc_params;
+    }
+    void mpc_release_snapshot() override {
+        calls.push_back("mpc_release");
+        ++mpc_release_calls;
+    }
+    std::string freeze_diag_sample() override {
+        calls.push_back("freeze_diag");
+        return "冻结诊断(模拟)";
+    }
+    int pov_watch_calls{0};
+    int pov_watch_idle_calls{0};
+    void pov_watch_tick(bool camera_idle) override {
+        calls.push_back("pov_watch_tick");
+        ++pov_watch_calls;
+        if (camera_idle) ++pov_watch_idle_calls;
     }
 
     bool save_postfx() override {

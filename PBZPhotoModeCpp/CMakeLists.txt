@@ -17,6 +17,7 @@ add_library(pbzpm_core STATIC
     src/core/input_logic.cpp
     src/core/photo_mode.cpp
     src/core/vk.cpp
+    src/pbzfm_schema_map.cpp
 )
 target_include_directories(pbzpm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
@@ -56,10 +57,14 @@ if (PBZPM_WITH_UE4SS)
         dllmain.cpp
         src/engine/ue4ss_port.cpp
         src/mod_app.cpp
+        src/pbzfm_client.cpp
+        src/pbzfm_client_lang.cpp
         src/ui_tab.cpp
         src/win_input.cpp
     )
     target_compile_definitions(PBZPhotoModeCpp PRIVATE PBZPM_WITH_UE4SS=1)
+    # PBZFM 菜单框架 SDK（内置拷贝，运行时 GetProcAddress 解析，零链接依赖）
+    target_include_directories(PBZPhotoModeCpp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/pbzfm)
     # 用 PUBLIC：UE4SS 的头文件目录是通过 INTERFACE 传播的，PRIVATE 会拿不到 <Mod/CppUserModBase.hpp>
     # pbzpm_imgui 放在 UE4SS 前面：两边各有一份 ImGui，链接顺序保证符号解析用我们这份
     target_link_libraries(PBZPhotoModeCpp PUBLIC pbzpm_imgui UE4SS pbzpm_core)

@@ -25,6 +25,7 @@
 #include <map>
 #include <string>
 #include <system_error>
+#include <unordered_map>
 #include <vector>
 
 #include <DynamicOutput/DynamicOutput.hpp>
@@ -563,6 +564,147 @@ auto invoke_pause_id(UObject* target, const char* fn, int32_t id, double fade, U
     return true;
 }
 
+// ------------------------------------------------------------------ 冻结期残余微动治理
+
+// 带签名校验的单 bool 参数调用（StopAllCameraShakes(bool) / DisableModifier(bool)）：
+// 唯一参数必须是 bool 型。参数名对不上时绝不照调——DisableModifier 写不进参数
+// 就等于发 bDisable=0（启用），方向正好相反。
+auto invoke_set_bool(UObject* target, const char* fn, bool value) -> bool {
+    if (!is_ok(target)) return false;
+    UFunction* function = find_function(target, fn);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* ret = function->GetReturnProperty();
+    FProperty* the_param = nullptr;
+    int bool_params = 0;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == ret) continue;
+        if (!prop->IsA<FBoolProperty>()) return false;
+        ++bool_params;
+        the_param = prop;
+    }
+    if (bool_params != 1 || the_param == nullptr) return false;
+    write_bool(the_param, params.data(), value);
+    target->ProcessEvent(function, params.data());
+    return true;
+}
+
+auto kismet_material_library() -> UObject* {
+    return find_object("/Script/Engine.Default__KismetMaterialLibrary");
+}
+
+// 数组属性判定：IsA<FArrayProperty> 走 UE4SS 的属性类注册表（FFieldClassRegistrar），
+// 注册失败时 IsA 对该类型永远 false 且无任何报错——1.0.46 实机 CameraModifiers 与
+// MPC 的 ScalarParameters/VectorParameters 全部因此被误判为“不是数组”。
+// 字段类名读的是引擎数据（FFieldClassVariant::GetFName），作权威判定；
+// 类名 "ArrayProperty" 即 FArrayProperty，此时 static_cast 是安全的。
+auto as_array_property(FProperty* prop) -> FArrayProperty* {
+    if (prop == nullptr) return nullptr;
+    if (prop->IsA<FArrayProperty>()) return static_cast<FArrayProperty*>(prop);
+    const std::string field_class = narrow(prop->GetClass().GetFName().ToString());
+    if (field_class == "ArrayProperty") return static_cast<FArrayProperty*>(prop);
+    return nullptr;
+}
+
+// 读 UMaterialParameterCollection 的 ScalarParameters / VectorParameters 参数名
+//（TArray<FCollectionScalarParameter/FCollectionVectorParameter>，元素结构体取 ParameterName）
+auto mpc_read_param_names(UObject* collection, const char* array_name, std::vector<std::string>& out)
+    -> void {
+    FProperty* prop = find_property(collection, array_name);
+    auto* array_prop = as_array_property(prop);
+    if (array_prop == nullptr) return;
+    FScriptArrayHelper_InContainer helper(array_prop, static_cast<const void*>(collection));
+    const int32 count = helper.Num();
+    for (int32 i = 0; i < count && i < 64; ++i) {  // 上限防异常数据
+        void* element = helper.GetRawPtr(i);
+        std::string name;
+        if (read_struct_name(array_prop->GetInner(), element, "ParameterName", name) && !name.empty()) {
+            out.push_back(std::move(name));
+        }
+    }
+}
+
+// KismetMaterialLibrary 的 MPC 读写：走世界的 CollectionInstance，材质 uniforms 同步更新，
+// 这是运行时改 MPC 的正路（直接改资产默认值不影响运行中的实例）。
+auto mpc_get_scalar(UObject* statics, UObject* world, UObject* collection, const std::string& name,
+                    double& out) -> bool {
+    UFunction* function = find_function(statics, "GetScalarParameterValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
+        !params.set_name("ParameterName", name.c_str())) {
+        return false;
+    }
+    statics->ProcessEvent(function, params.data());
+    // 实机签名（1.0.48 诊断）：object,object,other:ParameterName,float:ReturnValue(ret)——
+    // 该版本把唯一的出参直接作为返回值（属性名 ReturnValue），旧签名才是 bool + OutValue 出参
+    return params.get_number("OutValue", out) || params.get_number("ReturnValue", out);
+}
+
+auto mpc_set_scalar(UObject* statics, UObject* world, UObject* collection, const std::string& name,
+                    double value) -> bool {
+    UFunction* function = find_function(statics, "SetScalarParameterValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
+        !params.set_name("ParameterName", name.c_str())) {
+        return false;
+    }
+    if (!params.set_number("Value", value)) {
+        // 值参数名对不上时按位置兜底（第 4 个参数；类型校验仍由 write_number 把关）
+        if (!write_number(params.prop({"Value"}, 3), params.data(), value)) return false;
+    }
+    statics->ProcessEvent(function, params.data());
+    return true;
+}
+
+auto mpc_get_vector(UObject* statics, UObject* world, UObject* collection, const std::string& name,
+                    float out[4]) -> bool {
+    UFunction* function = find_function(statics, "GetVectorParameterValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
+        !params.set_name("ParameterName", name.c_str())) {
+        return false;
+    }
+    statics->ProcessEvent(function, params.data());
+    // 与 get_scalar 同款：出参可能叫 OutValue（旧）或直接是返回值 ReturnValue（实机）
+    FProperty* out_value = params.property("OutValue");
+    if (out_value == nullptr) out_value = params.property("ReturnValue");
+    static const char* kMembers[4] = {"R", "G", "B", "A"};
+    for (int i = 0; i < 4; ++i) {
+        double channel = 0.0;
+        if (!read_struct_number(out_value, params.data(), kMembers[i], channel)) return false;
+        out[i] = static_cast<float>(channel);
+    }
+    return true;
+}
+
+auto mpc_set_vector(UObject* statics, UObject* world, UObject* collection, const std::string& name,
+                    const float in[4]) -> bool {
+    UFunction* function = find_function(statics, "SetVectorParameterValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
+        !params.set_name("ParameterName", name.c_str())) {
+        return false;
+    }
+    FProperty* value_prop = params.property("Value");
+    if (value_prop == nullptr) value_prop = params.prop({"Value"}, 3);
+    static const char* kMembers[4] = {"R", "G", "B", "A"};
+    for (int i = 0; i < 4; ++i) {
+        if (!write_struct_number(value_prop, params.data(), kMembers[i], in[i])) return false;
+    }
+    statics->ProcessEvent(function, params.data());
+    return true;
+}
+
 }  // namespace
 
 // ------------------------------------------------------------------ 构造/析构
@@ -682,8 +824,49 @@ static auto read_return_vector(UObject* object, const char* function_name, const
            read_struct_number(result, params.data(), c_name, c);
 }
 
+// 调一个返回数值的无参 UFUNCTION（例如 PlayerCameraManager::GetFOVAngle），读 ReturnValue。
+static auto read_return_number(UObject* object, const char* function_name, double& out) -> bool {
+    if (!is_ok(object)) return false;
+    UFunction* function = find_function(object, function_name);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    object->ProcessEvent(function, params.data());
+    return params.get_number("ReturnValue", out);
+}
+
+// APlayerCameraManager::CameraCache（FMinimalViewInfo）存着这一帧最终视角。
+// 5.4 及以前 FOV 是直接成员，5.5 起挪进 Lens（FieldOfView）；两处都试。
+static auto read_camera_cache_fov(UObject* manager, double& out) -> bool {
+    if (!is_ok(manager)) return false;
+    FProperty* cache = find_property(manager, "CameraCache");
+    if (cache == nullptr || !cache->IsA<FStructProperty>()) return false;
+    if (read_struct_number(cache, manager, "FOV", out) && out > 1.0) return true;
+    void* base = struct_member_base(cache, manager);
+    FProperty* field_of_view = struct_member(struct_member(cache, "Lens"), "FieldOfView");
+    return base != nullptr && field_of_view != nullptr && read_number(field_of_view, base, out) && out > 1.0;
+}
+
 bool Ue4ssPort::read_pov(CameraPose& out) {
     bool any = false;
+
+    // 兜底链：摄影相机旧值（再次进入）/ 管理器默认值。两者都不是「玩家眼前这一帧」
+    // 的 FOV，只在当前视角读不到时使用
+    auto fov_fallback = [&]() {
+        if (UObject* component = camera_component(); is_ok(component)) {
+            double fov = 0.0;
+            if (read_number(find_property(component, "FieldOfView"), component, fov) && fov > 1.0) {
+                out.fov = fov;
+                any = true;
+            }
+        } else if (UObject* manager = camera_manager(); is_ok(manager)) {
+            double fov = 0.0;
+            if (read_number(find_property(manager, "DefaultFOV"), manager, fov) && fov > 1.0) {
+                out.fov = fov;
+                any = true;
+            }
+        }
+    };
 
     // 最准的来源是相机管理器这一帧真正在用的视角。进模式时用它做初始位姿，
     // 相机就会从玩家当前镜头位置开始，而不是卡在角色身体里（上一版「人物消失」就是这个）。
@@ -709,8 +892,20 @@ bool Ue4ssPort::read_pov(CameraPose& out) {
             any = true;
         }
         if (have_location && have_rotation) {
+            // FOV 必须在这里一并取：GetFOVAngle 返回当前 CameraCache 的 FOV，游戏相机
+            // 蓝图/瞄准改过的值也在里面；DefaultFOV 只是默认值（UE 默认 90），跟玩家
+            // 眼前镜头无关。此前这里直接 return，FOV 恒落 CameraPose 默认 90，
+            // 一进摄影模式画面就突然变广。
+            double fov = 0.0;
+            bool have_fov = read_return_number(manager, "GetFOVAngle", fov) && fov > 1.0;
+            if (!have_fov) have_fov = read_camera_cache_fov(manager, fov) && fov > 1.0;
+            if (have_fov) {
+                out.fov = fov;
+            } else {
+                fov_fallback();
+            }
             log(LogLevel::Info, "初始位姿取自相机管理器视角");
-            return any;  // FOV 还是走下面的分支统一处理
+            return any;
         }
     }
 
@@ -739,21 +934,7 @@ bool Ue4ssPort::read_pov(CameraPose& out) {
         }
     }
 
-    // FOV：优先用摄影相机的当前值，其次用相机管理器的默认值
-    if (UObject* component = camera_component(); is_ok(component)) {
-        double fov = 0.0;
-        if (read_number(find_property(component, "FieldOfView"), component, fov) && fov > 1.0) {
-            out.fov = fov;
-            any = true;
-        }
-    } else if (UObject* manager = camera_manager(); is_ok(manager)) {
-        double fov = 0.0;
-        if (read_number(find_property(manager, "DefaultFOV"), manager, fov) && fov > 1.0) {
-            out.fov = fov;
-            any = true;
-        }
-    }
-
+    fov_fallback();
     return any;
 }
 
@@ -873,8 +1054,16 @@ void Ue4ssPort::on_axis_event(RC::Unreal::UnrealScriptFunctionCallableContext& c
 bool Ue4ssPort::read_mouse_delta(double& dx, double& dy) {
     UObject* pc = controller();
     if (!is_ok(pc)) return false;
-    UFunction* function = find_function(pc, "GetInputMouseDelta");
-    if (function == nullptr) return false;
+    // 每帧调用：函数查找走缓存（UFunction 挂在 PC 类上，进程内稳定）
+    if (mouse_delta_fn_missing_) return false;
+    if (mouse_delta_fn_ == nullptr) {
+        mouse_delta_fn_ = find_function(pc, "GetInputMouseDelta");
+        if (mouse_delta_fn_ == nullptr) {
+            mouse_delta_fn_missing_ = true;
+            return false;
+        }
+    }
+    UFunction* function = mouse_delta_fn_;
 
     ParamBlock params(function);
     if (!params.valid()) return false;
@@ -889,12 +1078,29 @@ bool Ue4ssPort::read_mouse_delta(double& dx, double& dy) {
     return true;
 }
 
+// SetViewTargetWithBlend 的调用走缓存：reassert_view_target 每帧一次，
+// find_function 每次都要走一遍函数链，缓存掉这步反射查找
+bool Ue4ssPort::set_view_target_cached(UObject* pc, UObject* target) {
+    if (!is_ok(pc)) return false;
+    if (set_view_target_fn_missing_) return false;
+    if (set_view_target_fn_ == nullptr) {
+        set_view_target_fn_ = find_function(pc, "SetViewTargetWithBlend");
+        if (set_view_target_fn_ == nullptr) {
+            set_view_target_fn_missing_ = true;
+            return false;
+        }
+    }
+    ParamBlock params(set_view_target_fn_);
+    if (!params.valid()) return false;
+    if (!params.set_object("NewViewTarget", target) || !params.set_number("BlendTime", 0.0)) return false;
+    pc->ProcessEvent(set_view_target_fn_, params.data());
+    return true;
+}
+
 bool Ue4ssPort::attach_view() {
     UObject* pc = controller();
     if (!is_ok(pc) || !is_ok(camera_actor_)) return false;
-    const bool ok = invoke(pc, "SetViewTargetWithBlend", [&](ParamBlock& params) {
-        return params.set_object("NewViewTarget", camera_actor_) && params.set_number("BlendTime", 0.0);
-    });
+    const bool ok = set_view_target_cached(pc, camera_actor_);
     if (!ok) {
         log(LogLevel::Warn, "调用 SetViewTargetWithBlend 失败（参数块没填上或函数不存在）");
         return false;
@@ -920,20 +1126,14 @@ bool Ue4ssPort::attach_view() {
 void Ue4ssPort::reassert_view_target() {
     UObject* pc = controller();
     if (!is_ok(pc) || !is_ok(camera_actor_)) return;
-    invoke(pc, "SetViewTargetWithBlend", [&](ParamBlock& params) {
-        return params.set_object("NewViewTarget", camera_actor_) && params.set_number("BlendTime", 0.0);
-    });
+    set_view_target_cached(pc, camera_actor_);
 }
 
 bool Ue4ssPort::restore_view() {
     UObject* pc = controller();
     if (!is_ok(pc)) return false;
     UObject* pawn = player_pawn();
-    return invoke(pc, "SetViewTargetWithBlend", [&](ParamBlock& params) {
-        if (!params.set_object("NewViewTarget", pawn)) return false;
-        params.set_number("BlendTime", 0.0);
-        return true;
-    });
+    return set_view_target_cached(pc, pawn);
 }
 
 bool Ue4ssPort::apply_pose(const CameraPose& pose) {
@@ -1280,7 +1480,9 @@ bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
 
     // ---- 路线 ①：游戏设置开关（管住之后新出现的提示）----
     if (!visible) {
-        UObject* owner = find_scene_prompt_setting_owner();
+        // 已保存过就直接用缓存的 owner：find_scene_prompt_setting_owner 要按 9 个候选类名
+        // 逐个 FindAllOf（每个都是一遍全对象数组扫描），失败重试期间是纯浪费
+        UObject* owner = prompt_setting_saved_ ? prompt_setting_owner_ : find_scene_prompt_setting_owner();
         if (is_ok(owner)) {
             FProperty* property = find_property(owner, "bSceneInteractPromptVisible");
             double original = 1.0;
@@ -1474,7 +1676,8 @@ bool Ue4ssPort::set_enemy_health_bars_visible(bool visible) {
     bool touched = false;
 
     if (!visible) {
-        UObject* owner = find_bar_mode_setting_owner();
+        // 同交互提示：设置对象找到过就不再按 9 个候选类名全对象扫描
+        UObject* owner = bars_setting_saved_ ? bars_setting_owner_ : find_bar_mode_setting_owner();
         if (!is_ok(owner)) {
             if (!bars_setting_missing_logged_) {
                 bars_setting_missing_logged_ = true;
@@ -1547,12 +1750,16 @@ namespace {
 //      光改设置对已经画出来的字幕不会立即生效，必须把控件本身 Collapsed。
 // SetSubtitlesEnabled 是设置总开关，只影响之后的新字幕；两路都用，退出都还原。
 
-// 类继承链里是否有指定名字的类（覆盖原生实例与 BP 子类两种情况）
+// 类继承链里是否有指定名字的类（覆盖原生实例与 BP 子类两种情况）。
+// 用 FName 池索引比较（O(1)、零分配）：全量扫描对每个对象走两遍继承链，
+// 之前逐节点 GetName() 转 FString，一次入场扫描就是几十万次小分配（实机 ~270ms 卡顿）
 auto class_chain_contains(UClass* cls, const char* base_name) -> bool {
     if (cls == nullptr) return false;
-    const RC::StringType target = widen(base_name);
+    static std::map<std::string, RC::Unreal::FName> fname_cache;
+    const RC::Unreal::FName& target =
+        fname_cache.emplace(base_name, RC::Unreal::FName(widen(base_name))).first->second;
     for (UStruct* node = cls; node != nullptr; node = node->GetSuperStruct()) {
-        if (node->GetName() == target) return true;
+        if (node->GetNamePrivate().Equals(target)) return true;
     }
     return false;
 }
@@ -1627,40 +1834,78 @@ auto fill_subtitle_setting_param(ParamBlock& params, bool value) -> bool {
 
 }  // namespace
 
+// 字幕控件全量扫描的类级判定：继承链 + 类名匹配只依赖类，按类缓存一次算完。
+// 对象几十万、类 ~1 万，此前逐对象 narrow+lower 是进入/退出卡顿的另一大来源
+struct SubtitleClassVerdict {
+    bool matched{false};
+    std::string class_name;
+};
+static auto subtitle_class_verdict(UClass* cls) -> const SubtitleClassVerdict& {
+    static std::unordered_map<UClass*, SubtitleClassVerdict> cache;
+    auto it = cache.find(cls);
+    if (it == cache.end()) {
+        SubtitleClassVerdict verdict;
+        const bool is_subtitle_display = class_chain_contains(cls, "SubtitleDisplay");
+        const bool is_user_widget = class_chain_contains(cls, "UserWidget");
+        if (is_subtitle_display || is_user_widget) {
+            verdict.class_name = narrow(cls->GetName());
+            const std::string lower_name = lower_ascii(verdict.class_name);
+            verdict.matched =
+                is_subtitle_display ||
+                (is_user_widget && (lower_name.find("subtitle") != std::string::npos ||
+                                    lower_name.find("flowdialog") != std::string::npos));
+        }
+        it = cache.emplace(cls, std::move(verdict)).first;
+    }
+    return it->second;
+}
+
 // 字幕显示控件收集。full_scan：全对象扫描（进入/退出各一次；顺带把发现的类名记进缓存，
 // 1.0.32 实机发现游戏自制控件 WBP_FlowSubTitle_C）；否则只按缓存类名 FindAllOf
 //（每秒重申用，类哈希查找微秒级，不拖帧）。匹配规则：USubtitleDisplay 继承链，
 // 或 UserWidget 派生且类名含 subtitle（游戏自制字幕控件）。
 void Ue4ssPort::collect_subtitle_widgets_impl(std::vector<UObject*>& out, bool full_scan) {
     if (!full_scan) {
+        // 单次全数组遍历匹配全部缓存类名：原来是每个类名一次 FindAllOf（各扫一遍对象数组），
+        // 类名一多每秒就是 N 次全扫描拖帧；合并成一遍，FName 比较与 FindAllOf 的匹配语义一致
+        if (subtitle_widget_class_names_.empty()) return;
+        std::vector<RC::Unreal::FName> targets;
+        targets.reserve(subtitle_widget_class_names_.size());
         for (const std::string& name : subtitle_widget_class_names_) {
-            std::vector<UObject*> found;
-            RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
-            for (UObject* object : found) {
-                if (!is_ok(object)) continue;
-                if (narrow(object->GetFullName()).find("Default__") != std::string::npos) continue;
-                out.push_back(object);
-            }
+            targets.push_back(RC::Unreal::FName(widen(name)));
         }
+        RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+            if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+            UClass* cls = object->GetClassPrivate();
+            if (cls == nullptr) return RC::LoopAction::Continue;
+            const RC::Unreal::FName class_name = cls->GetNamePrivate();
+            bool matched = false;
+            for (const RC::Unreal::FName& target : targets) {
+                if (class_name.Equals(target)) {
+                    matched = true;
+                    break;
+                }
+            }
+            if (!matched) return RC::LoopAction::Continue;
+            if (narrow(object->GetFullName()).find("Default__") != std::string::npos) return RC::LoopAction::Continue;
+            out.push_back(object);
+            return RC::LoopAction::Continue;
+        });
         return;
     }
     RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
         if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
         UClass* cls = object->GetClassPrivate();
         if (cls == nullptr) return RC::LoopAction::Continue;
-        const std::string class_name = narrow(cls->GetName());
-        const std::string lower_name = lower_ascii(class_name);
-        const bool is_subtitle_display = class_chain_contains(cls, "SubtitleDisplay");
         // 1.0.35 实机：bEnableSubtitles 回读=关 且 WBP_FlowSubTitle_C 已 Collapsed，字幕仍显示——
-        // 文本画在对话 UI 本体上（音频普查见 WBP_FlowDialog_C），把对话框一并纳入压制。
-        const bool is_subtitle_widget = class_chain_contains(cls, "UserWidget") &&
-                                        (lower_name.find("subtitle") != std::string::npos ||
-                                         lower_name.find("flowdialog") != std::string::npos);
-        if (!is_subtitle_display && !is_subtitle_widget) return RC::LoopAction::Continue;
-        if (narrow(object->GetFullName()).find("Default__") != std::string::npos) return RC::LoopAction::Continue;
-        if (std::find(subtitle_widget_class_names_.begin(), subtitle_widget_class_names_.end(), class_name) ==
-            subtitle_widget_class_names_.end()) {
-            subtitle_widget_class_names_.push_back(class_name);
+        // 文本画在对话 UI 本体上（音频普查见 WBP_FlowDialog_C），flowdialog 一并纳入压制。
+        // 判定细节在 subtitle_class_verdict 里按类缓存
+        const SubtitleClassVerdict& verdict = subtitle_class_verdict(cls);
+        if (!verdict.matched) return RC::LoopAction::Continue;
+        if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
+        if (std::find(subtitle_widget_class_names_.begin(), subtitle_widget_class_names_.end(),
+                      verdict.class_name) == subtitle_widget_class_names_.end()) {
+            subtitle_widget_class_names_.push_back(verdict.class_name);
         }
         out.push_back(object);
         return RC::LoopAction::Continue;
@@ -1801,21 +2046,32 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
     }
 
     // ---- 路线 ②：字幕显示控件（管住此刻已经画出来的）----
-    // 进入后每秒重申：对话 UI 创建时才读设置，运行中的对话由游戏逐条把控件重新显示，
+    // 进入后重申：对话 UI 创建时才读设置，运行中的对话由游戏逐条把控件重新显示，
     // 一次性的隐藏会被盖回去（1.0.32 实机：进模式后字幕不消失）。重申是幂等的：
     // 已管的控件若被游戏改回可见就再压回去，新实例收编，设置开关不重复写。
-    // 每 10 次重申做一次全量扫描：对话中途新出现的控件类（新对话 UI）也能被收编。
+    // 扫描收敛（1.0.39）：收集控件要遍历整个对象数组，大场景一次几十毫秒，1.0.38 实机
+    // 摄影模式里每秒一次、转视角时肉眼可见。世界硬暂停时控件 Tick 冻住，游戏根本不会
+    // 重新显示控件——暂停期完全跳过扫描；未暂停（dilation 冻结/暂停被剧情解除）才按秒
+    // 收编，另留 30 秒一次的例行收编兜底新对话 UI。
     bool full_scan = visible ? true : false;
+    bool discovery = true;
     if (!visible) {
-        if (!subtitle_scanned_ || subtitle_reassert_count_ % 10 == 0) full_scan = true;
         ++subtitle_reassert_count_;
+        const bool paused = world_paused();
+        full_scan = !subtitle_scanned_ || (!paused && subtitle_reassert_count_ % 30 == 0);
+        discovery = full_scan || (!paused && subtitle_widgets_.empty()) || !paused;
     }
     std::vector<UObject*> widgets;
-    collect_subtitle_widgets_impl(widgets, full_scan);
-    if (!visible && full_scan) subtitle_scanned_ = true;
-    if (!visible) dump_visible_widgets_once();
+    if (discovery) {
+        collect_subtitle_widgets_impl(widgets, full_scan);
+        if (!visible && full_scan) subtitle_scanned_ = true;
+        if (!visible) dump_visible_widgets_once();
+    }
 
     if (!visible) {
+        // 暂停期跳过了收集：控件 Tick 冻住、游戏不会重新显示控件，本轮无事可做。
+        // （1.0.39 实机：空 widgets 落到下面“没找到控件”告警，白跑一次候选全扫描）
+        if (!discovery) return touched;
         int hidden_count = 0;
         int reasserted_count = 0;
         std::string hidden_names;
@@ -1883,6 +2139,319 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
     }
 
     return touched;
+}
+
+// ------------------------------------------------------------------ 锁定标记（锁定敌人身上的白点）
+
+namespace {
+
+// 锁定时敌人身上出现的白点：SetHideUIForPV 的订阅者、W_FrontEndHUDLayout 子树、
+// MonsterHealthBarMode（只管血条）都不覆盖它，渲染载体离线也证不了——只能运行时按
+// 名字广撒网。宁可多收（原可见性记录在案、退出还原、逐条记日志），也不能漏掉真身；
+// 实机日志把名单收敛成精确类名后，再收窄关键词。
+
+// 名字归一：去掉 _ / - 再匹配，让 LockOn / lock_on / LOCK-ON 落到同一个词上
+auto lockon_key(const std::string& lower) -> std::string {
+    std::string key;
+    key.reserve(lower.size());
+    for (char c : lower) {
+        if (c == '_' || c == '-') continue;
+        key.push_back(c);
+    }
+    return key;
+}
+
+auto name_lockish(const std::string& key, const std::string& lower) -> bool {
+    if (key.find("lockon") != std::string::npos) return true;
+    if (lower.find("lock") != std::string::npos && lower.find("block") == std::string::npos) return true;
+    if (key.find("targetmark") != std::string::npos) return true;
+    if (key.find("reticle") != std::string::npos) return true;
+    if (key.find("crosshair") != std::string::npos) return true;
+    if (key.find("mark") != std::string::npos) return true;
+    return false;
+}
+
+// 第二张网：目标/准星家族。误收的战斗 UI 摄影模式本来就要藏（HUD 默认隐藏），
+// 且全部按原值还原、隐藏清单逐条记日志，误伤可从日志里看见。
+auto name_targetish(const std::string& key) -> bool {
+    return key.find("target") != std::string::npos || key.find("aim") != std::string::npos;
+}
+
+auto name_matches_lockon(const std::string& lower) -> bool {
+    const std::string key = lockon_key(lower);
+    return name_lockish(key, lower) || name_targetish(key);
+}
+
+// 白点可能的渲染载体：世界空间 UMG / 粒子 / 贴花 / 小面片。按继承链认（覆盖 BP 子类）；
+// 玩法组件（TargetingComponent 之类）不是可视物，不在其列——藏它们没有意义。
+auto is_visual_component_class(UClass* cls) -> bool {
+    return class_chain_contains(cls, "WidgetComponent") || class_chain_contains(cls, "NiagaraComponent") ||
+           class_chain_contains(cls, "ParticleSystemComponent") || class_chain_contains(cls, "DecalComponent") ||
+           class_chain_contains(cls, "SpriteComponent") || class_chain_contains(cls, "MeshComponent");
+}
+
+// 组件引用的资产（控件类/粒子系统/网格）：泛型组件类名（WidgetComponent/NiagaraComponent…）
+// 认不出标记，真身常在资产名上（NS_LockOnMarker、SM_LockOnDot…）。属性按类缓存——
+// find_property 走类属性链，同一个类的几百个实例不必各走一遍。
+auto visual_asset_properties(UClass* cls) -> const std::vector<FProperty*>& {
+    static std::map<UClass*, std::vector<FProperty*>> cache;
+    auto it = cache.find(cls);
+    if (it == cache.end()) {
+        std::vector<FProperty*> props;
+        for (const char* name :
+             {"WidgetClass", "NiagaraSystem", "Template", "StaticMesh", "SkeletalMesh", "DecalMaterial"}) {
+            if (FProperty* p = find_property(cls, widen(name)); p != nullptr) props.push_back(p);
+        }
+        it = cache.emplace(cls, std::move(props)).first;
+    }
+    return it->second;
+}
+
+// 锁定标记扫描的类级判定：继承链/类名/资产属性都只依赖类。全对象扫描时对象几十万、
+// 类 ~1 万，按类缓存一次算完（lockon_absent_ 每次退出重置、进模式都要重扫，这里是
+// 每次进入卡顿的主要来源）。类指针存活期与进程同序——与 visual_asset_properties
+// 的按类缓存同一前提。
+struct LockonClassVerdict {
+    bool in_superset{false};  // UserWidget 派生或可视组件派生（扫描超集）
+    bool is_widget{false};
+    bool name_matched{false};
+    std::string class_name;
+    const std::vector<FProperty*>* asset_props{nullptr};
+};
+
+auto lockon_class_verdict(UClass* cls) -> const LockonClassVerdict& {
+    static std::unordered_map<UClass*, LockonClassVerdict> cache;
+    auto it = cache.find(cls);
+    if (it == cache.end()) {
+        LockonClassVerdict verdict;
+        verdict.is_widget = class_chain_contains(cls, "UserWidget");
+        verdict.in_superset = verdict.is_widget || is_visual_component_class(cls);
+        if (verdict.in_superset) {
+            verdict.class_name = narrow(cls->GetName());
+            verdict.name_matched = name_matches_lockon(lower_ascii(verdict.class_name));
+            verdict.asset_props = &visual_asset_properties(cls);
+        }
+        it = cache.emplace(cls, std::move(verdict)).first;
+    }
+    return it->second;
+}
+
+// 可能承载白点的对象超集（UserWidget 派生 + 可视组件派生，跳过 CDO）。隐藏后只记录
+// 这个集合里的指针，还原时重新枚举一遍做存活校验——不能直接解引用退出前的旧指针
+//（换图/GC 后可能已销毁，槽位可能被复用）。
+auto collect_lockon_superset(std::vector<UObject*>& out) -> void {
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        const LockonClassVerdict& verdict = lockon_class_verdict(cls);
+        if (!verdict.in_superset) return RC::LoopAction::Continue;
+        // CDO 的对象名固定以 Default__ 开头；查对象自身名比拼全名（外层链展开）便宜得多
+        if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
+        out.push_back(object);
+        return RC::LoopAction::Continue;
+    });
+}
+
+}  // namespace
+
+bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
+    bool touched = false;
+
+    if (!visible) {
+        // 本会话已确认场上没有可隐藏的锁定对象。进模式后游戏输入被屏蔽、玩家无法再锁定，
+        // 重复的全量扫描不会带来新对象，直接确认完成（core 不再重试）。
+        if (lockon_absent_) return true;
+
+        // ---- 扫描阶段：只收集命中对象，不动任何状态（遍历中不跑 ProcessEvent）----
+        struct LockonCandidate {
+            UObject* object;
+            bool is_widget;
+            std::string class_name;
+        };
+        std::vector<LockonCandidate> candidates;
+        RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+            if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+            UClass* cls = object->GetClassPrivate();
+            if (cls == nullptr) return RC::LoopAction::Continue;
+            const LockonClassVerdict& verdict = lockon_class_verdict(cls);
+            if (!verdict.in_superset) return RC::LoopAction::Continue;
+            if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
+            if (verdict.name_matched) {
+                candidates.push_back({object, verdict.is_widget, verdict.class_name});
+                return RC::LoopAction::Continue;
+            }
+            if (verdict.is_widget || verdict.asset_props->empty()) return RC::LoopAction::Continue;
+            for (FProperty* property : *verdict.asset_props) {
+                UObject* asset = nullptr;
+                if (read_object(property, object, asset) && is_ok(asset) &&
+                    name_matches_lockon(lower_ascii(narrow(asset->GetName())))) {
+                    candidates.push_back({object, verdict.is_widget, verdict.class_name});
+                    break;
+                }
+            }
+            return RC::LoopAction::Continue;
+        });
+
+        // ---- 行动阶段：读原可见性 → 隐藏 → 记账（枚举已结束，过程中跑 ProcessEvent 无虞）----
+        int hidden_count = 0;
+        int already_hidden = 0;
+        int hide_failed = 0;
+        std::string hidden_names;
+        for (const LockonCandidate& candidate : candidates) {
+            UObject* object = candidate.object;
+            if (candidate.is_widget) {
+                if (tracked_hud_widget(lockon_widgets_, object)) continue;
+                int original = 0;
+                if (!get_widget_visibility(object, original)) continue;
+                if (original == 1 || original == 2) {  // 已是 Collapsed/Hidden，无需再藏也不记账
+                    ++already_hidden;
+                    continue;
+                }
+                if (set_widget_visibility(object, 1)) {  // Collapsed
+                    lockon_widgets_.emplace_back(object, original);
+                    ++hidden_count;
+                    hidden_names += (hidden_names.empty() ? "" : ", ") + candidate.class_name;
+                } else {
+                    ++hide_failed;
+                }
+                continue;
+            }
+            bool tracked = false;
+            for (const auto& entry : lockon_components_) {
+                if (entry.first == object) {
+                    tracked = true;
+                    break;
+                }
+            }
+            if (tracked) continue;
+            double original_visible = 1.0;
+            if (!read_number(find_property(object, "bVisible"), object, original_visible)) {
+                original_visible = 1.0;
+            }
+            if (original_visible == 0.0) {
+                ++already_hidden;
+                continue;
+            }
+            if (set_component_visibility(object, false)) {
+                lockon_components_.emplace_back(object, true);
+                ++hidden_count;
+                hidden_names += (hidden_names.empty() ? "" : ", ") + candidate.class_name;
+            } else {
+                ++hide_failed;
+            }
+        }
+
+        if (hidden_count > 0) {
+            touched = true;
+            log(LogLevel::Info, "已隐藏锁定标记：数量=" + std::to_string(hidden_count) + "（" + hidden_names +
+                                    "），退出摄影模式时还原原可见性");
+            return true;
+        }
+        if (hide_failed > 0) return false;  // 有目标但藏不住：按秒重试
+
+        // 全量扫描零可隐藏对象：白点要么此刻不在（没锁定），要么类名不在关键词网里。
+        // 打一次性诊断清单（可见控件/可视组件/玩家组件），真实类名靠这份日志收敛。
+        lockon_absent_ = true;
+        dump_lockon_diagnostics();
+        if (!lockon_absent_logged_) {
+            lockon_absent_logged_ = true;
+            log(LogLevel::Warn,
+                "场上未找到可见的锁定标记对象（锁定/目标/标记关键词零命中，已按隐藏=" + std::to_string(already_hidden) +
+                    " 个同名家族对象）——若白点仍在屏上，把上面的诊断清单发回来");
+        }
+        return true;
+    }
+
+    // 恢复：重新枚举白点可能所在的超集做存活校验（换图/GC 后旧对象可能已销毁，
+    // 不能直接解引用旧指针）
+    std::vector<UObject*> alive;
+    collect_lockon_superset(alive);
+    int restored_count = 0;
+    for (const auto& entry : lockon_widgets_) {
+        if (!pointer_in(alive, entry.first)) continue;
+        if (set_widget_visibility(entry.first, entry.second)) ++restored_count;
+    }
+    for (const auto& entry : lockon_components_) {
+        if (!pointer_in(alive, entry.first)) continue;
+        if (set_component_visibility(entry.first, entry.second)) ++restored_count;
+    }
+    if (restored_count > 0) {
+        touched = true;
+        log(LogLevel::Info, "已恢复锁定标记：数量=" + std::to_string(restored_count));
+    }
+    lockon_widgets_.clear();
+    lockon_components_.clear();
+    lockon_absent_ = false;  // 下次进入重新扫描（不同场景的锁定标记可能不同）
+    return touched;
+}
+
+// 一次性诊断（每会话一次，关键词没接住白点时给下一轮指认真身）：
+//   ① 可见 UserWidget 类——白点若是屏幕/世界 UMG，必在其中；
+//   ② 场上可视组件类——白点若是粒子/贴花/小面片，类名在这里；
+//   ③ 玩家 pawn 名下类名带锁定/目标语义的组件——锁定目标状态所在，为下一版直接清锁定指路。
+void Ue4ssPort::dump_lockon_diagnostics() {
+    if (lockon_diag_dumped_) return;
+    lockon_diag_dumped_ = true;
+
+    std::map<std::string, int> visible_widgets;
+    std::map<std::string, int> visual_components;
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        if (narrow(object->GetFullName()).find("Default__") != std::string::npos) return RC::LoopAction::Continue;
+        if (class_chain_contains(cls, "UserWidget")) {
+            int visibility = 1;
+            if (!get_widget_visibility(object, visibility) || visibility == 1 || visibility == 2) {
+                return RC::LoopAction::Continue;
+            }
+            ++visible_widgets[narrow(cls->GetName())];
+            return RC::LoopAction::Continue;
+        }
+        if (is_visual_component_class(cls)) ++visual_components[narrow(cls->GetName())];
+        return RC::LoopAction::Continue;
+    });
+    auto join_counts = [](const std::map<std::string, int>& table, size_t cap) {
+        std::string names;
+        size_t listed = 0;
+        for (const auto& entry : table) {
+            if (listed++ >= cap) {
+                names += ", …";
+                break;
+            }
+            names += (names.empty() ? "" : ", ") + entry.first + " x" + std::to_string(entry.second);
+        }
+        return names;
+    };
+    log(LogLevel::Info, "锁定标记诊断① 可见 UserWidget：" +
+                            (visible_widgets.empty() ? std::string("（无）") : join_counts(visible_widgets, 40)));
+    log(LogLevel::Info, "锁定标记诊断② 可视组件：" +
+                            (visual_components.empty() ? std::string("（无）") : join_counts(visual_components, 40)));
+
+    UObject* pawn = player_pawn();
+    if (is_ok(pawn)) {
+        // 组件名下判定走全名：组件的完整名里含 ":<pawn 对象名>." 即为 pawn 名下（含子对象）。
+        const std::string pawn_name = narrow(pawn->GetName());
+        const std::string pawn_marker = ":" + pawn_name + ".";
+        std::string pawn_components;
+        RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+            if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+            UClass* cls = object->GetClassPrivate();
+            if (cls == nullptr || !class_chain_contains(cls, "ActorComponent")) return RC::LoopAction::Continue;
+            const std::string full_name = narrow(object->GetFullName());
+            if (full_name.find(pawn_marker) == std::string::npos) return RC::LoopAction::Continue;
+            const std::string lower = lower_ascii(narrow(cls->GetName()));
+            if (lower.find("lock") == std::string::npos && lower.find("target") == std::string::npos &&
+                lower.find("aim") == std::string::npos) {
+                return RC::LoopAction::Continue;
+            }
+            pawn_components += (pawn_components.empty() ? "" : ", ") + narrow(cls->GetName());
+            return RC::LoopAction::Continue;
+        });
+        log(LogLevel::Info, "锁定标记诊断③ 玩家锁定/目标组件：" +
+                                (pawn_components.empty() ? std::string("（未发现）") : pawn_components));
+    }
 }
 
 // ------------------------------------------------------------------ 超宽屏画幅解锁
@@ -2267,6 +2836,496 @@ SequenceFreezeReport Ue4ssPort::pause_sequences(bool paused) {
         log(LogLevel::Info, "未发现 Sequencer 剧情播放器；若剧情中动作/声音仍继续，请带上 UE4SS.log 反馈");
     }
     return report;
+}
+
+// ---- 冻结期残余微动治理（1.0.41）----
+// 背景：冻结=世界暂停/时间缩放，但渲染与相机管理层每帧照跑，冻结画面并非逐位一致。
+// 每帧变化源与对策：
+//   ① 相机修饰器/shake（真实时间驱动）→ 视角亚像素微动 → 阴影贴图每帧重新对齐 → 脸部阴影爬动
+//   ② 风源推的材质 WPO（布料/植被摆动）→ 走材质时间，暂停与时间缩放都拦不住
+//   ③ 实时驱动代码每帧改写材质参数集合（MPC）推 WPO
+// ①停用 ②幅度归零（钟照走、位移恒零）③每帧写回快照；变化源掐掉后 TSR/TAA 自己收敛。
+
+CameraShakeFreezeReport Ue4ssPort::freeze_camera_shakes(bool frozen) {
+    CameraShakeFreezeReport report{};
+    UObject* manager = camera_manager();
+    if (!is_ok(manager)) {
+        if (frozen) log(LogLevel::Warn, "相机管理器不可达，shake/修饰器治理跳过");
+        return report;
+    }
+    report.ok = true;
+    bool shakes_stopped = false;
+    if (frozen) {
+        shakes_stopped = invoke_set_bool(manager, "StopAllCameraShakes", true);
+    }
+
+    FProperty* modifiers_prop = find_property(manager, "CameraModifiers");
+    auto* array_prop = as_array_property(modifiers_prop);
+    if (array_prop != nullptr) {
+        const void* container = manager;
+        FScriptArrayHelper_InContainer helper(array_prop, container);
+        const int32 count = helper.Num();
+        report.found = count;
+        if (frozen) {
+            camera_modifier_states_.clear();
+            for (int32 i = 0; i < count; ++i) {
+                UObject* modifier = nullptr;
+                if (!read_object(array_prop->GetInner(), helper.GetRawPtr(i), modifier) || !is_ok(modifier)) continue;
+                if (narrow(modifier->GetFullName()).find("Default__") != std::string::npos) continue;
+                double disabled_value = 0.0;
+                const bool disabled =
+                    read_number(find_property(modifier, "bDisabled"), modifier, disabled_value) &&
+                    disabled_value != 0.0;
+                camera_modifier_states_.push_back({modifier, disabled});
+                if (disabled) continue;  // 原本就停用的不动，还原时也不碰
+                if (invoke_set_bool(modifier, "DisableModifier", true)) ++report.acted;
+            }
+            char buf[200]{};
+            std::snprintf(buf, sizeof(buf), "相机治理（冻结）：shake停用=%s，修饰器 %d 个、本次停用 %d 个",
+                          shakes_stopped ? "成功" : "不可用", report.found, report.acted);
+            log(LogLevel::Info, buf);
+        } else {
+            for (const auto& entry : camera_modifier_states_) {
+                if (!is_ok(entry.first)) continue;
+                // DisableModifier(false)=启用；冻结前就是停用态的写回 DisableModifier(true)
+                if (invoke_set_bool(entry.first, "DisableModifier", !entry.second)) ++report.acted;
+            }
+            camera_modifier_states_.clear();
+            char buf[120]{};
+            std::snprintf(buf, sizeof(buf), "相机治理（恢复）：修饰器按原状态写回 %d 个", report.acted);
+            log(LogLevel::Info, buf);
+        }
+    } else if (frozen) {
+        // 找不到数组时把管理器类名与属性字段类名打进日志：属性存在=IsA 失灵，属性不存在=游戏自定义管理器
+        std::string detail = "（属性未找到）";
+        if (modifiers_prop != nullptr) {
+            detail = "（字段类=" + narrow(modifiers_prop->GetClass().GetFName().ToString()) + "）";
+        }
+        std::string manager_class = "-";
+        if (is_ok(manager)) manager_class = narrow(manager->GetClassPrivate()->GetName());
+        log(LogLevel::Info, std::string("相机管理器无 CameraModifiers 数组") + detail + "，管理器=" +
+                                manager_class + "；shake 停用=" + (shakes_stopped ? "成功" : "不可用"));
+    } else {
+        camera_modifier_states_.clear();
+        log(LogLevel::Warn, "相机管理器无 CameraModifiers 数组，修饰器还原跳过");
+    }
+    return report;
+}
+
+WindFreezeReport Ue4ssPort::freeze_wind(bool frozen) {
+    WindFreezeReport report{};
+    report.ok = true;
+    if (frozen) {
+        std::vector<UObject*> sources;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("WindDirectionalSource"), sources);
+        for (UObject* source : sources) {
+            if (!is_ok(source)) continue;
+            if (narrow(source->GetFullName()).find("Default__") != std::string::npos) continue;
+            ++report.found;
+            UObject* component = nullptr;
+            if (!read_object(find_property(source, "Component"), source, component) || !is_ok(component)) {
+                if (!wind_missing_logged_) {
+                    wind_missing_logged_ = true;
+                    log(LogLevel::Warn, "风源没有组件属性 Component，归零跳过");
+                }
+                continue;
+            }
+            WindParamBackup backup;
+            backup.component = component;
+            struct WindEntry {
+                const char* name;
+                bool* has;
+                double* value;
+            };
+            WindEntry entries[4] = {
+                {"Strength", &backup.has_strength, &backup.strength},
+                {"Speed", &backup.has_speed, &backup.speed},
+                {"MinGustAmt", &backup.has_min_gust, &backup.min_gust},
+                {"MaxGustAmt", &backup.has_max_gust, &backup.max_gust},
+            };
+            bool touched = false;
+            for (const WindEntry& entry : entries) {
+                FProperty* prop = find_property(component, entry.name);
+                *entry.has = read_number(prop, component, *entry.value);
+                if (*entry.has) {
+                    write_number(prop, component, 0.0);
+                    touched = true;
+                }
+            }
+            wind_backups_.push_back(backup);
+            if (touched) ++report.acted;
+        }
+        char buf[160]{};
+        std::snprintf(buf, sizeof(buf), "风源归零：风源 %d 个、归零 %d 个", report.found, report.acted);
+        log(LogLevel::Info, buf);  // 找不到风源只记录：有的场景没风，摆动另有来源（看 MPC 诊断）
+    } else {
+        for (const WindParamBackup& backup : wind_backups_) {
+            if (!is_ok(backup.component)) continue;
+            struct WindEntry {
+                const char* name;
+                bool has;
+                double value;
+            };
+            WindEntry entries[4] = {
+                {"Strength", backup.has_strength, backup.strength},
+                {"Speed", backup.has_speed, backup.speed},
+                {"MinGustAmt", backup.has_min_gust, backup.min_gust},
+                {"MaxGustAmt", backup.has_max_gust, backup.max_gust},
+            };
+            for (const WindEntry& entry : entries) {
+                if (!entry.has) continue;
+                write_number(find_property(backup.component, entry.name), backup.component, entry.value);
+            }
+            ++report.acted;
+        }
+        const int restored = report.acted;
+        wind_backups_.clear();
+        if (restored > 0) {
+            char buf[120]{};
+            std::snprintf(buf, sizeof(buf), "风源已还原：%d 个", restored);
+            log(LogLevel::Info, buf);
+        }
+    }
+    return report;
+}
+
+int Ue4ssPort::mpc_take_snapshot() {
+    mpc_snapshots_.clear();
+    UObject* statics = kismet_material_library();
+    UObject* scene = world();
+    if (!is_ok(statics) || !is_ok(scene)) {
+        if (!mpc_unavailable_logged_) {
+            mpc_unavailable_logged_ = true;
+            log(LogLevel::Warn, "MPC 钉住不可用：KismetMaterialLibrary/世界不可达");
+        }
+        return 0;
+    }
+    std::vector<UObject*> collections;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("MaterialParameterCollection"), collections);
+    int total = 0;
+    for (UObject* collection : collections) {
+        if (!is_ok(collection)) continue;
+        if (narrow(collection->GetFullName()).find("Default__") != std::string::npos) continue;
+        MpcCollectionSnapshot snapshot;
+        snapshot.collection = collection;
+        snapshot.name = narrow(collection->GetName());
+        std::vector<std::string> scalar_names;
+        mpc_read_param_names(collection, "ScalarParameters", scalar_names);
+        for (const std::string& name : scalar_names) {
+            double value = 0.0;
+            if (!mpc_get_scalar(statics, scene, collection, name, value)) continue;
+            MpcParamValue param;
+            param.name = name;
+            param.value[0] = static_cast<float>(value);
+            snapshot.params.push_back(param);
+        }
+        std::vector<std::string> vector_names;
+        mpc_read_param_names(collection, "VectorParameters", vector_names);
+        for (const std::string& name : vector_names) {
+            float rgba[4]{};
+            if (!mpc_get_vector(statics, scene, collection, name, rgba)) continue;
+            MpcParamValue param;
+            param.name = name;
+            param.is_vector = true;
+            for (int k = 0; k < 4; ++k) param.value[k] = rgba[k];
+            snapshot.params.push_back(param);
+        }
+        total += static_cast<int>(snapshot.params.size());
+        mpc_snapshots_.push_back(std::move(snapshot));
+    }
+    char buf[160]{};
+    std::snprintf(buf, sizeof(buf), "MPC 快照：%zu 个集合、%d 个参数（冻结期每帧写回）",
+                  mpc_snapshots_.size(), total);
+    log(LogLevel::Info, buf);
+    if (total == 0 && !mpc_snapshots_.empty()) {
+        // 快照 0 参数：链路上有两个环节可能断（参数名提取 / Kismet 取值），逐环节打证据。
+        // ① 取值函数存在性 + 真实签名：函数缺失或签名不符 → 每个参数读值失败 → total 恒 0
+        UObject* statics = kismet_material_library();
+        if (is_ok(statics)) {
+            for (const char* fn : {"GetScalarParameterValue", "GetVectorParameterValue"}) {
+                UFunction* function = find_function(statics, fn);
+                if (function == nullptr) {
+                    log(LogLevel::Warn, std::string("MPC 诊断：KismetMaterialLibrary.") + fn + " 不存在");
+                } else {
+                    log(LogLevel::Info, std::string("MPC 诊断：") + fn + " 签名=" + describe_params(function));
+                }
+            }
+        } else {
+            log(LogLevel::Warn, "MPC 诊断：KismetMaterialLibrary CDO 不可达");
+        }
+        // ② 前三个集合：参数名提取数量 + 数组头原始内存（Data 指针 / +8 / +12）。
+        //    原始 Num>0 而提名=0 → 数组遍历环节断；提名>0 而快照 0 → 取值环节断；两者都 0 → 集合真空参数
+        for (size_t i = 0; i < mpc_snapshots_.size() && i < 3; ++i) {
+            const MpcCollectionSnapshot& snap = mpc_snapshots_[i];
+            std::vector<std::string> scalar_names;
+            mpc_read_param_names(snap.collection, "ScalarParameters", scalar_names);
+            auto* array_prop = as_array_property(find_property(snap.collection, "ScalarParameters"));
+            char detail[160]{};
+            if (array_prop != nullptr) {
+                const void* arr = array_prop->ContainerPtrToValuePtr<void>(static_cast<const void*>(snap.collection));
+                const uintptr_t data_ptr = *static_cast<const uintptr_t*>(arr);
+                const int32 raw_num = *reinterpret_cast<const int32*>(static_cast<const uint8_t*>(arr) + 8);
+                const int32 raw_max = *reinterpret_cast<const int32*>(static_cast<const uint8_t*>(arr) + 12);
+                std::snprintf(detail, sizeof(detail), "数组头[Data=%llx Num=%d Max=%d] 提名=%zu",
+                              static_cast<unsigned long long>(data_ptr), raw_num, raw_max, scalar_names.size());
+            } else {
+                std::snprintf(detail, sizeof(detail), "ScalarParameters 属性未找到或非数组");
+            }
+            log(LogLevel::Info, "MPC 诊断：" + snap.name + " " + detail);
+        }
+    }
+    return total;
+}
+
+int Ue4ssPort::mpc_hold_snapshot() {
+    if (mpc_snapshots_.empty()) return 0;
+    UObject* statics = kismet_material_library();
+    UObject* scene = world();
+    if (!is_ok(statics) || !is_ok(scene)) return 0;
+    int written = 0;
+    for (const MpcCollectionSnapshot& snapshot : mpc_snapshots_) {
+        if (!is_ok(snapshot.collection)) continue;
+        for (const MpcParamValue& param : snapshot.params) {
+            const bool ok = param.is_vector
+                                ? mpc_set_vector(statics, scene, snapshot.collection, param.name, param.value)
+                                : mpc_set_scalar(statics, scene, snapshot.collection, param.name, param.value[0]);
+            if (ok) ++written;
+        }
+    }
+    return written;
+}
+
+void Ue4ssPort::mpc_release_snapshot() {
+    mpc_snapshots_.clear();
+    mpc_diag_last_.clear();
+    mpc_diag_has_last_ = false;
+}
+
+// 每帧读相机管理器算出的最终 POV（ViewTarget.POV，含游戏自定义管理器加的一切东西）。
+// 与摄影相机 Actor 的静态位姿对照：暂停期 POV 仍在动 = 有代码在继续推视角。
+// camera_idle=false（该帧用户在转/移相机）不累计并清样本——监测值只来自“没人动相机”的连续帧。
+void Ue4ssPort::pov_watch_tick(bool camera_idle) {
+    if (!camera_idle) {
+        pov_watch_has_last_ = false;
+        return;
+    }
+    UObject* manager = camera_manager();
+    if (!is_ok(manager)) { pov_watch_has_last_ = false; return; }
+    FProperty* view_target_prop = find_property(manager, "ViewTarget");
+    void* view_target = struct_member_base(view_target_prop, manager);
+    if (view_target == nullptr) { pov_watch_has_last_ = false; return; }
+    FProperty* pov_prop = struct_member(view_target_prop, "POV");
+    void* pov = struct_member_base(pov_prop, view_target);
+    if (pov == nullptr) { pov_watch_has_last_ = false; return; }
+    FProperty* loc_prop = struct_member(pov_prop, "Location");
+    void* loc_base = struct_member_base(loc_prop, pov);
+    FProperty* rot_prop = struct_member(pov_prop, "Rotation");
+    void* rot_base = struct_member_base(rot_prop, pov);
+    if (loc_base == nullptr || rot_base == nullptr) { pov_watch_has_last_ = false; return; }
+    double loc[3]{};
+    double rot[3]{};
+    if (!read_number(struct_member(loc_prop, "X"), loc_base, loc[0]) ||
+        !read_number(struct_member(loc_prop, "Y"), loc_base, loc[1]) ||
+        !read_number(struct_member(loc_prop, "Z"), loc_base, loc[2]) ||
+        !read_number(struct_member(rot_prop, "Pitch"), rot_base, rot[0]) ||
+        !read_number(struct_member(rot_prop, "Yaw"), rot_base, rot[1]) ||
+        !read_number(struct_member(rot_prop, "Roll"), rot_base, rot[2])) {
+        pov_watch_has_last_ = false;
+        return;
+    }
+    if (pov_watch_has_last_) {
+        const double dloc = std::max({std::fabs(loc[0] - pov_last_loc_[0]), std::fabs(loc[1] - pov_last_loc_[1]),
+                                      std::fabs(loc[2] - pov_last_loc_[2])});
+        const double drot = std::max({std::fabs(rot[0] - pov_last_rot_[0]), std::fabs(rot[1] - pov_last_rot_[1]),
+                                      std::fabs(rot[2] - pov_last_rot_[2])});
+        if (dloc > pov_max_loc_delta_) pov_max_loc_delta_ = dloc;
+        if (drot > pov_max_rot_delta_) pov_max_rot_delta_ = drot;
+    }
+    pov_last_loc_[0] = loc[0];
+    pov_last_loc_[1] = loc[1];
+    pov_last_loc_[2] = loc[2];
+    pov_last_rot_[0] = rot[0];
+    pov_last_rot_[1] = rot[1];
+    pov_last_rot_[2] = rot[2];
+    pov_watch_has_last_ = true;
+}
+
+// 每秒一条的冻结诊断：风源现状 + MPC 参数与上一拍的变化 + 相机修饰器/shake 状态。
+// freeze_mpc 生效时 MPC 变化应为“无”（变化仍在 = 有驱动源在每帧和我们抢写入权）。
+std::string Ue4ssPort::freeze_diag_sample() {
+    std::string out = "冻结诊断:";
+
+    // ① 风源现状（归零后应显示 强度0/速度0；仍非零 = 游戏侧在改回）
+    {
+        std::vector<UObject*> sources;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("WindDirectionalSource"), sources);
+        int live = 0;
+        std::string detail;
+        for (UObject* source : sources) {
+            if (!is_ok(source)) continue;
+            if (narrow(source->GetFullName()).find("Default__") != std::string::npos) continue;
+            ++live;
+            if (live > 3 || detail.size() >= 96) continue;
+            UObject* component = nullptr;
+            double strength = 0.0;
+            double speed = 0.0;
+            if (read_object(find_property(source, "Component"), source, component) && is_ok(component)) {
+                read_number(find_property(component, "Strength"), component, strength);
+                read_number(find_property(component, "Speed"), component, speed);
+                char item[64]{};
+                std::snprintf(item, sizeof(item), " 强度%.2f/速度%.2f;", strength, speed);
+                detail += item;
+            }
+        }
+        out += " 风源=" + std::to_string(live) + (detail.empty() ? "" : "[" + detail + "]");
+    }
+
+    // ② MPC 参数与上一拍的变化（冻结期参数还在变 = 布料/植被摆动的驱动源找到了）
+    {
+        UObject* statics = kismet_material_library();
+        UObject* scene = world();
+        std::vector<MpcCollectionSnapshot> current;
+        if (is_ok(statics) && is_ok(scene)) {
+            std::vector<UObject*> collections;
+            RC::Unreal::UObjectGlobals::FindAllOf(STR("MaterialParameterCollection"), collections);
+            int total_params = 0;
+            std::string changes;
+            int change_count = 0;
+            for (UObject* collection : collections) {
+                if (!is_ok(collection)) continue;
+                if (narrow(collection->GetFullName()).find("Default__") != std::string::npos) continue;
+                MpcCollectionSnapshot snapshot;
+                snapshot.collection = collection;
+                snapshot.name = narrow(collection->GetName());
+                std::vector<std::string> scalar_names;
+                mpc_read_param_names(collection, "ScalarParameters", scalar_names);
+                for (const std::string& name : scalar_names) {
+                    double value = 0.0;
+                    if (!mpc_get_scalar(statics, scene, collection, name, value)) continue;
+                    MpcParamValue param;
+                    param.name = name;
+                    param.value[0] = static_cast<float>(value);
+                    snapshot.params.push_back(param);
+                    ++total_params;
+                }
+                std::vector<std::string> vector_names;
+                mpc_read_param_names(collection, "VectorParameters", vector_names);
+                for (const std::string& name : vector_names) {
+                    float rgba[4]{};
+                    if (!mpc_get_vector(statics, scene, collection, name, rgba)) continue;
+                    MpcParamValue param;
+                    param.name = name;
+                    param.is_vector = true;
+                    for (int k = 0; k < 4; ++k) param.value[k] = rgba[k];
+                    snapshot.params.push_back(param);
+                    ++total_params;
+                }
+                current.push_back(std::move(snapshot));
+            }
+            if (mpc_diag_has_last_) {
+                for (const MpcCollectionSnapshot& snapshot : current) {
+                    const MpcCollectionSnapshot* last = nullptr;
+                    for (const MpcCollectionSnapshot& candidate : mpc_diag_last_) {
+                        if (candidate.name == snapshot.name) {
+                            last = &candidate;
+                            break;
+                        }
+                    }
+                    if (last == nullptr) continue;
+                    for (const MpcParamValue& param : snapshot.params) {
+                        const MpcParamValue* last_param = nullptr;
+                        for (const MpcParamValue& candidate : last->params) {
+                            if (candidate.name == param.name && candidate.is_vector == param.is_vector) {
+                                last_param = &candidate;
+                                break;
+                            }
+                        }
+                        if (last_param == nullptr) continue;
+                        bool differs = false;
+                        for (int k = 0; k < 4; ++k) {
+                            if (std::fabs(param.value[k] - last_param->value[k]) > 1e-6f) {
+                                differs = true;
+                                break;
+                            }
+                        }
+                        if (!differs) continue;
+                        ++change_count;
+                        if (change_count <= 3 && changes.size() < 110) {
+                            char item[96]{};
+                            if (param.is_vector) {
+                                std::snprintf(item, sizeof(item), "%s.%s(向量)", snapshot.name.c_str(),
+                                              param.name.c_str());
+                            } else {
+                                std::snprintf(item, sizeof(item), "%s.%s %.3f→%.3f", snapshot.name.c_str(),
+                                              param.name.c_str(), last_param->value[0], param.value[0]);
+                            }
+                            changes += (changes.empty() ? "" : " | ") + std::string(item);
+                        }
+                    }
+                }
+            }
+            out += " MPC=" + std::to_string(current.size()) + "集/" + std::to_string(total_params) + "参" +
+                   (mpc_diag_has_last_ ? (" 变化:" + (changes.empty() ? std::string("无") : changes))
+                                       : std::string(" 基线"));
+        } else {
+            out += " MPC=不可用";
+        }
+        mpc_diag_last_ = std::move(current);
+        mpc_diag_has_last_ = true;
+    }
+
+    // ③ 相机修饰器与活动 shake
+    {
+        UObject* manager = camera_manager();
+        if (is_ok(manager)) {
+            int modifier_count = 0;
+            int disabled_count = 0;
+            int shake_count = -1;
+            FProperty* modifiers_prop = find_property(manager, "CameraModifiers");
+            auto* array_prop = as_array_property(modifiers_prop);
+            if (array_prop != nullptr) {
+                const void* container = manager;
+                FScriptArrayHelper_InContainer helper(array_prop, container);
+                modifier_count = helper.Num();
+                for (int32 i = 0; i < modifier_count; ++i) {
+                    UObject* modifier = nullptr;
+                    if (!read_object(array_prop->GetInner(), helper.GetRawPtr(i), modifier) || !is_ok(modifier)) continue;
+                    double value = 0.0;
+                    if (read_number(find_property(modifier, "bDisabled"), modifier, value) && value != 0.0) {
+                        ++disabled_count;
+                    }
+                }
+            }
+            FProperty* shakes_prop = find_property(manager, "CameraShakes");
+            auto* shakes_array = as_array_property(shakes_prop);
+            if (shakes_array != nullptr) {
+                const void* container = manager;
+                FScriptArrayHelper_InContainer helper(shakes_array, container);
+                shake_count = helper.Num();
+            }
+            char buf[96]{};
+            if (shake_count >= 0) {
+                std::snprintf(buf, sizeof(buf), " 修饰器=%d(停用%d) shake=%d", modifier_count, disabled_count,
+                              shake_count);
+            } else {
+                std::snprintf(buf, sizeof(buf), " 修饰器=%d(停用%d)", modifier_count, disabled_count);
+            }
+            out += buf;
+        } else {
+            out += " 修饰器=不可达";
+        }
+    }
+
+    // ④ 视角微动（上一诊断周期内的最大逐帧偏差）：非零 = 有东西在暂停期继续推视角
+    {
+        char buf[96]{};
+        std::snprintf(buf, sizeof(buf), " 视角微动:位移%.3f 旋转%.2f°", pov_max_loc_delta_, pov_max_rot_delta_);
+        out += buf;
+        pov_watch_has_last_ = false;
+        pov_max_loc_delta_ = 0.0;
+        pov_max_rot_delta_ = 0.0;
+    }
+    return out;
 }
 
 // Wwise 音频组件：对话语音走 Wwise 时世界暂停拦不住。这里只做两件事：
