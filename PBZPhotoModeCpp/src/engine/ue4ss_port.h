@@ -52,6 +52,9 @@ public:
     bool set_enemy_health_bars_visible(bool visible) override;
     bool set_lockon_marker_visible(bool visible) override;
     bool set_subtitles_visible(bool visible) override;
+    // 对话 Flow Tick 冻结（1.0.74 方案 A）：只操作已收编的 FlowDialog 控件，
+    // paused=true → Collapsed(1) 停止 Tick；paused=false → Hidden(2) 恢复 Tick。
+    int set_dialogue_flow_tick_paused(bool paused) override;
 
     bool unlock_aspect_ratio() override;
     void restore_aspect_ratio() override;
@@ -112,6 +115,13 @@ private:
     std::filesystem::path mod_dir_;
     RC::Unreal::UObject* camera_actor_{nullptr};
     RC::Unreal::UObject* camera_component_cache_{nullptr};
+    // 进入摄影模式前的 ViewTarget（过场动画期间是过场相机）：退出时还原到它，而不是
+    // 玩家 Pawn——否则过场会被踢回玩家视角，正在播放的语句也会被打断。
+    RC::Unreal::UObject* original_view_target_{nullptr};
+    bool original_view_target_saved_{false};
+    // 视角接管是否仍由本 port 持有：attach_view 成功置位、restore_view 清位；
+    // destroy_camera 只在仍持有时才还原，避免 leave() 已还原后 destroy 又还原成 Pawn。
+    bool view_attached_by_port_{false};
     bool postfx_saved_{false};
     double saved_dilation_{1.0};
 
@@ -160,6 +170,17 @@ private:
     std::vector<int32_t> playing_ids_{};
     std::set<int32_t> playing_ids_seen_{};
     void on_voice_post(void* result_decl);
+    // 语音位置校验（只读诊断，1.0.73）：暂停时记录 (PlayingID, 位置ms)，恢复前再读一次比对。
+    // 只观察不改变播放行为；接口缺失/签名不符时保持空，不影响暂停逻辑。
+    std::vector<std::pair<int32_t, double>> voice_positions_at_pause_;
+    bool voice_position_probe_logged_{false};  // 位置接口不可用/签名不符只提示一次
+    // 对话 Flow 只读诊断钩子（1.0.74）：冻结期若 PlayAudio_C.ForceFinishAudio /
+    // StopAudio_C.ExecuteUbergraph_StopAudio 被调用，只记日志，不改播放行为
+    bool dialogue_debug_hooks_installed_{false};
+    bool dialogue_flow_diag_active_{false};
+    int dialogue_flow_event_count_{0};
+    void on_dialogue_flow_event(const char* label);
+    bool install_dialogue_debug_hooks();
     // 一次性音频对象普查：全对象数组里认 Ak/Audio/Sound/Voice/Dialog 相关类，
     // 为“对话语音走 Wwise 直接 post、组件 Stop 够不着”找下一版的目标
     bool audio_dump_done_{false};
@@ -277,6 +298,8 @@ private:
     std::vector<std::pair<RC::Unreal::UObject*, int>> subtitle_widgets_;
     bool subtitle_widget_missing_logged_{false};
     bool subtitle_diag_dumped_{false};
+    bool subtitle_flow_dialog_logged_{false};  // 检测到 FlowDialog（对话/过场）跳过设置写关闭只提示一次
+    bool flow_dialog_tick_paused_{false};      // 对话 Flow Tick 冻结：true=FlowDialog Collapsed(1)，false=Hidden(2)
     bool subtitle_scanned_{false};  // 本次摄影模式会话是否做过全量扫描（每秒重申只用快速路径）
     bool subtitle_visible_dumped_{false};  // 可见 UserWidget 清单只打一次
     int subtitle_reassert_count_{0};  // 重申计数（每 30 次做一次全量扫描，收编对话中途新出现的控件类）

@@ -9,9 +9,9 @@
 ## 功能
 
 - **自由相机**：`F2` 进入 / 退出
-- **视角控制**：按住 `Alt` + 移动鼠标；`WASD` 平移；方向键 左/右转视角（`yaw_speed`）、上/下俯仰（`pitch_speed`）；升降默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改）；`Q` / `E` 滚转（E 顺时针 / Q 逆时针）；手柄十字键同方向键、`RB` / `LB` 滚转；`Z` 滚转归零（只回正滚转、构图不动，手柄 `LB+RB` 同按）
+- **视角控制**：按住 `Alt` + 移动鼠标；`WASD` 平移；方向键 左/右转视角（`yaw_speed`）、上/下俯仰（`pitch_speed`）；升降默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改）；`Q` / `E` 滚转（E 顺时针 / Q 逆时针，`key_roll_left` / `key_roll_right` 可改）；手柄十字键同方向键、`RB` / `LB` 滚转；`Z` 滚转归零（只回正滚转、构图不动，手柄 `LB+RB` 同按）
 - **镜头参数**：滚轮调 FOV，小键盘 `+` / `-` 微调，`R` 一键重置到进入时的视角
-- **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；Wwise 音频优先整引擎 `Suspend`（当前 PBZ 从主程序静态导出解析，失败回落逐语音，`wwise_engine_suspend` 默认开启）
+- **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；Wwise 音频在有逐 PlayingID 时逐语音真暂停（`PBZPausePlayingID` / `PBZResumePlayingID`，保住当前句位置）并跳过整引擎 Suspend，只有没截获到 ID 时才用整引擎 `Suspend(true,false)` 作静音兜底（当前 PBZ 从主程序静态导出解析，`wwise_engine_suspend` 默认开启）；对话/过场中的对话 Flow 可选择在冻结时停 Tick（`freeze_dialogue_flow` 默认开启，仅 `hide_subtitles=true` 时生效，保留相机）
 - **超宽屏支持**：进入摄影模式自动解除 16:9 画幅约束（游戏官方支持 21:9 / 32:9 超宽屏），两侧黑边消除，退出时还原
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
 - **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性
@@ -22,6 +22,26 @@
 - **游戏内设置菜单（可选）**：安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu) 后，游戏内按其呼出键（默认 `F8`）即可在菜单里改键位/开关/参数并**实时生效**（改动写回 `config.ini`）；不装则纯快捷键，零依赖
 
 ## 当前版本
+
+**1.0.75-cpp** —— 已编译：
+
+- **Q/E 滚转键可配置**：新增 `[keys] key_roll_left` / `key_roll_right`（默认 `Q` / `E`，左=逆时针、右=顺时针）——此前 Q/E 硬编码在 `input_logic.cpp`，`config.ini` 只能改 `roll_speed`，改不了滚转键；现在 `config.ini` 与 PBZFM 菜单「快捷键（键盘）」页都能改，旧配置不写新键名时行为不变
+- 核心层测试 **2529 项全绿**
+
+**1.0.74-cpp** —— 已编译：
+
+- **新增「过场对话 Flow 冻结/诊断（保留相机，不挂线程）」**：新增配置 `freeze_dialogue_flow`（默认 true，仅 `hide_subtitles=true` 时生效）——冻结时把 `WBP_FlowDialog_C` 从 `Hidden` 改为 `Collapsed` 停止 Slate Tick，避免对话 Flow 在冻结期继续推进/提前结束当前语音，解冻恢复 `Hidden`（仍隐藏但继续 Tick）；退出时按原可见性恢复。新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子，冻结期被调用打日志（前 8 次）。不挂线程、不碰 QPC/IAT、不改变 Wwise/相机逻辑
+- 核心层测试 **2400 项全绿**
+
+**1.0.73-cpp** —— 已编译：
+
+- **修复「1.0.72 过场/对话中进入摄影模式后语句仍不续播」**：1.0.72 的 Wwise 整引擎 `AK::SoundEngine::Suspend(true,false)` 是 render-anyway——音频继续处理、语音时间轴照常推进，即使逐 PlayingID `PBZPausePlayingID` 执行成功，当前句也会在冻结期间无声播完，解冻后无法从原位置续播。本版改为：有逐语音 PlayingID 时**跳过整引擎 Suspend**，逐 PlayingID 真暂停（`PBZPausePlayingID`/`PBZResumePlayingID`）为唯一常规路径；整引擎 `Suspend(true,false)` 仅在没截获到任何 PlayingID 时作静音兜底（`wwise_engine_suspend` 仍默认 true）。另新增 `GetPlayingIDPositionMs` 语音位置校验日志（暂停/恢复前后比对播放头位置），并补对话相关类函数诊断
+- 核心层测试 **2306 项全绿**
+
+**1.0.72-cpp** —— 已编译：
+
+- **修复「过场动画进入相机模式再退出后被截断的语句不能正常续播」**：① 1.0.66 起的 Wwise 整引擎 `AK::SoundEngine::Suspend(false,false)` 是硬停音频线程（音频完全不处理），会丢掉事件队列/语音流状态；现在改为 `Suspend(true,false)` render-anyway 静音（音频继续处理但不输出，保住语音状态），并恢复 1.0.36 实机验证过的逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 为第一层，整引擎只作第二层；② 进入摄影模式时保存相机管理器的原 `ViewTarget`（过场相机），退出优先还原它，不再固定回玩家 Pawn；③ `WBP_FlowDialog_C` 等对话控件改用 `Hidden`（保留 Tick）而不是 `Collapsed`，且检测到对话 UI 时不再关闭 `bEnableSubtitles`，避免当前语句/字幕被截断
+- 核心层测试 **2301 项全绿**
 
 **1.0.71-cpp** —— 已编译：
 
@@ -112,7 +132,7 @@
 
 需要《影之刃零》专用 UE4SS（[KintaroModding/ue4ss](https://github.com/KintaroModding/ue4ss) 的 `phantombladezero` 发行包，开发验证版本 `v3.0.1-1183-gcdbc0b66`）。
 
-从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.36-cpp.zip`，解压到游戏根目录，形成：
+从 [Releases](https://github.com/lin-414/PBZPhotoMode/releases) 下载 `PBZPhotoModeCpp_1.0.75-cpp.zip`，解压到游戏根目录，形成：
 
 ```
 <游戏目录>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp\
@@ -151,7 +171,7 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 │  ├─ src/core/             # 纯逻辑层（配置/输入/状态机，含单元测试）
 │  ├─ src/engine/           # UE4SS 引擎适配层
 │  ├─ src/mod_app.cpp       # CppUserModBase 入口
-│  ├─ tests/                # 2294 项核心层断言
+│  ├─ tests/                # 2529 项核心层断言
 │  ├─ tools/                # 构建 / 打包脚本
 │  └─ docs/                 # 构建、安装、核对清单
 ├─ docs/
@@ -162,6 +182,10 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ## 版本记录
 
+- **1.0.75**（2026-11-02）：Q/E 滚转键可配置——新增 `[keys] key_roll_left` / `key_roll_right`（默认 Q/E），修复此前 Q/E 硬编码、`config.ini` 只能改 `roll_speed` 不能改键的问题；PBZFM 菜单与四语言词典同步；核心测试 2400 → 2529 项全绿
+- **1.0.74**（2026-11-02）：新增「过场对话 Flow 冻结/诊断（保留相机，不挂线程）」——`freeze_dialogue_flow`（默认 true，仅 `hide_subtitles=true` 生效）冻结时把 `WBP_FlowDialog_C` 改为 `Collapsed` 停止 Slate Tick，解冻恢复 `Hidden`（仍隐藏但继续 Tick）；新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子；核心测试 2306 → 2400 项全绿
+- **1.0.73**（2026-11-02）：修复「1.0.72 过场/对话中进入摄影模式后语句仍不续播」——整引擎 `Suspend(true,false)` 的 render-anyway 会让音频时间轴继续推进，逐 PlayingID 真暂停也保不住当前句；现在有逐语音 ID 时跳过整引擎 Suspend（只走 `PBZPausePlayingID`/`PBZResumePlayingID` 真暂停），整引擎仅在无 ID 时作静音兜底；新增 `GetPlayingIDPositionMs` 位置校验日志；核心测试 2301 → 2306 项全绿
+- **1.0.72**（2026-11-02）：修复「过场动画进入/退出摄影模式后语句断句不续播」——Wwise 整引擎 `AK::SoundEngine::Suspend(false,false)` 硬停音频线程会丢语音流状态，改为 `Suspend(true,false)` render-anyway 静音（音频继续处理但不输出），并恢复逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 为第一层；进入时保存并还原原 `ViewTarget`（过场相机），不再固定回玩家 Pawn；对话控件 `WBP_FlowDialog_C` 等改用 `Hidden` 保留 Tick，对话中不关闭 `bEnableSubtitles`；核心测试 2294 → 2301 项全绿
 - **1.0.67**（2026-11-02）：清理旧日志提示——PostProcess 快照不再误报失败（本版不改后期处理，标记为已处理）；相机修饰器列表兼容 UE5 的 `ModifierList`（保留 `CameraModifiers` 旧名回退），冻结/恢复修饰器正常，不再打印“无数组”警告；核心测试 2294 项全绿
 - **1.0.66**（2026-11-02）：修复 1.0.65 移动视角卡顿——移除会冻结 `PBZ.exe`/`MRTCEngine.dll` QPC 的时间偏移补偿 IAT Hook；Wwise 整引擎 Suspend 改为优先从 PBZ.exe 静态导出解析（1.0.65 只查 AkSoundEngineDLL.dll 导致静默回落）；核心测试 2294 项全绿
 - **1.0.65**（2026-11-02）：修复 1.0.64 冻结崩溃——IAT 导入名解析需 `module_base + AddressOfData`，上一版直接拿 RVA 当指针导致 `strcmp` 访问 0xD9CEABE 附近崩溃（dump 0xC0000005）；补模块边界校验后重编，核心测试 2372 项全绿

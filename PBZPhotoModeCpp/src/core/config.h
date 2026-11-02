@@ -26,6 +26,8 @@ struct Config {
     std::string key_pitch_down{"DOWN"};  // 俯视（低头）：方向键下
     std::string key_yaw_left{"LEFT"};    // 左转视角：方向键左（1.0.46 起从左右平移改来）
     std::string key_yaw_right{"RIGHT"};  // 右转视角：方向键右
+    std::string key_roll_left{"Q"};      // 滚转：逆时针（默认 Q）
+    std::string key_roll_right{"E"};     // 滚转：顺时针（默认 E）
     // 升降（translate 模式=相机上下平移，look 模式=俯仰）：默认鼠标左/右键；
     // 也可写键盘键名（如 PAGE_UP/PAGE_DOWN）或其它鼠标键（MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2）
     std::string key_vertical_up{"MOUSE_LEFT"};
@@ -43,7 +45,7 @@ struct Config {
     bool block_game_input{true};
     MouseVerticalMode mouse_vertical_mode{MouseVerticalMode::Translate};
     double vertical_speed{200.0};    // 升降键上下平移速度
-    double roll_speed{60.0};         // Q/E 滚转速度（度/秒）：E 顺时针，Q 逆时针
+    double roll_speed{60.0};         // 滚转速度（度/秒）：默认 E 顺时针，Q 逆时针（键位见 [keys] key_roll_left/right）
     double pitch_speed{30.0};        // 方向键上/下与十字键上/下俯仰速度（度/秒）：正方向 = 仰视
     double yaw_speed{90.0};          // 方向键左/右与十字键左/右转向速度（度/秒）：右 = 右转（1.0.46 起替代 arrow_pan_mult）
 
@@ -76,14 +78,15 @@ struct Config {
     bool hide_interact_prompt{true};  // 摄影模式默认隐藏交互提示（可互物体旁的 E 键图标，退出恢复）
     bool hide_enemy_health_bars{true};  // 摄影模式默认隐藏敌人（怪物）血条：切到 OnlyLockedTarget 显示模式，退出还原
     bool hide_lockon_marker{true};  // 摄影模式默认隐藏锁定标记（锁定敌人时其身上的白点），退出还原
-    bool hide_subtitles{true};  // 摄影模式默认隐藏对话字幕：关字幕设置 + Collapsed 字幕控件，退出还原
+    bool hide_subtitles{true};  // 摄影模式默认隐藏对话字幕：字幕控件 Collapsed、FlowDialog 用 Hidden 保 Tick；对话中不改字幕设置，退出还原
     bool repair_ui_settings_once{true};  // 1.0.69 一次性修复：首次运行把字幕/场景交互提示开关强制打开（旧版可能写坏，成功后写标记不再执行）
     bool auto_pause_time{true};  // 进入摄影模式时自动暂停时间（默认开启）
     FreezeMode freeze_mode{FreezeMode::Pause};
     double freeze_dilation{0.0001};
     bool freeze_sequences{true};  // 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻恢复
-    bool stop_wwise_on_freeze{true};  // 冻结时处理 Wwise 音频（优先整引擎 Suspend，失败回落逐语音/组件）
-    bool wwise_engine_suspend{true};  // 冻结时调用 AK::SoundEngine::Suspend/WakeupFromSuspend（整段音频真冻结）
+    bool freeze_dialogue_flow{true};  // 冻结时把对话 Flow（WBP_FlowDialog_C）改为 Collapsed 停 Tick，避免对话 Flow 在冻结期推进/提前结束语音；解冻恢复 Hidden。仅在 hide_subtitles=true 时生效
+    bool stop_wwise_on_freeze{true};  // 冻结时处理 Wwise 音频（有逐 PlayingID 时逐语音真暂停并跳过整引擎；无 ID 才整引擎兜底）
+    bool wwise_engine_suspend{true};  // 仅无逐语音 PlayingID 时用 AK::SoundEngine::Suspend(true,false) 作整引擎静音兜底（有 ID 不调用，避免 render-anyway 推进语音时间轴）
     bool stop_camera_shakes_on_freeze{true};  // 冻结时停用相机修饰器并立即结束 shake（真实时间驱动的残余微动，冻结画面边缘抖动/脸部阴影爬动的主变化源），解冻按原状态还原
     bool freeze_wind{true};  // 冻结时把风源（WindDirectionalSource）风强/风速归零：材质顶点摆动（布料/植被）的幅度源，暂停拦不住；解冻还原
     bool freeze_mpc{true};   // 冻结时钉住材质参数集合（MPC）当前值：冻结期每帧写回快照，压制实时驱动参数继续推布料/植被摆动；解冻释放

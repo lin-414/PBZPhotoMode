@@ -598,6 +598,55 @@ auto invoke_pause_id(UObject* target, const char* fn, int32_t id, double fade, U
     return true;
 }
 
+// 数值型属性判定（float/double/int32/uint32），语音位置接口签名校验用
+auto is_numeric_property(FProperty* property) -> bool {
+    return property != nullptr &&
+           (property->IsA<FFloatProperty>() || property->IsA<FDoubleProperty>() ||
+            property->IsA<FIntProperty>() || property->IsA<FUInt32Property>());
+}
+
+// 严格签名的「GetPlayingIDPositionMs」调用（1.0.73 只读诊断，不改变播放行为）：
+// 要求唯一的 PlayingID 数值入参（参数名含 playingid）+ 可选 WorldContextObject 对象参数；
+// 返回值可以是数值型 ReturnValue，或唯一一个数值型 out 参数。其余参数类型一律视为签名
+// 不符，返回 false 且不调用——宁可没有诊断，也不往错误参数位写值/误调游戏函数。
+auto read_playing_id_position_ms(UObject* target, int32_t id, UObject* world, double& out) -> bool {
+    if (!is_ok(target)) return false;
+    UFunction* function = find_function(target, "GetPlayingIDPositionMs");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* ret = function->GetReturnProperty();
+    const bool ret_numeric = is_numeric_property(ret);
+    bool filled_id = false;
+    FProperty* numeric_out = nullptr;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == nullptr || prop == ret) continue;
+        const std::string name = lower_ascii(narrow(prop->GetName()));
+        if (is_numeric_property(prop)) {
+            if (name.find("playingid") != std::string::npos) {
+                if (filled_id) return false;  // 多个 PlayingID 入参，签名不认识
+                if (!write_number(prop, params.data(), static_cast<double>(id))) return false;
+                filled_id = true;
+            } else if (ret_numeric) {
+                return false;  // 已有数值返回值还带别的数值参数，签名不认识
+            } else {
+                if (numeric_out != nullptr) return false;  // 多个数值 out，无法确定读哪个
+                numeric_out = prop;
+            }
+        } else if (prop->IsA<FObjectProperty>() && name.find("worldcontext") != std::string::npos) {
+            write_object(prop, params.data(), world);
+        } else {
+            return false;  // 其他类型参数（bool 入参、字符串、结构体…）一律不猜
+        }
+    }
+    if (!filled_id) return false;
+    FProperty* out_prop = ret_numeric ? ret : numeric_out;
+    if (out_prop == nullptr) return false;
+    target->ProcessEvent(function, params.data());
+    return read_number(out_prop, params.data(), out);
+}
+
 // ------------------------------------------------------------------ 冻结期残余微动治理
 
 // 带签名校验的单 bool 参数调用（StopAllCameraShakes(bool) / DisableModifier(bool)）：
@@ -1162,6 +1211,18 @@ bool Ue4ssPort::spawn_camera(const CameraPose& pose) {
         return false;
     }
 
+    // 记录进入前的 ViewTarget：过场动画/剧情演出期间相机管理器指向的是过场相机，
+    // 退出时必须还原到它而不是玩家 Pawn，否则过场会被强行切回玩家视角、语音也被打断。
+    if (UObject* manager = camera_manager(); is_ok(manager)) {
+        UObject* current = nullptr;
+        if (read_struct_object(find_property(manager, "ViewTarget"), manager, "Target", current) && is_ok(current) &&
+            narrow(current->GetFullName()).find("Default__") == std::string::npos && current != camera_actor_) {
+            original_view_target_ = current;
+            original_view_target_saved_ = true;
+            log(LogLevel::Info, std::string("进入前 ViewTarget 已记录：") + narrow(current->GetFullName()));
+        }
+    }
+
     FVector location(pose.loc.x, pose.loc.y, pose.loc.z);
     FRotator rotation(pose.rot.pitch, pose.rot.yaw, pose.rot.roll);
 
@@ -1313,6 +1374,7 @@ bool Ue4ssPort::attach_view() {
         log(LogLevel::Warn, "调用 SetViewTargetWithBlend 失败（参数块没填上或函数不存在）");
         return false;
     }
+    view_attached_by_port_ = true;  // 视角接管成功：destroy_camera 据此判断是否还需要还原
 
     // 回读确认：读相机管理器的 ViewTarget.Target（PlayerController.ViewTarget 在这作里读不出来）
     UObject* current = nullptr;
@@ -1339,9 +1401,21 @@ void Ue4ssPort::reassert_view_target() {
 
 bool Ue4ssPort::restore_view() {
     UObject* pc = controller();
+    view_attached_by_port_ = false;  // 无论成败，本 port 都不再持有视角
     if (!is_ok(pc)) return false;
-    UObject* pawn = player_pawn();
-    return set_view_target_cached(pc, pawn);
+    // 优先还原到进入前的 ViewTarget（过场相机）：过场中退出摄影模式时直接回玩家 Pawn
+    // 会把演出镜头切走、正在播的语音/字幕状态也被打断。只有记录不可用时才回退 Pawn。
+    if (original_view_target_saved_ && is_ok(original_view_target_) && original_view_target_ != camera_actor_) {
+        const bool restored = set_view_target_cached(pc, original_view_target_);
+        if (restored) {
+            log(LogLevel::Info, std::string("已还原进入前 ViewTarget：") + narrow(original_view_target_->GetFullName()));
+        } else {
+            log(LogLevel::Warn, "还原进入前 ViewTarget 失败，回退玩家 Pawn");
+            return set_view_target_cached(pc, player_pawn());
+        }
+        return restored;
+    }
+    return set_view_target_cached(pc, player_pawn());
 }
 
 bool Ue4ssPort::apply_pose(const CameraPose& pose) {
@@ -1384,7 +1458,9 @@ bool Ue4ssPort::apply_fov(double fov) {
 bool Ue4ssPort::destroy_camera() {
     const bool had_view = is_ok(camera_actor_);
     if (had_view) {
-        restore_view();
+        // 仅当视角仍由本 port 持有时才还原：leave() 已经 restore_view() 过，
+        // 这里再还原一次会把刚还原好的过场相机/Spectator 又踢回玩家 Pawn。
+        if (view_attached_by_port_) restore_view();
         if (auto* actor = static_cast<AActor*>(camera_actor_); actor != nullptr) {
             actor->K2_DestroyActor();
         }
@@ -1393,6 +1469,9 @@ bool Ue4ssPort::destroy_camera() {
     camera_component_cache_ = nullptr;
     controller_cache_ = nullptr;
     view_verified_ = false;
+    original_view_target_ = nullptr;
+    original_view_target_saved_ = false;
+    view_attached_by_port_ = false;
     return had_view;
 }
 
@@ -2008,6 +2087,9 @@ auto find_subtitle_setting_owner() -> UObject* {
 // 对象几十万、类 ~1 万，此前逐对象 narrow+lower 是进入/退出卡顿的另一大来源
 struct SubtitleClassVerdict {
     bool matched{false};
+    // 对话/过场 UI（WBP_FlowDialog_C）：文本画在它身上，且必须保持 Tick 才能推进对话；
+    // 隐藏时用 ESlateVisibility=2（Hidden）而不是 1（Collapsed）。
+    bool flow_dialog{false};
     std::string class_name;
 };
 static auto subtitle_class_verdict(UClass* cls) -> const SubtitleClassVerdict& {
@@ -2020,10 +2102,10 @@ static auto subtitle_class_verdict(UClass* cls) -> const SubtitleClassVerdict& {
         if (is_subtitle_display || is_user_widget) {
             verdict.class_name = narrow(cls->GetName());
             const std::string lower_name = lower_ascii(verdict.class_name);
+            verdict.flow_dialog = lower_name.find("flowdialog") != std::string::npos;
             verdict.matched =
                 is_subtitle_display ||
-                (is_user_widget && (lower_name.find("subtitle") != std::string::npos ||
-                                    lower_name.find("flowdialog") != std::string::npos));
+                (is_user_widget && (lower_name.find("subtitle") != std::string::npos || verdict.flow_dialog));
         }
         it = cache.emplace(cls, std::move(verdict)).first;
     }
@@ -2148,34 +2230,79 @@ void Ue4ssPort::dump_visible_widgets_once() {
 bool Ue4ssPort::set_subtitles_visible(bool visible) {
     bool touched = false;
 
+    // ---- 路线 ②前置：先收集本轮字幕控件 ----
+    // 必须先收集再决定是否写设置开关：本轮若发现 FlowDialog 对话 UI，说明正处于对话/过场中，
+    // 关闭 bEnableSubtitles 会打断当前语句（对话/语音控制器读的是这个开关），只能隐藏控件。
+    // 扫描收敛（1.0.39）：收集控件要遍历整个对象数组，大场景一次几十毫秒，1.0.38 实机
+    // 摄影模式里每秒一次、转视角时肉眼可见。世界硬暂停时控件 Tick 冻住，游戏根本不会
+    // 重新显示控件——暂停期完全跳过扫描；未暂停（dilation 冻结/暂停被剧情解除）才按秒
+    // 收编，另留 30 秒一次的例行收编兜底新对话 UI。
+    bool full_scan = visible ? true : false;
+    bool discovery = true;
+    if (!visible) {
+        ++subtitle_reassert_count_;
+        const bool paused = world_paused();
+        full_scan = !subtitle_scanned_ || (!paused && subtitle_reassert_count_ % 30 == 0);
+        discovery = full_scan || (!paused && subtitle_widgets_.empty()) || !paused;
+    }
+    std::vector<UObject*> widgets;
+    if (discovery) {
+        collect_subtitle_widgets_impl(widgets, full_scan);
+        if (!visible && full_scan) subtitle_scanned_ = true;
+        if (!visible) dump_visible_widgets_once();
+    }
+
+    bool flow_dialog_present = false;
+    for (UObject* widget : widgets) {
+        if (!is_ok(widget)) continue;
+        UClass* cls = widget->GetClassPrivate();
+        if (cls != nullptr && subtitle_class_verdict(cls).flow_dialog) {
+            flow_dialog_present = true;
+            break;
+        }
+    }
+
+    // 暂停期跳过了收集：控件 Tick 冻住、游戏不会重新显示控件，本轮无事可做。
+    // （1.0.39 实机：空 widgets 落到下面“没找到控件”告警，白跑一次候选全扫描）
+    if (!visible && !discovery) return touched;
+
     // ---- 路线 ①：游戏设置开关（管住之后新出的字幕）----
     // 1.0.33 首版的结构 bug（实机日志钉死）：!visible && !touched_ / else if touched_ 的写法，
     // 让每秒重申（visible=false 且 touched_=true）掉进还原分支 → 设置开关每秒 关/开 打摆。
     // 必须把"隐藏"与"还原"按 visible 彻底分开；已在关状态时重申只跳过，不碰开关。
     if (!visible) {
         if (!subtitle_setting_touched_) {
-            UObject* owner = find_subtitle_setting_owner();
-            if (is_ok(owner)) {
-                dump_subtitle_setting_diagnostics(owner);
-                bool original = true;
-                std::string via = "默认(true)";
-                read_bool_setting(owner, kSubtitleSettingSpec, original, &via);
-                subtitle_setting_saved_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
-                subtitle_setting_touched_ = true;
-                subtitle_setting_original_ = original;
-                subtitle_setting_owner_ = owner;
-                log(LogLevel::Info, "字幕设置开关原值=" + std::string(original ? "开" : "关") + "（读取=" + via +
-                                        "，owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
-                const bool wrote = write_bool_setting(owner, kSubtitleSettingSpec, false);
-                bool readback = true;
-                const bool verified = read_bool_setting(owner, kSubtitleSettingSpec, readback) && !readback;
-                if (wrote) {
-                    touched = true;
-                    log(LogLevel::Info, std::string("字幕设置开关已关闭（回读=") + (verified ? "关" : "开-未生效!") + "）");
+            if (flow_dialog_present) {
+                // 对话/过场中：只藏控件，保留 bEnableSubtitles 原值，避免打断正在播放的语句。
+                if (!subtitle_flow_dialog_logged_) {
+                    subtitle_flow_dialog_logged_ = true;
+                    log(LogLevel::Info,
+                        "检测到对话 UI（FlowDialog），保留字幕设置开关不写（避免打断当前语句）；仅隐藏控件");
                 }
-            } else if (!subtitle_setting_missing_logged_) {
-                subtitle_setting_missing_logged_ = true;
-                log(LogLevel::Warn, "候选对象里找不到字幕设置开关（SetSubtitlesEnabled/bEnableSubtitles），退回只藏字幕控件");
+            } else {
+                UObject* owner = find_subtitle_setting_owner();
+                if (is_ok(owner)) {
+                    dump_subtitle_setting_diagnostics(owner);
+                    bool original = true;
+                    std::string via = "默认(true)";
+                    read_bool_setting(owner, kSubtitleSettingSpec, original, &via);
+                    subtitle_setting_saved_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+                    subtitle_setting_touched_ = true;
+                    subtitle_setting_original_ = original;
+                    subtitle_setting_owner_ = owner;
+                    log(LogLevel::Info, "字幕设置开关原值=" + std::string(original ? "开" : "关") + "（读取=" + via +
+                                            "，owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+                    const bool wrote = write_bool_setting(owner, kSubtitleSettingSpec, false);
+                    bool readback = true;
+                    const bool verified = read_bool_setting(owner, kSubtitleSettingSpec, readback) && !readback;
+                    if (wrote) {
+                        touched = true;
+                        log(LogLevel::Info, std::string("字幕设置开关已关闭（回读=") + (verified ? "关" : "开-未生效!") + "）");
+                    }
+                } else if (!subtitle_setting_missing_logged_) {
+                    subtitle_setting_missing_logged_ = true;
+                    log(LogLevel::Warn, "候选对象里找不到字幕设置开关（SetSubtitlesEnabled/bEnableSubtitles），退回只藏字幕控件");
+                }
             }
         }
     } else if (subtitle_setting_touched_) {
@@ -2204,48 +2331,33 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
     // 进入后重申：对话 UI 创建时才读设置，运行中的对话由游戏逐条把控件重新显示，
     // 一次性的隐藏会被盖回去（1.0.32 实机：进模式后字幕不消失）。重申是幂等的：
     // 已管的控件若被游戏改回可见就再压回去，新实例收编，设置开关不重复写。
-    // 扫描收敛（1.0.39）：收集控件要遍历整个对象数组，大场景一次几十毫秒，1.0.38 实机
-    // 摄影模式里每秒一次、转视角时肉眼可见。世界硬暂停时控件 Tick 冻住，游戏根本不会
-    // 重新显示控件——暂停期完全跳过扫描；未暂停（dilation 冻结/暂停被剧情解除）才按秒
-    // 收编，另留 30 秒一次的例行收编兜底新对话 UI。
-    bool full_scan = visible ? true : false;
-    bool discovery = true;
     if (!visible) {
-        ++subtitle_reassert_count_;
-        const bool paused = world_paused();
-        full_scan = !subtitle_scanned_ || (!paused && subtitle_reassert_count_ % 30 == 0);
-        discovery = full_scan || (!paused && subtitle_widgets_.empty()) || !paused;
-    }
-    std::vector<UObject*> widgets;
-    if (discovery) {
-        collect_subtitle_widgets_impl(widgets, full_scan);
-        if (!visible && full_scan) subtitle_scanned_ = true;
-        if (!visible) dump_visible_widgets_once();
-    }
-
-    if (!visible) {
-        // 暂停期跳过了收集：控件 Tick 冻住、游戏不会重新显示控件，本轮无事可做。
-        // （1.0.39 实机：空 widgets 落到下面“没找到控件”告警，白跑一次候选全扫描）
-        if (!discovery) return touched;
         int hidden_count = 0;
         int reasserted_count = 0;
+        int flow_dialog_count = 0;
         std::string hidden_names;
         for (UObject* widget : widgets) {
             if (!is_ok(widget)) continue;
+            UClass* cls = widget->GetClassPrivate();
+            const bool is_flow_dialog = cls != nullptr && subtitle_class_verdict(cls).flow_dialog;
+            // FlowDialog 默认用 Hidden(2)：控件仍参与 Tick；对话 Flow 冻结时改用 Collapsed(1) 停 Tick。
+            // 其他字幕控件始终用 Collapsed(1)：彻底不画，同时停止 Tick。
+            const int target_visibility = is_flow_dialog ? (flow_dialog_tick_paused_ ? 1 : 2) : 1;
             if (tracked_hud_widget(subtitle_widgets_, widget)) {
-                // 已在管：游戏每条字幕可能把控件重新 SetVisibility(Visible)，重申 Collapsed。
+                // 已在管：游戏每条字幕可能把控件重新 SetVisibility(Visible)，重申目标可见性。
                 // 不重复记录原值——原值在首次收编时已存，退出时按它恢复。
                 int current = 1;
-                if (get_widget_visibility(widget, current) && current != 1) {
-                    if (set_widget_visibility(widget, 1)) ++reasserted_count;
+                if (get_widget_visibility(widget, current) && current != target_visibility) {
+                    if (set_widget_visibility(widget, target_visibility)) ++reasserted_count;
                 }
                 continue;
             }
             int original = 0;
             if (!get_widget_visibility(widget, original)) original = 0;  // 默认 Visible
-            if (set_widget_visibility(widget, 1)) {  // Collapsed
+            if (set_widget_visibility(widget, target_visibility)) {
                 subtitle_widgets_.emplace_back(widget, original);
                 ++hidden_count;
+                if (is_flow_dialog) ++flow_dialog_count;
                 if (is_ok(widget)) {
                     hidden_names += (hidden_names.empty() ? "" : ", ") + narrow(widget->GetClassPrivate()->GetName());
                 }
@@ -2253,8 +2365,13 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
         }
         if (hidden_count > 0) {
             touched = true;
-            log(LogLevel::Info, "已隐藏字幕显示控件：数量=" + std::to_string(hidden_count) + "（" + hidden_names +
-                                    "），退出摄影模式时恢复原可见性");
+            const std::string flow_note =
+                flow_dialog_count > 0
+                    ? std::string("，FlowDialog=") + std::to_string(flow_dialog_count) +
+                          (flow_dialog_tick_paused_ ? " 个用 Collapsed 停 Tick（对话 Flow 冻结）" : " 个用 Hidden 保 Tick")
+                    : std::string();
+            log(LogLevel::Info, "已隐藏字幕显示控件：数量=" + std::to_string(hidden_count) + "（" + hidden_names + "）" +
+                                    flow_note + "，退出摄影模式时恢复原可见性");
         } else if (reasserted_count > 0) {
             touched = true;  // 每秒重申压制，保持返回值语义
         } else if (widgets.empty() && !subtitle_widget_missing_logged_) {
@@ -2291,9 +2408,40 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
         }
         subtitle_widgets_.clear();
         subtitle_scanned_ = false;  // 下次进入重新做一次全量扫描（新对话控件类可能不同）
+        subtitle_flow_dialog_logged_ = false;
+        flow_dialog_tick_paused_ = false;  // 退出/恢复后回到默认 Hidden(2) 语义
     }
 
     return touched;
+}
+
+// 对话 Flow Tick 冻结（1.0.74 方案 A）：不挂线程、不动 Wwise，只把已收编的
+// WBP_FlowDialog_C 控件在 Collapsed(1) 与 Hidden(2) 之间切换——Collapsed 会停止 Slate Tick，
+// 用于冻结对话 Flow 的推进；Hidden 保留 Tick，恢复后对话照常继续。
+int Ue4ssPort::set_dialogue_flow_tick_paused(bool paused) {
+    if (subtitle_widgets_.empty()) {
+        flow_dialog_tick_paused_ = false;  // 本会话未收编任何字幕控件：不留下“已冻结”的脏标记
+        return 0;
+    }
+
+    const int target_visibility = paused ? 1 : 2;  // Collapsed 停 Tick / Hidden 保 Tick
+    int acted = 0;
+    bool has_flow_widget = false;
+    for (const auto& entry : subtitle_widgets_) {
+        UObject* widget = entry.first;
+        if (!is_ok(widget)) continue;
+        UClass* cls = widget->GetClassPrivate();
+        if (cls == nullptr || !subtitle_class_verdict(cls).flow_dialog) continue;
+        has_flow_widget = true;
+        int current = -1;
+        if (get_widget_visibility(widget, current) && current == target_visibility) continue;  // 已是目标值
+        if (set_widget_visibility(widget, target_visibility)) ++acted;
+    }
+    // 没有 FlowDialog 时不能把 flow_dialog_tick_paused_ 留成 true，否则后续 set_subtitles_visible
+    // 的每秒重申会把新出现的对话控件误判成“冻结中”。有 FlowDialog 才记录状态。
+    flow_dialog_tick_paused_ = paused && has_flow_widget;
+    // 日志由 core 的 PhotoMode 统一输出（避免同一条「对话 Flow 冻结/解冻」打两遍）
+    return acted;
 }
 
 // ------------------------------------------------------------------ 旧版卡掉的 UI 设置一次性修复（1.0.69）
@@ -3959,7 +4107,17 @@ int Ue4ssPort::wwise_component_count() {
 //   第二层 组件音量归零/恢复——盖住没截获到的声音（钩子装好前已在播的、
 //   绕过子系统直接走集成层的）。
 int Ue4ssPort::pause_wwise_voices(bool pause) {
-    int total = 0;
+    if (pause) {
+        // 对话 Flow 只读诊断（1.0.74）：钩子尽早安装；冻结期记录 ForceFinishAudio/StopAudio 是否被调用。
+        // 只加日志，不改任何播放行为。
+        install_dialogue_debug_hooks();
+        dialogue_flow_diag_active_ = true;
+        dialogue_flow_event_count_ = 0;
+    }
+    // 返回值只统计「逐 PlayingID 实际执行数」：core 用它判断是否必须落整引擎 Suspend 兜底，
+    // 组件音量兜底不算（它只静音，不能保证当前句停在原位置）。1.0.73 实机教训：
+    // 返回 total（含组件音量）会让 core 误以为逐语音已生效。
+    int voice_acted = 0;
     if (!playing_ids_.empty()) {
         UObject* soundfx = nullptr;
         {
@@ -3976,8 +4134,57 @@ int Ue4ssPort::pause_wwise_voices(bool pause) {
             const char* fn = pause ? "PBZPausePlayingID" : "PBZResumePlayingID";
             UFunction* fn_ptr = find_function(soundfx, fn);
             int acted = 0;
-            for (int32_t id : playing_ids_) {
-                if (invoke_pause_id(soundfx, fn, id, 0.0, world())) ++acted;  // FadeTime=0：立即暂停/立即恢复
+            if (pause) {
+                // 暂停：清空上一次的记录，逐 ID 暂停后立刻读位置（只读诊断，不改播放行为）
+                voice_positions_at_pause_.clear();
+                UObject* world_ctx = world();
+                for (int32_t id : playing_ids_) {
+                    if (invoke_pause_id(soundfx, fn, id, 0.0, world_ctx)) ++acted;  // FadeTime=0：立即暂停
+                    double position_ms = 0.0;
+                    if (read_playing_id_position_ms(soundfx, id, world_ctx, position_ms)) {
+                        voice_positions_at_pause_.emplace_back(id, position_ms);
+                    }
+                }
+                // 位置接口不可用/签名不符：只提示一次；诊断缺失不影响暂停本身
+                if (voice_positions_at_pause_.empty() && !voice_position_probe_logged_) {
+                    voice_position_probe_logged_ = true;
+                    log(LogLevel::Info,
+                        find_function(soundfx, "GetPlayingIDPositionMs") == nullptr
+                            ? std::string("语音位置校验：PBZSoundFXSubsystem 无 GetPlayingIDPositionMs（仅提示一次）")
+                            : std::string("语音位置校验：GetPlayingIDPositionMs 签名不符或位置不可读（仅提示一次）"));
+                }
+            } else {
+                // 恢复：必须在 PBZResumePlayingID 之前再读位置——声音还停着时 delta 才能证明
+                // 暂停是否真的冻住播放头；统计完再逐 ID 恢复。
+                int readable = 0;
+                int held = 0;
+                int advanced = 0;
+                double max_advance_ms = 0.0;
+                UObject* world_ctx = world();
+                for (const auto& entry : voice_positions_at_pause_) {
+                    double position_ms = 0.0;
+                    if (!read_playing_id_position_ms(soundfx, entry.first, world_ctx, position_ms)) continue;
+                    ++readable;
+                    const double delta = position_ms - entry.second;
+                    if (delta > 100.0) {
+                        ++advanced;
+                        if (delta > max_advance_ms) max_advance_ms = delta;
+                    } else if (delta >= -100.0) {
+                        ++held;  // |delta| <= 100ms：位置没变（允许计时抖动）
+                    }
+                }
+                if (!voice_positions_at_pause_.empty()) {
+                    char buf[220]{};
+                    std::snprintf(buf, sizeof(buf),
+                                  "语音位置校验：可读 %d 个，暂停期位置未变 %d 个，前进 %d 个（最大 +%.0f ms）",
+                                  readable, held, advanced, max_advance_ms);
+                    log(LogLevel::Info, buf);
+                    if (advanced > 0) log(LogLevel::Warn, "语音暂停未冻住：当前句在冻结期继续前进");
+                }
+                for (int32_t id : playing_ids_) {
+                    if (invoke_pause_id(soundfx, fn, id, 0.0, world_ctx)) ++acted;  // FadeTime=0：立即恢复
+                }
+                voice_positions_at_pause_.clear();
             }
             if (acted == 0 && fn_ptr != nullptr && !pause_signature_logged_) {
                 pause_signature_logged_ = true;
@@ -3986,11 +4193,11 @@ int Ue4ssPort::pause_wwise_voices(bool pause) {
             }
             log(LogLevel::Info, std::string(pause ? "对话语音暂停" : "对话语音恢复") + "（PlayingID）：截获 " +
                                     std::to_string(playing_ids_.size()) + "，执行 " + std::to_string(acted));
-            total += acted;
+            voice_acted = acted;
         }
     }
 
-    // 第二层（兜底）：组件音量归零/恢复——盖住没截获到的声音
+    // 第二层（兜底）：组件音量归零/恢复——盖住没截获到的声音；不计入返回值
     std::vector<UObject*> components;
     RC::Unreal::UObjectGlobals::FindAllOf(STR("AkComponent"), components);
     probe_wwise_components(components);
@@ -4002,11 +4209,14 @@ int Ue4ssPort::pause_wwise_voices(bool pause) {
     }
     log(LogLevel::Info, std::string(pause ? "Wwise 组件静音（音量兜底）" : "Wwise 组件恢复（音量兜底）") +
                             "：组件 " + std::to_string(components.size()) + "，执行 " + std::to_string(acted));
-    total += acted;
-    return total;
+    if (!pause) dialogue_flow_diag_active_ = false;  // 恢复完成，停止冻结期诊断计数
+    return voice_acted;
 }
 
-// Wwise 整引擎挂起：AK::SoundEngine::Suspend(false,false) / WakeupFromSuspend(0)。
+// Wwise 整引擎挂起：AK::SoundEngine::Suspend(true,false) / WakeupFromSuspend(0)。
+// Wwise 2024.1 签名 Suspend(bool in_bRenderAnyway, bool in_bFadeOut)：in_bRenderAnyway=true 时
+// 音频线程继续处理（事件队列/语音流状态保留）只是不输出；false 会把整个音频线程硬停，
+// 解冻后已经播到一半的语句会丢状态、不能原位置续播（1.0.66 起的实机问题）。
 constexpr int kAkResultSuccess = 1;  // Wwise AKRESULT：AK_Success = 1（不是 0）
 // 旧版/部分安装从 AkSoundEngineDLL.dll 取导出；当前 PBZ 把 Wwise 静态链接进主程序，
 // 同一组 C++ 符号从 PBZ.exe 导出——两条路径都试，避免像 1.0.65 那样静默落回兜底。
@@ -4061,14 +4271,16 @@ bool Ue4ssPort::suspend_wwise_engine(bool suspend) {
             }
             return false;
         }
-        const int result = ak_suspend_ != nullptr ? ak_suspend_(false, false) : -1;
+        // in_bRenderAnyway=true：音频继续渲染处理但不输出，保住 Wwise 事件队列和语音流状态；
+        // in_bFadeOut=false：立即静音，不做淡出（摄影模式进入要干脆）。
+        const int result = ak_suspend_ != nullptr ? ak_suspend_(true, false) : -1;
         if (result != kAkResultSuccess) {
             log(LogLevel::Warn, "Wwise 整引擎挂起失败（AKRESULT=" + std::to_string(result) +
                                     "），回落逐语音/组件暂停");
             return false;
         }
         wwise_engine_suspended_ = true;
-        log(LogLevel::Info, "Wwise 音频引擎已挂起（AK::SoundEngine::Suspend(false,false)，接口=" +
+        log(LogLevel::Info, "Wwise 音频引擎已静音挂起（AK::SoundEngine::Suspend(true,false)：render-anyway 保语音状态，不输出）（接口=" +
                                 wwise_engine_module_ + "）");
         return true;
     }
@@ -4172,7 +4384,66 @@ bool Ue4ssPort::install_voice_hooks() {
             log(LogLevel::Info, std::string(name) + " 参数签名=" + describe_params(fn));
         }
     }
+    // 语音位置校验接口（1.0.73 只读诊断）：存在就把真实参数签名打一次，签名不符时看这里
+    if (UFunction* position_fn = find_function(soundfx, "GetPlayingIDPositionMs")) {
+        log(LogLevel::Info, std::string("GetPlayingIDPositionMs 参数签名=") + describe_params(position_fn));
+    }
+    // 对话 Flow 诊断钩子尽早可用（1.0.74）；失败不影响语音钩子本身
+    install_dialogue_debug_hooks();
     return true;
+}
+
+// 对话 Flow 只读诊断钩子（1.0.74 方案 A）：FindFirstOf 按类名找 PlayAudio_C / StopAudio_C，
+// 分别挂 ForceFinishAudio / ExecuteUbergraph_StopAudio 的 pre 回调。只在钩子里计数+写日志，
+// 不改任何播放行为。至少挂上一个才算成功；一个都没找到时下次冻结重试（不刷屏）。
+bool Ue4ssPort::install_dialogue_debug_hooks() {
+    if (dialogue_debug_hooks_installed_) return true;
+    std::string hooked_labels;
+
+    if (UObject* sample = RC::Unreal::UObjectGlobals::FindFirstOf(STR("PlayAudio_C")); is_ok(sample)) {
+        if (UFunction* function = find_function(sample, "ForceFinishAudio"); function != nullptr) {
+            const auto ids = RC::Unreal::UObjectGlobals::RegisterHook(
+                function,
+                [](RC::Unreal::UnrealScriptFunctionCallableContext&, void* custom) {
+                    auto* self = static_cast<Ue4ssPort*>(custom);
+                    if (self != nullptr) self->on_dialogue_flow_event("PlayAudio_C.ForceFinishAudio");
+                },
+                // 非原生 Blueprint 函数走 UE4SS 的 GlobalScriptHook 路径：pre/post 两个回调
+                // 必须都非空，否则另一侧的空 std::function 会抛 bad_function_call 并移除钩子。
+                [](RC::Unreal::UnrealScriptFunctionCallableContext&, void*) {},
+                this);
+            if (ids.first >= 0 || ids.second >= 0) hooked_labels += "PlayAudio_C.ForceFinishAudio";
+        }
+    }
+    if (UObject* sample = RC::Unreal::UObjectGlobals::FindFirstOf(STR("StopAudio_C")); is_ok(sample)) {
+        if (UFunction* function = find_function(sample, "ExecuteUbergraph_StopAudio"); function != nullptr) {
+            const auto ids = RC::Unreal::UObjectGlobals::RegisterHook(
+                function,
+                [](RC::Unreal::UnrealScriptFunctionCallableContext&, void* custom) {
+                    auto* self = static_cast<Ue4ssPort*>(custom);
+                    if (self != nullptr) self->on_dialogue_flow_event("StopAudio_C.ExecuteUbergraph_StopAudio");
+                },
+                [](RC::Unreal::UnrealScriptFunctionCallableContext&, void*) {},
+                this);
+            if (ids.first >= 0 || ids.second >= 0) {
+                if (!hooked_labels.empty()) hooked_labels += "、";
+                hooked_labels += "StopAudio_C.ExecuteUbergraph_StopAudio";
+            }
+        }
+    }
+    if (hooked_labels.empty()) return false;
+    dialogue_debug_hooks_installed_ = true;
+    log(LogLevel::Info, "对话 Flow 诊断钩子已挂：" + hooked_labels);
+    return true;
+}
+
+void Ue4ssPort::on_dialogue_flow_event(const char* label) {
+    if (!dialogue_flow_diag_active_) return;
+    ++dialogue_flow_event_count_;
+    if (dialogue_flow_event_count_ <= 8) {
+        log(LogLevel::Info, std::string("冻结期对话 Flow 诊断：") + (label != nullptr ? label : "unknown") +
+                                " 被调用（第 " + std::to_string(dialogue_flow_event_count_) + " 次）");
+    }
 }
 
 void Ue4ssPort::on_voice_post(void* result_decl) {
@@ -4288,6 +4559,17 @@ void Ue4ssPort::dump_audio_objects_once() {
         const std::string functions = full_list ? list_all_functions(info.sample, 120)
                                                 : list_audio_functions(info.sample);
         log(LogLevel::Info, "音频类函数：" + item.second->first + " → " + functions);
+    }
+
+    // 1.0.73：对话相关类的一次性函数清单（只加日志）——逐 PlayingID 暂停失效时，从这里
+    // 找游戏自己的对话/语音控制接口。每类最多 20 个（list_audio_functions 已 cap），
+    // 找不到的类跳过，总行数不超过 9 行。
+    for (const char* class_name :
+         {"STTask_PlayDialogue_C", "KeepSeqDialogue_C", "DialogueGraphNew_C", "DialogueGraph_C",
+          "DialogueFlowAsset", "FromActor_Dialogue_C", "PlayAudio_C", "StopAudio_C", "BP_DialogueCameraType_C"}) {
+        UObject* sample = RC::Unreal::UObjectGlobals::FindFirstOf(widen(class_name));
+        if (!is_ok(sample)) continue;
+        log(LogLevel::Info, std::string("对话类函数：") + class_name + " → " + list_audio_functions(sample));
     }
 }
 

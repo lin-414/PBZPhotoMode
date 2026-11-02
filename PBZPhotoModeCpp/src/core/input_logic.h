@@ -22,6 +22,8 @@ struct KeyMap {
     int pitch_down{0x28};  // 俯视（低头）：方向键下
     int yaw_left{0x25};    // 左转视角：方向键左（1.0.46 起从左右平移改来）
     int yaw_right{0x27};   // 右转视角：方向键右
+    int roll_left{'Q'};    // 滚转：逆时针（默认 Q）
+    int roll_right{'E'};   // 滚转：顺时针（默认 E）
     int vertical_up{kMouseLeft};    // 升降上：默认鼠标左键（可改键盘键/其它鼠标键）
     int vertical_down{kMouseRight}; // 升降下：默认鼠标右键
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
@@ -48,7 +50,7 @@ struct Intent {
     double move_forward{};  // W/S  -> +1/-1
     double move_right{};    // D/A  -> +1/-1
     double move_up{};       // 升降键（translate 模式）+ 手柄 RT/LT
-    double roll{};          // Q/E 滚转：E=+1 顺时针 / Q=-1 逆时针
+    double roll{};          // 滚转（默认 Q/E）：+1 顺时针 / -1 逆时针
     double pitch_axis{};    // 俯仰：+1 仰视 / -1 俯视（方向键或十字键上/下按住；tick 里乘 pitch_speed × dt）
     double yaw_axis{};      // 偏航：+1 右转 / -1 左转（方向键或十字键左/右按住；tick 里乘 yaw_speed × dt）
     bool pitch_up_click{};  // look 模式：升降上键

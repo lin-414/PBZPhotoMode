@@ -4,8 +4,8 @@
 
 ## 一句话状态
 
-**C++ 版 1.0.71（字幕/交互提示反复进出后仍消失：修复 UI 修复的玩家就绪判定 + 设置原值改读属性）已实现并编译**——见「v1.0.71 修了什么」。此前 1.0.70（进入游戏时崩溃：修复 controller 缓存悬空指针，UI 一次性修复改用实时玩家查询）已实现并编译——见「v1.0.70 修了什么」。此前 1.0.69（字幕/交互提示退出后一直消失：一次性修复 + 设置读写加固）已实现并编译——见「v1.0.69 修了什么」。此前 1.0.68（锁定白点与锁定血条一起隐藏：接游戏锁定系统 TargetingComponent）已实现并编译——见「v1.0.68 修了什么」。此前 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
-核心层 **2294 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
+**C++ 版 1.0.75（Q/E 滚转键可配置：新增 [keys] key_roll_left/right，修复硬编码）已实现并编译**——见「v1.0.75 修了什么」。此前 1.0.74（过场对话 Flow 冻结/诊断：保留相机，不挂线程——新增 freeze_dialogue_flow + WBP_FlowDialog_C 冻结期 Collapsed 停 Tick + ForceFinishAudio/StopAudio_C 只读诊断）已实现并编译**——见「v1.0.74 修了什么」。此前 1.0.73（1.0.72 过场/对话中进入摄影模式后语句仍不续播：整引擎 Suspend 降级为无 ID 兜底 + 逐 PlayingID 唯一常规路径 + GetPlayingIDPositionMs 位置校验）已实现并编译——见「v1.0.73 修了什么」。此前 1.0.72（过场动画进入/退出摄影模式后语句断句不续播：Wwise 双层静音 + 原 ViewTarget 还原 + 对话 UI Hidden 保 Tick）已实现并编译——见「v1.0.72 修了什么」。此前 1.0.71（字幕/交互提示反复进出后仍消失：修复 UI 修复的玩家就绪判定 + 设置原值改读属性）已实现并编译——见「v1.0.71 修了什么」。此前 1.0.70（进入游戏时崩溃：修复 controller 缓存悬空指针，UI 一次性修复改用实时玩家查询）已实现并编译——见「v1.0.70 修了什么」。此前 1.0.69（字幕/交互提示退出后一直消失：一次性修复 + 设置读写加固）已实现并编译——见「v1.0.69 修了什么」。此前 1.0.68（锁定白点与锁定血条一起隐藏：接游戏锁定系统 TargetingComponent）已实现并编译——见「v1.0.68 修了什么」。此前 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
+核心层 **2529 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -24,6 +24,92 @@
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
 | 文档 | `docs/README.md`、`docs/BUILD.md`（含 6 条编译踩坑表）、`docs/P1_CHECKLIST.md` |
+
+## v1.0.75 修了什么（2026-11-02 Q/E 滚转键可配置）
+
+用户反馈：「q，e 的旋转视角快捷键怎么不能在配置文件中更改」。
+
+根因：`Config` 只有 `key_roll_reset`（滚转归零，默认 Z），**没有滚转左右键字段**；`InputLogic::build()` 直接用文件内常量 `kQ`/`kE` 计算 `out.roll`（`input_logic.cpp`），所以 `config.ini` 里写任何 `key_roll_*` 都不会被解析（未知键只告警并忽略），滚转键始终是 Q/E。
+
+本版改动：
+- `Config` 新增 `key_roll_left{"Q"}` / `key_roll_right{"E"}`；`parse_config` 支持 `key_roll_left` / `key_roll_right`；`config_ini_text` / `default_config_text` / `config.ini.example` 同步输出。
+- `KeyMap` 新增 `roll_left` / `roll_right`，`build_keymap` 解析；`InputLogic::build()` 改为 `key_held(keys.roll_right) - key_held(keys.roll_left)`，删掉硬编码 `kQ`/`kE`。
+- PBZFM 菜单「快捷键（键盘）」页新增两项（`pbzfm_schema_map`），改键实时生效并写回 `config.ini`；四语言词典补 `#key_roll_left/right`。
+- 控制台诊断面板操作速查的滚转提示改为读取当前 `keys.roll_left/right` 显示（不再是写死的 Q/E）。
+- 兼容：默认值仍是 Q/E，旧 config.ini 不改即保持原行为；`key_roll_reset` 与 `roll_speed` 语义不变。
+
+验证：
+- `config.ini` 写 `key_roll_left = HOME` / `key_roll_right = END`，进入摄影模式后按 HOME/END 滚转、按 Q/E 不再滚转。
+- PBZFM 菜单改键后写回 `config.ini`，重启游戏仍生效。
+- 版本 `1.0.75-cpp`；核心层 2400 → 2529 项测试全绿；DLL 编译 exit 0；dist 重打包。
+
+## v1.0.74 修了什么（2026-11-02 过场对话 Flow 冻结/诊断：保留相机，不挂线程）
+
+背景：用户提出「全线程冻结」（进入摄影模式把游戏所有线程挂起）。经 ANALYSIS.md / 线程模型核对：直接全线程冻结会挂住渲染线程与 game thread，摄影相机和 F2 都会失去响应，只能得到静帧、无法取景；因此采用**方案 A：保留相机线程与渲染，只冻结对话 Flow**。
+
+1.0.73 实机日志证据（UE4SS.log 2026-11-02 19:02，v1.0.73-cpp）：
+- `语音位置校验：可读 41 个，暂停期位置未变 41 个，前进 0 个（最大 +0 ms）`——Wwise 播放头已冻结，逐 PlayingID 真暂停生效；剩余疑点在对话 Flow 继续 Tick（`WBP_FlowDialog_C` 仍为 Hidden、Slate 仍 Tick），对话 Flow 可能在冻结期继续推进并提前结束当前语音。
+
+本版改动：
+- 新增配置 `freeze_dialogue_flow`（默认 true，仅 `hide_subtitles=true` 时生效）：冻结时把 `WBP_FlowDialog_C` 从 Hidden 改为 `Collapsed`（ESlateVisibility=1，停止 Slate Tick），解冻恢复 `Hidden`（2，仍隐藏但继续 Tick）；`leave()` 退出时按原可见性恢复。
+- 新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子：冻结期被调用时打日志（前 8 次），用于确认对话 Flow 是否提前结束语音；只计数/写日志，不改播放行为。
+- 不挂线程、不碰 QPC/IAT、不改变 Wwise/相机逻辑；无对话/普通场景 FlowDialog=0 不产生新日志；配置关闭或 `hide_subtitles=false` 时行为回退 1.0.73。
+
+验证要点：
+- 有对话/过场时冻结日志出现 `对话 Flow 冻结：FlowDialog=N 个改为 Collapsed（停止 Tick）`；解冻/退出出现 `对话 Flow 解冻：FlowDialog 恢复 Hidden 保 Tick`。
+- 隐藏日志出现 `已隐藏字幕显示控件... FlowDialog=N 个用 Collapsed 停 Tick（对话 Flow 冻结）`。
+- 启动日志出现 `对话 Flow 诊断钩子已挂：...`；若冻结期出现 `冻结期对话 Flow 诊断：PlayAudio_C.ForceFinishAudio 被调用`，说明对话 Flow 提前结束语音。
+- 回归：无对话/普通场景 FlowDialog=0 不产生新日志；配置关闭或 `hide_subtitles=false` 时行为回退 1.0.73。
+- 版本 `1.0.74-cpp`；核心层 2306 → 2400 项测试全绿；DLL 编译 exit 0；dist 重打包。
+
+## v1.0.73 修了什么（2026-11-02 过场/对话中进入摄影模式后语句仍不续播：整引擎 Suspend 仍在推进语音时间轴）
+
+实机反馈：1.0.72 装后，过场/对话中按 F2 进入摄影模式再退出，**被截断的语句仍不能续播**。
+
+日志证据（UE4SS.log 2026-11-02 18:33-18:36，v1.0.72-cpp）：
+- 18:35:21、18:36:04、18:36:08、18:36:15、18:36:20、18:36:40 等每次冻结都是 `对话语音暂停（PlayingID）：截获 47，执行 47`（18:35:21 为截获 39、执行 39），**紧跟** `Wwise 音频引擎已静音挂起（AK::SoundEngine::Suspend(true,false)：render-anyway 保语音状态，不输出）`；解冻 `Wwise 音频引擎已唤醒（WakeupFromSuspend(0)）` 后才 `对话语音恢复（PlayingID）：截获 47，执行 47`——逐 PlayingID 已经执行，但整引擎 render-anyway 仍在跑。
+- 18:35:21 等的进入日志还确认 1.0.72 的对话 UI 修复已生效：`已隐藏字幕显示控件：数量=2（WBP_FlowSubTitle_C, WBP_FlowDialog_C），FlowDialog=1 个用 Hidden 保 Tick…`；`剧情播放器[暂停]…命中 1，执行 1，类=LevelSequencePlayer`——UI/剧情播放器都不是本轮断句不续播的根因。
+- 18:33:48 `加载完成 v1.0.72-cpp`。
+
+根因：Wwise 2024.1 的 `AK::SoundEngine::Suspend(true,false)` 中 `in_bRenderAnyway=true` 只是「音频继续处理但不输出」——Wwise 音频线程和语音时间轴并未停，冻结期间当前句会继续无声前进；逐 PlayingID `PBZPausePlayingID` 即使调用成功，也保不住已被整引擎推进的播放头。1.0.36 只用逐 PlayingID + 组件音量时实机验证可原位置续播，1.0.72 把整引擎 Suspend 与逐语音同开反而破坏了那条唯一验证过的路径。
+
+本版修复：
+- **整引擎 Suspend 降级为「无逐语音 ID 兜底」**：`PhotoMode::toggle_freeze()` 冻结分支先 `pause_wwise_voices(true)`；返回值 >0（有截获并实际执行的 PlayingID）时**跳过整引擎 Suspend**，打日志 `逐语音真暂停已执行 N 个 PlayingID，跳过整引擎 Suspend（整引擎 render-anyway 会让语音时间轴继续走）`；返回 0 且 `wwise_engine_suspend` 开启时才调 `suspend_wwise_engine(true)` 作静音兜底，打日志 `无逐语音 PlayingID，整引擎 Suspend 作为静音兜底`。逐 PlayingID 路径恢复为唯一常规路径，`wwise_engine_suspend` 仍默认 true 但只在无 ID 时生效。
+- **`pause_wwise_voices` 返回值只统计实际执行的 PlayingID 数**：组件音量兜底不计入，避免 core 拿去和「逐语音已生效」混淆（1.0.72 实机教训）。
+- **新增 `GetPlayingIDPositionMs` 语音位置校验（只读诊断，不改播放行为）**：暂停时逐个记录 (PlayingID, 位置ms)，恢复前再读一次；日志 `语音位置校验：可读 N 个，暂停期位置未变 N 个，前进 N 个（最大 +X ms）`，前进超过 100ms 打 `语音暂停未冻住：当前句在冻结期继续前进`；签名不符/接口缺失只提示一次（`GetPlayingIDPositionMs 参数签名=…` / `无 GetPlayingIDPositionMs`）。
+- **对话相关类函数诊断**：一次性打印 `STTask_PlayDialogue_C`、`KeepSeqDialogue_C`、`DialogueGraphNew_C`、`FromActor_Dialogue_C`、`PlayAudio_C`、`StopAudio_C` 等类的函数清单（`对话类函数：…`），为逐 PlayingID 仍失效时找游戏自己的对话控制接口。
+
+验证要点：
+- 有 ID 的常规对话/过场：日志应出现 `对话语音暂停（PlayingID）：截获 N，执行 N` → `逐语音真暂停已执行 N 个 PlayingID，跳过整引擎 Suspend…`，且**不再出现** `Wwise 音频引擎已静音挂起`；解冻出现 `对话语音恢复（PlayingID）`。
+- 位置校验：`语音位置校验：可读 N 个，暂停期位置未变 N 个，前进 0 个（最大 +0 ms）`（允许多 100ms 内计时抖动）；若出现 `语音暂停未冻住`，把该行与 `GetPlayingIDPositionMs 参数签名` 发回。
+- 无 ID 场景（例如钩子未挂上）：才应看到 `无逐语音 PlayingID，整引擎 Suspend 作为静音兜底`。
+- 版本 `1.0.73-cpp`；核心层 2301 → 2306 项测试全绿；DLL 重编通过；dist 重打包。
+
+## v1.0.72 修了什么（2026-11-02 过场动画进入/退出摄影模式后语句断句不续播）
+
+实机反馈：过场动画（剧情演出）中按 F2 进入摄影模式、再退出后，**正在播的语句被截断，不能从原位置续播**。
+
+日志证据（UE4SS.log 2026-11-02 17:46-18:00，v1.0.71-cpp）：
+- 17:55:51 / 17:55:57 / 17:56:03 / 17:56:10 / 17:59:18 等：`剧情播放器[暂停]：扫描 1（直扫 1 + Actor 兜底 0），命中 1，执行 1，类=LevelSequencePlayer，Wwise=有，Ak组件=39`；17:57:08 前后有成对的 `剧情播放器[恢复]`——Sequencer 剧情播放器确实已暂停/恢复，问题不在剧情播放器本身。
+- 每次冻结都打出 `Wwise 音频引擎已挂起（AK::SoundEngine::Suspend(false,false)，接口=PBZ.exe（静态链接））`（如 17:55:51.2325857、17:59:18.7619594），解冻打 `Wwise 音频引擎已唤醒（WakeupFromSuspend(0)）`——1.0.66 起的整引擎硬挂起把逐 PlayingID 真暂停路径整个绕过了。
+- 进入时 `字幕设置开关原值=开（读取=bEnableSubtitles，owner=PBZSettingsShared …）` → `字幕设置开关已关闭（回读=关）`（17:59:18.7177038/7179802）；`已隐藏字幕显示控件：数量=4（WBP_FlowDialog_C, WBP_FlowSubTitle_C, WBP_FlowDialog_C, WBP_FlowDialog_C）…`（17:55:51.2285000）——对话 UI 本体 `WBP_FlowDialog_C` 被 Collapsed。
+
+根因三处：
+1. **Wwise 整引擎挂起用了硬停参数**：Wwise 2024.1 的 `AK::SoundEngine::Suspend(bool in_bRenderAnyway, bool in_bFadeOut)` 中 `(false,false)` 等于「完全不处理音频（连 RenderAudio 也不处理）」，音频线程被硬停，事件队列/语音流状态在挂起期间丢失，解冻后播到一半的语句无法原位置续播。1.0.66 用整引擎 Suspend 替代了 1.0.36 实机验证过的逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 路径（那条路径能让当前句从停住位置继续）。
+2. **退出固定还原到玩家 Pawn**：过场动画期间相机管理器的 ViewTarget 是过场相机；`restore_view()` 固定 `SetViewTargetWithBlend(player_pawn)`，退出摄影模式时把过场镜头强行切回玩家视角，正在播的对话/语音一起被打断。
+3. **对话 UI 被 Collapsed + 关字幕开关**：字幕文本画在 `WBP_FlowDialog_C`（对话 Flow 图 UI 本体）上；`Collapsed`（ESlateVisibility=1）会把控件从 Slate Tick 里摘掉，对话 Flow/语句推进停摆；同时进入时写 `bEnableSubtitles=false`（对话/语音控制器读这个开关）会截断当前语句。
+
+本版修复（三项）：
+- **Wwise 双层静音**：`suspend_wwise_engine(true)` 改为 `AK::SoundEngine::Suspend(true,false)`——render-anyway（音频继续处理但不输出），保住 Wwise 事件队列和语音流状态。`PhotoMode::toggle_freeze()` 恢复 1.0.36 的顺序：先 `pause_wwise_voices(true)`（逐 PlayingID `PBZPausePlayingID` 真暂停 + 组件音量兜底）为第一层，再 `suspend_wwise_engine(true)` 为第二层；解冻逆序：先 `suspend_wwise_engine(false)`（`WakeupFromSuspend(0)`）恢复输出，再 `pause_wwise_voices(false)`（`PBZResumePlayingID`）恢复语音。`wwise_engine_suspend` 仍默认 true，但语义变为第二层 render-anyway 静音，不再替代逐语音暂停。
+- **保存/还原进入前 ViewTarget**：`spawn_camera()` 在创建摄影相机前读相机管理器 `ViewTarget.Target`（非空、非 `Default__` CDO、非摄影相机）存到 `original_view_target_`；`restore_view()` 优先 `SetViewTargetWithBlend` 还原它，失败才回退玩家 Pawn；`destroy_camera()` 只在 `view_attached_by_port_` 仍为 true 时还原，避免 `leave()` 已还原后又把过场相机踢回 Pawn。日志打 `进入前 ViewTarget 已记录：<fullname>` / `已还原进入前 ViewTarget：<fullname>`。
+- **对话控件 Hidden 保 Tick + 对话中不关字幕开关**：`SubtitleClassVerdict` 增加 `flow_dialog`（类名含 `flowdialog`）；`set_subtitles_visible(false)` 对 FlowDialog 控件用 `ESlateVisibility=2`（Hidden，仍 Tick），其他字幕控件仍用 1（Collapsed）；本轮扫描发现 FlowDialog（说明处于对话/过场）时跳过写 `bEnableSubtitles=false`，只隐藏控件，日志 `检测到对话 UI（FlowDialog），保留字幕设置开关不写（避免打断当前语句）；仅隐藏控件`。原有的每秒重申与暂停期跳过扫描优化保留。
+
+验证要点：
+- 过场动画中 F2 进入 → 等当前语句停住 → F2 退出：同一句从停住处续播（不重播、不跳句），字幕开关保持原值。
+- 日志应出现 `进入前 ViewTarget 已记录：CameraActor …`，退出打 `已还原进入前 ViewTarget：…`（不再固定回玩家 Pawn）。
+- 日志 `Wwise 音频引擎已静音挂起（AK::SoundEngine::Suspend(true,false)：render-anyway 保语音状态，不输出）` + `Wwise 音频引擎已唤醒（WakeupFromSuspend(0)）`，且逐语音暂停/恢复分别排在整引擎挂起之前、唤醒之后。
+- 对话中日志出现 `检测到对话 UI（FlowDialog），保留字幕设置开关不写…`；隐藏日志带 `FlowDialog=N 个用 Hidden 保 Tick`。
+- 版本 `1.0.72-cpp`；核心层 2301 项测试全绿；DLL 重编通过；dist 重打包。
 
 ## v1.0.71 修了什么（2026-11-02 字幕/交互提示反复进出后仍消失）
 

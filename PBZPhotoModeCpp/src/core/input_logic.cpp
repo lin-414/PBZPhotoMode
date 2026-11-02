@@ -9,8 +9,6 @@ constexpr int kW = 'W';
 constexpr int kA = 'A';
 constexpr int kS = 'S';
 constexpr int kD = 'D';
-constexpr int kE = 'E';
-constexpr int kQ = 'Q';
 
 // FOV 按住连发：首格延迟与连发间隔（秒）。单击仍是一格；按住 0.35 秒后以 12.5 格/秒连发。
 // 键盘 FOV 键与手柄十字键同规则。
@@ -42,6 +40,8 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.pitch_down = resolve_key(cfg.key_pitch_down, map.pitch_down, "key_pitch_down", warnings, map.all_resolved);
     map.yaw_left = resolve_key(cfg.key_yaw_left, map.yaw_left, "key_yaw_left", warnings, map.all_resolved);
     map.yaw_right = resolve_key(cfg.key_yaw_right, map.yaw_right, "key_yaw_right", warnings, map.all_resolved);
+    map.roll_left = resolve_key(cfg.key_roll_left, map.roll_left, "key_roll_left", warnings, map.all_resolved);
+    map.roll_right = resolve_key(cfg.key_roll_right, map.roll_right, "key_roll_right", warnings, map.all_resolved);
     map.vertical_up = resolve_key(cfg.key_vertical_up, map.vertical_up, "key_vertical_up", warnings, map.all_resolved);
     map.vertical_down = resolve_key(cfg.key_vertical_down, map.vertical_down, "key_vertical_down", warnings, map.all_resolved);
 
@@ -143,8 +143,8 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
 
     // 方向键左/右转视角（1.0.46 起从左右平移改为偏航，与上/下俯仰组成完整视角旋转簇）；WASD 平移不受影响
     out.yaw_axis = (key_held(keys.yaw_right) ? 1.0 : 0.0) - (key_held(keys.yaw_left) ? 1.0 : 0.0);
-    // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给升降键（默认鼠标左右键）与手柄 RT/LT
-    out.roll = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
+    // 滚转（默认 Q/E，可经 [keys] key_roll_left/right 改键）：上下平移只留给升降键与手柄 RT/LT
+    out.roll = (key_held(keys.roll_right) ? 1.0 : 0.0) - (key_held(keys.roll_left) ? 1.0 : 0.0);
 
     // 方向键俯仰：按住持续转（+1 仰视 / -1 俯视），不受 free_look_requires_alt 限制
     out.pitch_axis = (key_held(keys.pitch_up) ? 1.0 : 0.0) - (key_held(keys.pitch_down) ? 1.0 : 0.0);

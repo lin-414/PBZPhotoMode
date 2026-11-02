@@ -140,7 +140,8 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
 
     // 键位提示（游戏内无菜单，这里就是唯一的操作速查）
     ImGui::TextUnformatted(lang.T("#console_help_look"));
-    ImGui::TextUnformatted(lang.T("#console_help_move"));
+    ImGui::TextDisabled(lang.T("#console_help_move"), vk_to_name(keys.roll_left).c_str(),
+                        vk_to_name(keys.roll_right).c_str());
     ImGui::TextUnformatted(lang.T("#console_help_wheel"));
     ImGui::TextDisabled(lang.T("#console_help_reset"), vk_to_name(keys.reset).c_str());
     ImGui::TextDisabled(lang.T("#console_help_roll"), vk_to_name(keys.roll_reset).c_str());

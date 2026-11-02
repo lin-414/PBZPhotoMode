@@ -87,10 +87,10 @@ public:
     // 事件驱动的标记不会自己消失，必须动渲染载体本身（同交互提示的道理）。
     virtual bool set_lockon_marker_visible(bool visible) = 0;
 
-    // 对话字幕：SetHideUIForPV 不管它们。双路径：游戏设置开关 bSubtitlesEnabled
-    // （SetSubtitlesEnabled，GameUserSettings 家族）管住之后新出的字幕；GameSubtitles
-    // 插件的 USubtitleDisplay 控件直接 Collapsed 管住此刻已经画出来的——
-    // freeze_mode=pause 下控件 Tick 冻住，光改设置对已显示的字幕不会立即生效。
+    // 对话字幕：SetHideUIForPV 不管它们。普通字幕走游戏设置开关 bSubtitlesEnabled
+    // （SetSubtitlesEnabled）管新字幕 + USubtitleDisplay 控件 Collapsed 管已显示的；
+    // 对话/过场中的 WBP_FlowDialog_C 文本改用 Hidden（保留 Tick），且不改字幕设置，
+    // 避免当前语句被截断——freeze_mode=pause 下控件 Tick 冻住，只改设置对已显示文本不生效。
     virtual bool set_subtitles_visible(bool visible) = 0;
 
     // 超宽屏（21:9/32:9）支持：游戏把画幅锁在 16:9，超宽屏两侧补黑边。
@@ -111,17 +111,25 @@ public:
     // 必须把 SequencePlayer 单独压住。找不到播放器时返回 found=0，不算失败。
     virtual SequenceFreezeReport pause_sequences(bool paused) = 0;
 
+    // 对话 Flow 暂停：冻结时把 FlowDialog 控件设为 Collapsed（停止 Slate Tick），
+    // 解冻恢复 Hidden（仍隐藏但继续 Tick）。返回实际操作控件数；0=当前没有 FlowDialog（不算失败）。
+    virtual int set_dialogue_flow_tick_paused(bool paused) = 0;
+
     // Wwise 音频组件数量（对话语音走 Wwise 时世界暂停拦不住，用于诊断）
     virtual int wwise_component_count() = 0;
     // Wwise 组件静音（mute=true，音量归零，声音继续无声播放、句子回调照常）与
     // 解除（mute=false，音量恢复）。组件类没有音量函数时静音方向回落一次性 Stop。
     // 对话语音真暂停/恢复：优先用钩子截获的 PlayingID 调游戏自有
     // PBZPausePlayingID / PBZResumePlayingID（Wwise 原生暂停，解冻原位置续播）；
-    // 没有截获到 ID 时回落组件音量归零/恢复。返回执行的调用量。
+    // 没有截获到 ID 时回落组件音量归零/恢复。
+    // 返回值 = 实际执行暂停/恢复的 PlayingID 数（0 = 无逐语音 ID，调用方可用整引擎静音兜底）；
+    // 不含组件兜底动作数——组件音量只是附带兜底，不能据此跳过整引擎兜底。
     virtual int pause_wwise_voices(bool pause) = 0;
 
-    // Wwise 整引擎挂起/唤醒（AK::SoundEngine::Suspend(false,false) /
-    // WakeupFromSuspend(0)）。成功返回 true；不可用或失败由上层回落逐语音暂停。
+    // Wwise 整引擎静音/唤醒（AK::SoundEngine::Suspend(true,false) /
+    // WakeupFromSuspend(0)）。2024.1 下 true=render-anyway：音频继续处理但不输出，
+    // 事件队列/语音流状态保留；但语音时间轴仍会推进，已有逐 PlayingID 暂停时不得调用，
+    // 仅在 pause_wwise_voices 返回 0（没有截获到 ID）时作为静音兜底。
     virtual bool suspend_wwise_engine(bool suspend) = 0;
 
     // ---- 冻结期残余微动治理：世界暂停拦不住的“每帧变化源”逐个掐掉 ----

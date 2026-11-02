@@ -4,8 +4,8 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.71 |
-| 核心层测试 | 2294 项，全部通过 |
+| 版本 | v1.0.75 |
+| 核心层测试 | 2529 项，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
 ## 项目结构
@@ -31,7 +31,7 @@ src/ui_tab     UE4SS 控制台诊断面板（滑块/按钮，纯展示 + 回传�
 tools\build_tests.bat
 ```
 
-不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 2294 项，失败 0 项`。
+不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 2529 项，失败 0 项`。
 
 ## 键位
 
@@ -42,7 +42,7 @@ tools\build_tests.bat
 | 前后左右平移 | `W` `A` `S` `D` |
 | 方向键转向/俯仰 | 方向键 左/右转视角（`yaw_speed`，默认 90 度/秒）、上/下俯仰（`pitch_speed`，默认 30 度/秒） |
 | 升降 | 默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改成鼠标中键、侧键或键盘键；translate 模式；手柄 RT / LT） |
-| 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`roll_speed` 可调）；手柄 `RB` / `LB` |
+| 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`key_roll_left` / `key_roll_right` 可改键，`roll_speed` 可调）；手柄 `RB` / `LB` |
 | 加速 / 减速 | `Shift` / `Ctrl` |
 | 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-`（单击一格，按住约 0.35 秒后连发） |
 | 重置相机视角 | `R`（回到进入摄影模式时的位置/朝向/FOV） |
@@ -92,6 +92,45 @@ tools\build_tests.bat
 - **P0**：核心逻辑 + 单元测试 → 完成
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
 - **P2**：PostProcess 快照还原、滤镜、连拍、录像
+
+## 1.0.75 这次改了什么（Q/E 滚转键可在 config.ini 配置）
+
+- 问题：用户反馈 Q/E 旋转视角（滚转）快捷键在 `config.ini` 里改不了——检查发现 1.0.74 及以前 Q/E 硬编码在 `input_logic.cpp` 的 `build()` 里（`kQ`/`kE` 常量），`[keys]` 段只有 `key_roll_reset`（滚转归零），没有滚转左右键配置项。
+- 修复：新增 `[keys] key_roll_left` / `key_roll_right`（默认 `Q` / `E`，左=逆时针、右=顺时针），解析进 `KeyMap` 并由 `InputLogic` 使用；`config_ini_text` / `config.ini.example` / PBZFM 菜单「快捷键（键盘）」页同步，PBZFM 改键后写回 `config.ini`。
+- 兼容：不写新键名时默认值仍是 Q/E，旧配置无需改动；`key_roll_reset`（默认 Z，滚转归零）保持不变。
+- 其他：控制台诊断面板的滚转提示改为显示当前实际键位；四语言词典补 `#key_roll_left/right`。
+- 核心层测试 2400 → **2529 项全绿**；DLL 编译 exit 0。
+
+## 1.0.74 这次改了什么（过场对话 Flow 冻结/诊断：保留相机，不挂线程）
+
+- 背景：用户提出「全线程冻结」；经 ANALYSIS.md / 线程模型核对，直接挂起所有线程会连渲染线程和 game thread 一起停，摄影相机与 F2 都会失效，只能得到静帧、无法取景；因此采用方案 A：保留相机线程与渲染，只冻结对话 Flow。
+- 1.0.73 实机日志（19:02）：`语音位置校验：可读 41 个，暂停期位置未变 41 个，前进 0 个（最大 +0 ms）`——Wwise 播放头已冻结，剩余疑点在对话 Flow 继续 Tick（`WBP_FlowDialog_C` 仍为 Hidden、Slate 仍 Tick）。
+- 新增配置 `freeze_dialogue_flow`（默认 `true`，仅 `hide_subtitles=true` 时生效）：冻结时把 `WBP_FlowDialog_C` 从 `Hidden` 改为 `Collapsed`（ESlateVisibility=1，停止 Slate Tick），解冻恢复 `Hidden`（2，仍隐藏但继续 Tick）；`leave()` 退出时按原可见性恢复。
+- 新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子：冻结期被调用时打日志（前 8 次），只确认对话 Flow 是否提前结束语音，不改播放行为。
+- 不挂线程、不碰 QPC/IAT、不改变 Wwise/相机逻辑；无对话/普通场景 FlowDialog=0 不产生新日志，配置关闭或 `hide_subtitles=false` 时行为回退 1.0.73。
+- 核心层测试 2306 → **2400 项全绿**；DLL 编译 exit 0。
+
+## 1.0.73 这次改了什么（过场/对话中进入摄影模式后语句仍不续播）
+
+- 实机反馈：1.0.72 装后，过场/对话中按 F2 进入摄影模式再退出，**被截断的语句仍不能续播**。
+- 根因（1.0.72 遗留）：`AK::SoundEngine::Suspend(true,false)` 的 render-anyway 只是“不输出”，音频线程和语音时间轴照常推进；即使逐 PlayingID `PBZPausePlayingID` 执行成功（日志 `对话语音暂停（PlayingID）：截获 47，执行 47`），当前句也会在冻结期间无声播完，解冻后无法从原位置续播。1.0.36 只用逐 PlayingID + 组件音量时实机验证可续播。
+- 修复①（整引擎 Suspend 降级为无 ID 兜底）：有逐语音 PlayingID 时**跳过整引擎 Suspend**，逐 PlayingID 真暂停（`PBZPausePlayingID`/`PBZResumePlayingID`）恢复为唯一常规路径；整引擎 `Suspend(true,false)` 仅在 `pause_wwise_voices` 返回 0（没有截获到 ID）时作为静音兜底（`wwise_engine_suspend` 仍默认 true，但只在无 ID 时生效）。
+- 修复②：新增 `GetPlayingIDPositionMs` 语音位置校验（只读诊断）：暂停时记录每个 PlayingID 的位置，恢复前再读一次，日志 `语音位置校验：可读 N 个，暂停期位置未变 N 个，前进 N 个（最大 +X ms）`；前进超过 100ms 会 Warn `语音暂停未冻住：当前句在冻结期继续前进`。
+- 修复③：`pause_wwise_voices` 返回值只统计实际执行的 PlayingID 数（组件音量兜底不计入），避免 core 误判「逐语音已生效」；补 `对话类函数：…` 一次性诊断。
+- 验证：有 ID 时日志应出现 `逐语音真暂停已执行 N 个 PlayingID，跳过整引擎 Suspend`，且**不再出现** `Wwise 音频引擎已静音挂起`；无 ID 时才出现 `无逐语音 PlayingID，整引擎 Suspend 作为静音兜底`。
+- 核心层测试 2301 → **2306 项全绿**；DLL 重编通过。
+
+## 1.0.72 这次改了什么（过场动画进入/退出摄影模式后语句断句不续播）
+
+- 实机反馈：过场动画（剧情演出）中按 F2 进入摄影模式、再退出后，**正在播的语句被截断，不能从原位置续播**。
+- 根因①（音频）：1.0.66 起冻结走 `AK::SoundEngine::Suspend(false,false)` 整引擎硬挂起。Wwise 2024.1 的签名是 `Suspend(bool in_bRenderAnyway, bool in_bFadeOut)`，`(false,false)` 表示音频完全不处理（连 `RenderAudio` 也不处理），音频线程被硬停、事件队列与语音流状态丢失，解冻后播到一半的语句无法续播；同时绕过了 1.0.36 实机验证过的逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 路径。
+- 根因②（镜头）：退出摄影模式时 `restore_view()` 固定还原到玩家 Pawn，过场动画期间的 ViewTarget（过场相机）被切走，正在播的对话/语音被打断。
+- 根因③（对话 UI）：字幕文本画在 `WBP_FlowDialog_C` 等对话控件上；`Collapsed` 会停止控件 Tick、让对话 Flow/语句推进停摆；进入时关闭 `bEnableSubtitles` 也会截断当前语句。
+- 修复①：整引擎改 `AK::SoundEngine::Suspend(true,false)`（render-anyway：音频继续处理但不输出，保住语音流状态）；冻结顺序恢复为「先逐 PlayingID 真暂停 → 再整引擎 render-anyway 静音」，解冻逆序「先 `WakeupFromSuspend` 恢复输出 → 再 `PBZResumePlayingID` 恢复语音」。
+- 修复②：进入时保存相机管理器的原 `ViewTarget`，退出优先还原它（日志 `进入前 ViewTarget 已记录` / `已还原进入前 ViewTarget`），记录不可用时才回退玩家 Pawn。
+- 修复③：FlowDialog 家族控件用 `ESlateVisibility=2`（Hidden，保留 Tick），其他字幕控件仍用 `Collapsed`；扫描到 FlowDialog 时保留 `bEnableSubtitles` 原值、只隐藏控件（日志 `检测到对话 UI（FlowDialog），保留字幕设置开关不写…`）。
+- 配置说明：`stop_wwise_on_freeze` 仍默认 `true`；`wwise_engine_suspend` 仍默认 `true`，但现在是**第二层 render-anyway 静音**（音频继续处理、不输出），逐 PlayingID 暂停始终先行，不再被整引擎替代。
+- 核心层测试 2294 → **2301 项全绿**；DLL 重编通过。
 
 ## 1.0.67 这次改了什么（清理两处旧日志提示）
 

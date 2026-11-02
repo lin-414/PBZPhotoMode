@@ -77,9 +77,11 @@ private:
     bool frozen_with_pause_{false};
     // 冻结时一并暂停了剧情播放器（解冻/退出时要恢复）
     bool sequences_paused_{false};
-    // 冻结时把 Wwise 组件音量归零了（解冻/退出时要恢复，声音是可恢复静音）
+    // 冻结时把对话 Flow 控件（WBP_FlowDialog_C）改为 Collapsed 停 Tick（解冻/退出时要恢复 Hidden）
+    bool flow_dialog_frozen_{false};
+    // 冻结时逐 PlayingID 真暂停已生效（无 ID 时组件音量兜底；解冻/退出时要恢复）
     bool wwise_paused_{false};
-    // 冻结时整个 Wwise 音频引擎被 Suspend（解冻/退出时要 WakeupFromSuspend）
+    // 无逐语音 PlayingID 时整引擎 Suspend 作为静音兜底（解冻/退出时要 WakeupFromSuspend）
     bool wwise_engine_suspended_{false};
     // 冻结时停用了相机修饰器/结束 shake（解冻/退出时按原状态还原）
     bool shakes_frozen_{false};

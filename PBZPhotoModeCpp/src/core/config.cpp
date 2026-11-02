@@ -128,6 +128,8 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "key_pitch_down") set_string(cfg.key_pitch_down, value, error, key.c_str());
         else if (key == "key_yaw_left") set_string(cfg.key_yaw_left, value, error, key.c_str());
         else if (key == "key_yaw_right") set_string(cfg.key_yaw_right, value, error, key.c_str());
+        else if (key == "key_roll_left") set_string(cfg.key_roll_left, value, error, key.c_str());
+        else if (key == "key_roll_right") set_string(cfg.key_roll_right, value, error, key.c_str());
         else if (key == "key_vertical_up") set_string(cfg.key_vertical_up, value, error, key.c_str());
         else if (key == "key_vertical_down") set_string(cfg.key_vertical_down, value, error, key.c_str());
         // 兼容用户直觉写法（文档主推 key_vertical_*）
@@ -185,6 +187,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
         else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
         else if (key == "freeze_sequences") set_bool(cfg.freeze_sequences, value, error, key.c_str());
+        else if (key == "freeze_dialogue_flow") set_bool(cfg.freeze_dialogue_flow, value, error, key.c_str());
         else if (key == "stop_wwise_on_freeze") set_bool(cfg.stop_wwise_on_freeze, value, error, key.c_str());
         else if (key == "wwise_engine_suspend") set_bool(cfg.wwise_engine_suspend, value, error, key.c_str());
         else if (key == "time_offset_compensation") {
@@ -357,6 +360,9 @@ std::string config_ini_text(const Config& c) {
         << "; 左右转视角（按住持续转，速度 = yaw_speed）：方向键左 = 左转 / 右 = 右转\n"
         << "key_yaw_left = " << c.key_yaw_left << "\n"
         << "key_yaw_right = " << c.key_yaw_right << "\n"
+        << "; 滚转（按住持续转，速度 = roll_speed）：默认 Q 逆时针 / E 顺时针\n"
+        << "key_roll_left = " << c.key_roll_left << "\n"
+        << "key_roll_right = " << c.key_roll_right << "\n"
         << "; 升降（translate=相机上下平移，look=俯仰）：默认鼠标左键上/右键下\n"
         << "; 可写键盘键名（PAGE_UP/PAGE_DOWN 等）或鼠标键 MOUSE_LEFT/MOUSE_RIGHT/MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2\n"
         << "key_vertical_up = " << c.key_vertical_up << "\n"
@@ -379,7 +385,7 @@ std::string config_ini_text(const Config& c) {
         << "; 升降键行为（具体键位见 [keys] 的 key_vertical_up/down）：translate=相机上下平移，look=俯仰\n"
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
         << "vertical_speed = " << c.vertical_speed << "\n"
-        << "; Q/E 滚转相机速度（度/秒）：E 顺时针，Q 逆时针；Shift 加速 / Ctrl 减速同样生效\n"
+        << "; 滚转相机速度（度/秒）：默认 E 顺时针，Q 逆时针（键位见 [keys] key_roll_left/right）；Shift 加速 / Ctrl 减速同样生效\n"
         << "roll_speed = " << c.roll_speed << "\n"
         << "; 方向键上/下（与手柄十字键上/下）俯仰速度（度/秒）；Shift 加速 / Ctrl 减速同样生效\n"
         << "pitch_speed = " << c.pitch_speed << "\n"
@@ -445,10 +451,15 @@ std::string config_ini_text(const Config& c) {
         << "; 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻/退出时恢复。\n"
         << "; 剧情系统常绕过世界暂停自顾自播（画面像冻住但动作声音还在走），默认开启\n"
         << "freeze_sequences = " << (c.freeze_sequences ? "true" : "false") << "\n"
-        << "; 冻结时处理 Wwise 音频（优先 AK::SoundEngine::Suspend 整引擎挂起，失败回落逐 PlayingID/组件音量）\n"
+        << "; 冻结时把对话 Flow（WBP_FlowDialog_C）改为 Collapsed 停止 Slate Tick，避免对话 Flow\n"
+        << "; 在冻结期继续推进/提前结束当前语音；解冻恢复 Hidden（仍隐藏但继续 Tick）。仅在 hide_subtitles=true 时生效\n"
+        << "freeze_dialogue_flow = " << (c.freeze_dialogue_flow ? "true" : "false") << "\n"
+        << "; 冻结时处理 Wwise 音频：有逐 PlayingID 时逐语音真暂停（PBZPausePlayingID/PBZResumePlayingID），\n"
+        << "; 跳过整引擎 Suspend；没有 ID 时才用整引擎静音兜底，失败回落组件音量\n"
         << "stop_wwise_on_freeze = " << (c.stop_wwise_on_freeze ? "true" : "false") << "\n"
-        << "; 冻结时调用 AK::SoundEngine::Suspend / WakeupFromSuspend（整段音频真冻结；\n"
-        << "; false=不挂起整引擎，只走逐语音/组件兜底）\n"
+        << "; 仅当没有截获到逐个 PlayingID 时，整引擎 Suspend(true,false) 作兜底：\n"
+        << "; render-anyway 只静音、音频继续处理；正常有 ID 时不会调用，避免推进语音时间轴\n"
+        << "; false=不做整引擎兜底，只走逐语音/组件音量\n"
         << "wwise_engine_suspend = " << (c.wwise_engine_suspend ? "true" : "false") << "\n"
         << "; 冻结时停用相机修饰器并立即结束相机 shake。它们用真实时间驱动，世界暂停拦不住，\n"
         << "; 是冻结画面边缘抖动/脸部阴影爬动的主变化源；解冻时按冻结前状态还原\n"

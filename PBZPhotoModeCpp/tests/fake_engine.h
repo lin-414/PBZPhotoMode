@@ -191,15 +191,33 @@ public:
         return report;
     }
 
-    // Wwise 组件模拟：wwise_components 同时是“数量”与“暂停/恢复成功”的执行数
+    // 对话 Flow 控件模拟：flow_dialog_widgets 是场上 FlowDialog 控件数；
+    // 暂停=Collapsed（停 Tick），恢复=Hidden（继续 Tick）；0 个控件时不算失败、不记调用序列
+    int flow_dialog_widgets{0};
+    bool flow_dialog_paused{false};
+    int flow_freeze_calls{0};
+    int set_dialogue_flow_tick_paused(bool pause) override {
+        ++flow_freeze_calls;
+        if (flow_dialog_widgets <= 0) {
+            flow_dialog_paused = false;
+            return 0;
+        }
+        flow_dialog_paused = pause;
+        calls.push_back(pause ? "flow_freeze_on" : "flow_freeze_off");
+        return flow_dialog_widgets;
+    }
+
+    // Wwise 组件模拟：wwise_components 只表示组件数量（诊断/音量兜底语义）
     int wwise_components{0};
+    // 逐 PlayingID 模拟：pause_wwise_voices 返回实际执行暂停/恢复的 PlayingID 数
+    int wwise_playing_ids{0};
     int wwise_component_count() override {
         calls.push_back("wwise_count");
         return wwise_components;
     }
     int pause_wwise_voices(bool pause) override {
         calls.push_back(pause ? "wwise_pause" : "wwise_resume");
-        return wwise_components;
+        return wwise_playing_ids;
     }
 
     // Wwise 整引擎 Suspend 模拟：默认不可用，让原有测试继续覆盖逐语音兜底路径

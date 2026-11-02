@@ -121,6 +121,7 @@ bool PhotoMode::enter() {
     active_ = true;
     frozen_ = false;
     sequences_paused_ = false;
+    flow_dialog_frozen_ = false;
     wwise_paused_ = false;
     wwise_engine_suspended_ = false;
     shakes_frozen_ = false;
@@ -156,7 +157,7 @@ bool PhotoMode::enter() {
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
         !hud_hidden_ && !prompt_hidden_ && !bars_hidden_ && !lockon_hidden_ && !subtitles_hidden_ && !aspect_unlocked_ &&
-        !postfx_saved_ && !wwise_engine_suspended_ && !wwise_paused_) {
+        !postfx_saved_ && !wwise_engine_suspended_ && !wwise_paused_ && !flow_dialog_frozen_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
@@ -193,6 +194,11 @@ void PhotoMode::leave(const char* reason) {
         if (wwise_paused_) {
             engine_.pause_wwise_voices(false);
             wwise_paused_ = false;
+        }
+        if (flow_dialog_frozen_) {
+            engine_.set_dialogue_flow_tick_paused(false);
+            flow_dialog_frozen_ = false;
+            log(LogLevel::Info, "对话 Flow 解冻：FlowDialog 恢复 Hidden 保 Tick");
         }
         frozen_ = false;
     }
@@ -338,19 +344,40 @@ void PhotoMode::toggle_freeze() {
         sequences_paused_ = want && report.ok;
     }
 
-    // 对话语音真暂停：截获的 PlayingID 走游戏自有 PBZPausePlayingID（Wwise 原生暂停），
-    // 解冻 PBZResumePlayingID 后当前句从原位置继续；无 ID 时回落组件音量兜底
-    if (want && cfg_.stop_wwise_on_freeze) {
-        // 第一层：整引擎 Suspend（PBZPause 方案）——一次覆盖环境/音乐/语音/UI 所有声音；
-        // 不可用或失败才回落逐 PlayingID + 组件音量兜底。
-        if (cfg_.wwise_engine_suspend && !wwise_engine_suspended_) {
-            wwise_engine_suspended_ = engine_.suspend_wwise_engine(true);
+    // 对话 Flow 控件：冻结时改为 Collapsed 停止 Slate Tick，避免对话 Flow 在冻结期继续推进、
+    // 提前结束当前语音；解冻恢复 Hidden（仍隐藏但继续 Tick）。仅在隐藏字幕时才有意义。
+    if (want && cfg_.freeze_dialogue_flow && cfg_.hide_subtitles) {
+        const int flow_count = engine_.set_dialogue_flow_tick_paused(true);
+        flow_dialog_frozen_ = flow_count > 0;
+        if (flow_count > 0) {
+            char buf[160]{};
+            std::snprintf(buf, sizeof(buf), "对话 Flow 冻结：FlowDialog=%d 个改为 Collapsed（停止 Tick）", flow_count);
+            log(LogLevel::Info, buf);
         }
-        if (!wwise_engine_suspended_) {
-            engine_.pause_wwise_voices(true);
-            wwise_paused_ = true;
+    }
+
+    // 对话语音真暂停：截获的 PlayingID 走游戏自有 PBZPausePlayingID（Wwise 原生暂停），
+    // 解冻 PBZResumePlayingID 后当前句从原位置继续；无 ID 时回落组件音量兜底。
+    // 关键：有逐语音 PlayingID 时绝不调用整引擎 Suspend——2024.1 的 Suspend(true,false)
+    // 是 render-anyway，音频时间轴继续推进，当前句会在冻结期间无声播完，解冻无法原位续播。
+    // 整引擎只在没有截获到 PlayingID 时作为静音兜底。
+    if (want && cfg_.stop_wwise_on_freeze) {
+        const int voice_ids = engine_.pause_wwise_voices(true);
+        wwise_paused_ = true;
+        if (voice_ids > 0) {
+            char buf[256]{};
+            std::snprintf(buf, sizeof(buf),
+                          "逐语音真暂停已执行 %d 个 PlayingID，跳过整引擎 Suspend（整引擎 render-anyway 会让语音时间轴继续走）",
+                          voice_ids);
+            log(LogLevel::Info, buf);
+        } else if (cfg_.wwise_engine_suspend && !wwise_engine_suspended_) {
+            wwise_engine_suspended_ = engine_.suspend_wwise_engine(true);
+            if (wwise_engine_suspended_) {
+                log(LogLevel::Info, "无逐语音 PlayingID，整引擎 Suspend 作为静音兜底");
+            }
         }
     } else if (!want) {
+        // 解冻逆序：先唤醒整引擎恢复输出，再逐语音恢复（先恢复输出再恢复语音，不能反）
         if (wwise_engine_suspended_) {
             if (engine_.suspend_wwise_engine(false)) {
                 wwise_engine_suspended_ = false;
@@ -362,6 +389,13 @@ void PhotoMode::toggle_freeze() {
             engine_.pause_wwise_voices(false);
             wwise_paused_ = false;
         }
+    }
+
+    // 对话 Flow 解冻：恢复输出/语音之后再把 FlowDialog 从 Collapsed 恢复 Hidden（保 Tick）
+    if (!want && flow_dialog_frozen_) {
+        engine_.set_dialogue_flow_tick_paused(false);
+        flow_dialog_frozen_ = false;
+        log(LogLevel::Info, "对话 Flow 解冻：FlowDialog 恢复 Hidden 保 Tick");
     }
 
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");

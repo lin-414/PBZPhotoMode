@@ -123,8 +123,9 @@ CHECK(empty.cfg.hide_enemy_health_bars);  // 默认隐藏敌人（怪物）血�
 CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.freeze_sequences);  // 默认冻结时同时暂停剧情播放器
+    CHECK(empty.cfg.freeze_dialogue_flow);  // 默认冻结对话 Flow（仅在 hide_subtitles=true 时生效）
     CHECK(empty.cfg.stop_wwise_on_freeze);  // 默认冻结时处理 Wwise 音频（对话流程已冻结，可关）
-    CHECK(empty.cfg.wwise_engine_suspend);  // 默认优先整引擎 Suspend（PBZPause 方案）
+    CHECK(empty.cfg.wwise_engine_suspend);  // 默认允许整引擎在无逐语音 ID 时作静音兜底
     CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK_NEAR(empty.cfg.vertical_speed, 200.0, 1e-9);
@@ -136,6 +137,8 @@ CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK_STR(empty.cfg.key_pitch_down, "DOWN");
     CHECK_STR(empty.cfg.key_yaw_left, "LEFT");   // 方向键左/右 = 左右转视角（1.0.46 起从平移改来）
     CHECK_STR(empty.cfg.key_yaw_right, "RIGHT");
+    CHECK_STR(empty.cfg.key_roll_left, "Q");      // 滚转默认 Q/E（1.0.75 起可配置）
+    CHECK_STR(empty.cfg.key_roll_right, "E");
     CHECK_STR(empty.cfg.key_vertical_up, "MOUSE_LEFT");    // 升降默认鼠标左/右键（1.0.63 起可配置）
     CHECK_STR(empty.cfg.key_vertical_down, "MOUSE_RIGHT");
     CHECK_STR(empty.cfg.pad_pitch_up, "UP");    // 十字键上/下 = 俯仰
@@ -158,6 +161,8 @@ key_pitch_up = C
 key_pitch_down = V
 key_yaw_left = INSERT
 key_yaw_right = DELETE
+key_roll_left = HOME
+key_roll_right = END
 key_vertical_up = MOUSE_MIDDLE
 key_vertical_down = PAGE_DOWN
 
@@ -183,6 +188,7 @@ ultrawide_unlock = false
 [effects]
 auto_pause_time = false
 freeze_sequences = false
+freeze_dialogue_flow = false
 stop_wwise_on_freeze = true
 wwise_engine_suspend = false
 time_offset_compensation = false
@@ -200,6 +206,8 @@ dry_run = on
     CHECK_STR(parsed.cfg.key_pitch_down, "V");
     CHECK_STR(parsed.cfg.key_yaw_left, "INSERT");
     CHECK_STR(parsed.cfg.key_yaw_right, "DELETE");
+    CHECK_STR(parsed.cfg.key_roll_left, "HOME");
+    CHECK_STR(parsed.cfg.key_roll_right, "END");
     CHECK_STR(parsed.cfg.key_vertical_up, "MOUSE_MIDDLE");
     CHECK_STR(parsed.cfg.key_vertical_down, "PAGE_DOWN");
     CHECK_NEAR(parsed.cfg.move_speed, 250.5, 1e-9);
@@ -216,6 +224,7 @@ dry_run = on
     CHECK(!parsed.cfg.ultrawide_unlock);
     CHECK(!parsed.cfg.auto_pause_time);
     CHECK(!parsed.cfg.freeze_sequences);
+    CHECK(!parsed.cfg.freeze_dialogue_flow);
     CHECK(parsed.cfg.stop_wwise_on_freeze);
     CHECK(!parsed.cfg.wwise_engine_suspend);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
@@ -282,12 +291,15 @@ void test_config_default_text_roundtrip() {
     CHECK(text.find("key_toggle") != std::string::npos);
     CHECK(text.find("roll_speed") != std::string::npos);
     CHECK(text.find("key_pitch_up") != std::string::npos);
+    CHECK(text.find("key_roll_left") != std::string::npos);
+    CHECK(text.find("key_roll_right") != std::string::npos);
     CHECK(text.find("key_vertical_up") != std::string::npos);
     CHECK(text.find("pad_pitch_up") != std::string::npos);
     CHECK(text.find("pitch_speed") != std::string::npos);
     CHECK(text.find("slow_look_mult") != std::string::npos);
     CHECK(text.find("yaw_speed") != std::string::npos);
     CHECK(text.find("wwise_engine_suspend") != std::string::npos);
+    CHECK(text.find("freeze_dialogue_flow") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
@@ -295,6 +307,7 @@ void test_config_default_text_roundtrip() {
     CHECK(parsed.cfg.ultrawide_unlock);
     CHECK(parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.freeze_sequences);
+    CHECK(parsed.cfg.freeze_dialogue_flow);  // 默认文本同样开启
     CHECK(parsed.cfg.stop_wwise_on_freeze);  // 默认文本同样开启
     CHECK(parsed.cfg.wwise_engine_suspend);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
@@ -304,6 +317,8 @@ void test_config_default_text_roundtrip() {
     CHECK_NEAR(parsed.cfg.yaw_speed, 90.0, 1e-9);
     CHECK_STR(parsed.cfg.key_pitch_up, "UP");  // 默认文本里俯仰/转向键可被原样解析回来
     CHECK_STR(parsed.cfg.key_yaw_left, "LEFT");
+    CHECK_STR(parsed.cfg.key_roll_left, "Q");
+    CHECK_STR(parsed.cfg.key_roll_right, "E");
     CHECK_STR(parsed.cfg.key_vertical_up, "MOUSE_LEFT");
     CHECK_STR(parsed.cfg.key_vertical_down, "MOUSE_RIGHT");
     CHECK_STR(parsed.cfg.pad_fov_up, "A");
@@ -369,6 +384,8 @@ void test_input_logic() {
     CHECK_INT(keys.pitch_down, 0x28);
     CHECK_INT(keys.yaw_left, 0x25);
     CHECK_INT(keys.yaw_right, 0x27);
+    CHECK_INT(keys.roll_left, 'Q');             // 滚转默认 Q/E（1.0.75 起可配置）
+    CHECK_INT(keys.roll_right, 'E');
     CHECK_INT(keys.vertical_up, kMouseLeft);    // 升降默认鼠标左/右键（1.0.63 起可配置）
     CHECK_INT(keys.vertical_down, kMouseRight);
 
@@ -494,6 +511,26 @@ void test_input_logic() {
     in.on_key('Q', false);
     in.reset();
 
+    // 滚转键可改（1.0.75）：key_roll_left/right 换任意键名后按新键生效、旧 Q/E 失效
+    Config roll_cfg = cfg;
+    roll_cfg.key_roll_left = "HOME";
+    roll_cfg.key_roll_right = "END";
+    std::vector<std::string> roll_warnings;
+    const KeyMap roll_keys = build_keymap(roll_cfg, &roll_warnings);
+    CHECK_INT(roll_warnings.size(), 0);
+    CHECK_INT(roll_keys.roll_left, 0x24);   // HOME
+    CHECK_INT(roll_keys.roll_right, 0x23);  // END
+    in.on_key(0x24, true);
+    CHECK_NEAR(in.build(roll_cfg, roll_keys).roll, -1.0, 1e-9);
+    in.on_key(0x24, false);
+    in.on_key(0x23, true);
+    CHECK_NEAR(in.build(roll_cfg, roll_keys).roll, 1.0, 1e-9);
+    in.on_key(0x23, false);
+    in.on_key('Q', true);
+    CHECK_NEAR(in.build(roll_cfg, roll_keys).roll, 0.0, 1e-9);  // 旧默认键不再触发
+    in.on_key('Q', false);
+    in.reset();
+
     // Q/E 滚转与鼠标左右键升降同帧叠加互不干扰
     in.on_key('Q', true);
     in.on_key(kMouseLeft, true);
@@ -590,6 +627,13 @@ void expect_sequence(const pbzpm::test::FakeEngine& fe, std::initializer_list<co
     }
 }
 
+// 顺序断言：a 必须出现在 b 之前（两者都必须在调用记录里存在）
+bool appears_before(const pbzpm::test::FakeEngine& fe, const char* a, const char* b) {
+    const int ia = fe.index_of(a);
+    const int ib = fe.index_of(b);
+    return ia >= 0 && ib >= 0 && ia < ib;
+}
+
 void test_photo_mode_happy_path() {
     section("PhotoMode 进入/退出");
     using namespace pbzpm;
@@ -599,6 +643,8 @@ void test_photo_mode_happy_path() {
     fe.pov.loc = Vec3{100.0, 200.0, 300.0};
     fe.pov.rot = Rot{10.0, 45.0, 0.0};
     fe.pov.fov = 88.0;
+    fe.wwise_playing_ids = 3;  // 默认游戏路径：钩子已截获逐语音 PlayingID
+    fe.flow_dialog_widgets = 1;  // 默认路径：场上有 1 个对话 Flow 控件
 
     Config cfg;
     PhotoMode mode(fe, cfg);
@@ -609,8 +655,10 @@ void test_photo_mode_happy_path() {
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
                      "hud_off", "prompt_off", "bars_off", "lockon_off", "subs_off", "aspect_unlock", "save_postfx",
                      "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "shakes_freeze",
-                     "wind_freeze", "mpc_snapshot", "sequences_pause", "wwise_engine_suspend", "wwise_pause"},
+                     "wind_freeze", "mpc_snapshot", "sequences_pause", "flow_freeze_on", "wwise_pause"},
                     "首次进入");
+    // 有逐语音 PlayingID：只做逐语音真暂停，不得再调用整引擎 Suspend
+    CHECK_INT(fe.count("wwise_engine_suspend"), 0);
 
     CHECK(mode.active());
     CHECK(fe.camera_exists);
@@ -637,7 +685,7 @@ void test_photo_mode_happy_path() {
     mode.leave("test");
     expect_sequence(fe,
                     {"wind_restore", "shakes_restore", "sequences_resume", "pause_off",
-                     "wwise_resume", "restore_postfx", "restore_aspect",
+                     "wwise_resume", "flow_freeze_off", "restore_postfx", "restore_aspect",
                      "hud_on", "prompt_on", "bars_on", "lockon_on", "subs_on", "block_input_off", "ignore_move_off",
                      "restore_view", "destroy_camera"},
                     "退出");
@@ -1250,9 +1298,10 @@ void test_photo_mode_cutscene_freeze() {
         CHECK_INT(fe.sequence_calls, 0);
     }
 
-    // stop_wwise_on_freeze：冻结时音量归零（可恢复）；解冻/退出恢复音量
+    // stop_wwise_on_freeze：冻结时逐语音真暂停（组件音量兜底，可恢复）；解冻/退出恢复
     {
         FakeEngine fe;
+        fe.wwise_playing_ids = 3;
         fe.wwise_components = 3;
         Config cfg;
         cfg.stop_wwise_on_freeze = true;
@@ -1349,47 +1398,57 @@ void test_photo_mode_cutscene_freeze() {
 
 
 void test_photo_mode_wwise_engine() {
-    section("PhotoMode Wwise 整引擎 Suspend");
+    section("PhotoMode Wwise：逐语音优先，整引擎仅无 ID 兜底");
     using namespace pbzpm;
     using pbzpm::test::FakeEngine;
 
-    // 1) Wwise 整引擎 Suspend 成功：不再走逐 PlayingID/组件兜底
+    // A) 有逐语音 PlayingID：只做逐语音真暂停，绝不调用整引擎 Suspend
     {
         FakeEngine fe;
+        fe.wwise_playing_ids = 3;
         fe.wwise_engine_suspend_ok = true;
-        fe.wwise_components = 3;
         PhotoMode mode(fe, Config{});
         CHECK(mode.enter());
         CHECK(mode.frozen());
-        CHECK_INT(fe.count("wwise_engine_suspend"), 1);
-        CHECK_INT(fe.count("wwise_pause"), 0);
-        CHECK(fe.wwise_engine_suspended);
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        CHECK_INT(fe.count("wwise_engine_suspend"), 0);
+        CHECK_INT(fe.count("wwise_engine_wake"), 0);
+        CHECK(!fe.wwise_engine_suspended);
 
+        fe.reset_calls();
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("wwise_resume"), 1);
+        CHECK_INT(fe.count("wwise_engine_wake"), 0);  // 从未 Suspend，解冻无需 Wake
+        mode.leave("test");
+    }
+
+    // B) 无逐语音 PlayingID：整引擎 Suspend 作为静音兜底；解冻先 wake 再 resume
+    {
+        FakeEngine fe;
+        fe.wwise_playing_ids = 0;
+        fe.wwise_engine_suspend_ok = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        CHECK_INT(fe.count("wwise_engine_suspend"), 1);
+        CHECK(fe.wwise_engine_suspended);
+        CHECK(fe.logs_contain("无逐语音 PlayingID，整引擎 Suspend 作为静音兜底"));
+
+        fe.reset_calls();
         mode.toggle_freeze();
         CHECK(!mode.frozen());
         CHECK_INT(fe.count("wwise_engine_wake"), 1);
-        CHECK_INT(fe.count("wwise_resume"), 0);
+        CHECK_INT(fe.count("wwise_resume"), 1);
+        CHECK(appears_before(fe, "wwise_engine_wake", "wwise_resume"));
         CHECK(!fe.wwise_engine_suspended);
         mode.leave("test");
     }
 
-    // 2) 整引擎不可用/失败：回落逐语音 + 组件音量兜底
+    // C) 无逐语音 ID 且配置关闭整引擎：不尝试整引擎，只走逐语音/组件兜底
     {
         FakeEngine fe;
-        fe.wwise_engine_suspend_ok = false;
-        fe.wwise_components = 2;
-        PhotoMode mode(fe, Config{});
-        CHECK(mode.enter());
-        CHECK_INT(fe.count("wwise_engine_suspend"), 1);
-        CHECK_INT(fe.count("wwise_pause"), 1);
-        CHECK_INT(fe.count("wwise_engine_wake"), 0);
-        mode.leave("test");
-        CHECK_INT(fe.count("wwise_resume"), 1);
-    }
-
-    // 3) wwise_engine_suspend=false：不尝试整引擎，直接逐语音
-    {
-        FakeEngine fe;
+        fe.wwise_playing_ids = 0;
         fe.wwise_engine_suspend_ok = true;
         Config cfg;
         cfg.wwise_engine_suspend = false;
@@ -1400,16 +1459,124 @@ void test_photo_mode_wwise_engine() {
         mode.leave("test");
     }
 
-    // 4) 冻结状态下直接退出：Wwise 整引擎和逐语音兜底都要成对恢复
+    // D) 无逐语音 ID + 整引擎成功 + 冻结中直接退出：wake 必须先于 resume
     {
         FakeEngine fe;
+        fe.wwise_playing_ids = 0;
         fe.wwise_engine_suspend_ok = true;
         PhotoMode mode(fe, Config{});
         CHECK(mode.enter());
         CHECK(fe.wwise_engine_suspended);
+        fe.reset_calls();
         mode.leave("exit while frozen");
         CHECK_INT(fe.count("wwise_engine_wake"), 1);
+        CHECK_INT(fe.count("wwise_resume"), 1);
+        CHECK(appears_before(fe, "wwise_engine_wake", "wwise_resume"));
         CHECK(!fe.wwise_engine_suspended);
+    }
+
+    // E) 有逐语音 ID 时日志必须记录「跳过整引擎 Suspend」（证明没走 render-anyway 路径）
+    {
+        FakeEngine fe;
+        fe.wwise_playing_ids = 5;
+        fe.wwise_engine_suspend_ok = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.logs_contain("跳过整引擎 Suspend"));
+        CHECK(fe.logs_contain("逐语音真暂停已执行 5 个 PlayingID"));
+        CHECK_INT(fe.count("wwise_engine_suspend"), 0);
+        mode.leave("test");
+    }
+}
+
+void test_photo_mode_dialogue_flow() {
+    section("PhotoMode 对话 Flow 冻结（Collapsed 停 Tick）");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // A) 默认 hide_subtitles=true、freeze_dialogue_flow=true：冻结改 Collapsed，解冻/退出恢复 Hidden
+    {
+        FakeEngine fe;
+        fe.flow_dialog_widgets = 2;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK(fe.flow_freeze_calls >= 1);
+        CHECK(fe.flow_dialog_paused);
+        CHECK_INT(fe.count("flow_freeze_on"), 1);
+        CHECK(fe.logs_contain("对话 Flow 冻结"));
+
+        mode.toggle_freeze();  // 解冻
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("flow_freeze_off"), 1);
+        CHECK(!fe.flow_dialog_paused);
+
+        mode.toggle_freeze();  // 再冻结
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("flow_freeze_on"), 2);
+        CHECK(fe.flow_dialog_paused);
+
+        mode.leave("test");  // 冻结中退出
+        CHECK_INT(fe.count("flow_freeze_off"), 2);
+        CHECK(!fe.flow_dialog_paused);
+    }
+
+    // B) freeze_dialogue_flow=false：完全不调用
+    {
+        FakeEngine fe;
+        fe.flow_dialog_widgets = 2;
+        Config cfg;
+        cfg.freeze_dialogue_flow = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.flow_freeze_calls, 0);
+        CHECK_INT(fe.count("flow_freeze_on"), 0);
+        mode.leave("test");
+        CHECK_INT(fe.count("flow_freeze_off"), 0);
+        CHECK_INT(fe.flow_freeze_calls, 0);
+    }
+
+    // C) hide_subtitles=false：即使 freeze_dialogue_flow=true 也不调用
+    {
+        FakeEngine fe;
+        fe.flow_dialog_widgets = 2;
+        Config cfg;
+        cfg.hide_subtitles = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.flow_freeze_calls, 0);
+        mode.leave("test");
+        CHECK_INT(fe.flow_freeze_calls, 0);
+    }
+
+    // D) 场上没有 FlowDialog（返回 0）：不算冻结成功、无调用序列、无冻结日志，退出不重复调用
+    {
+        FakeEngine fe;
+        fe.flow_dialog_widgets = 0;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.flow_freeze_calls, 1);
+        CHECK(!fe.flow_dialog_paused);
+        CHECK_INT(fe.count("flow_freeze_on"), 0);
+        CHECK(!fe.logs_contain("对话 Flow 冻结"));
+        mode.leave("test");
+        CHECK_INT(fe.count("flow_freeze_off"), 0);
+        CHECK_INT(fe.flow_freeze_calls, 1);
+    }
+
+    // E) 冻结中直接 leave：Flow 恢复必须先于字幕恢复（subs_on）
+    {
+        FakeEngine fe;
+        fe.flow_dialog_widgets = 1;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        fe.reset_calls();
+        mode.leave("exit while frozen");
+        CHECK_INT(fe.count("flow_freeze_off"), 1);
+        CHECK(appears_before(fe, "flow_freeze_off", "subs_on"));
+        CHECK(!fe.flow_dialog_paused);
     }
 }
 
@@ -2778,6 +2945,7 @@ void test_pbzfm_config_writeback() {
     custom.move_speed = 733.0;
     custom.look_sensitivity = 0.22;
     custom.hide_game_hud = false;
+    custom.freeze_dialogue_flow = false;
     custom.freeze_mode = FreezeMode::Dilation;
     custom.pad_look_speed = 222.0;
     custom.mouse_vertical_mode = MouseVerticalMode::Look;
@@ -2791,6 +2959,7 @@ void test_pbzfm_config_writeback() {
     CHECK_NEAR(parsed.cfg.move_speed, 733.0, 1e-9);
     CHECK_NEAR(parsed.cfg.look_sensitivity, 0.22, 1e-9);
     CHECK(!parsed.cfg.hide_game_hud);
+    CHECK(!parsed.cfg.freeze_dialogue_flow);
     CHECK(parsed.cfg.freeze_mode == FreezeMode::Dilation);
     CHECK_NEAR(parsed.cfg.pad_look_speed, 222.0, 1e-9);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Look);
@@ -2828,6 +2997,7 @@ int main() {
     test_photo_mode_auto_pause();
     test_photo_mode_cutscene_freeze();
     test_photo_mode_wwise_engine();
+    test_photo_mode_dialogue_flow();
     test_photo_mode_freeze_treatment();
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
