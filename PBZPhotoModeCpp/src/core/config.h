@@ -77,6 +77,7 @@ struct Config {
     bool hide_enemy_health_bars{true};  // 摄影模式默认隐藏敌人（怪物）血条：切到 OnlyLockedTarget 显示模式，退出还原
     bool hide_lockon_marker{true};  // 摄影模式默认隐藏锁定标记（锁定敌人时其身上的白点），退出还原
     bool hide_subtitles{true};  // 摄影模式默认隐藏对话字幕：关字幕设置 + Collapsed 字幕控件，退出还原
+    bool repair_ui_settings_once{true};  // 1.0.69 一次性修复：首次运行把字幕/场景交互提示开关强制打开（旧版可能写坏，成功后写标记不再执行）
     bool auto_pause_time{true};  // 进入摄影模式时自动暂停时间（默认开启）
     FreezeMode freeze_mode{FreezeMode::Pause};
     double freeze_dilation{0.0001};

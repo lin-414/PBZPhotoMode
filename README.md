@@ -17,11 +17,31 @@
 - **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性
 - **隐藏交互提示**：进入摄影模式自动隐藏场景互物体旁的“E”键图标（世界空间 UMG），退出时恢复
 - **隐藏敌人血条**：进入摄影模式自动隐藏敌人（怪物）头顶血条（切到游戏自带"仅锁定目标"血条显示模式，退出还原原模式）
-- **隐藏锁定标记**：进入摄影模式自动隐藏锁定敌人时其身上出现的白点标记（退出还原；标记的渲染载体不可证，按类名/资产名关键词收网 + 实机诊断日志收敛，`hide_lockon_marker` 可关）
+- **隐藏锁定标记**：进入摄影模式自动隐藏锁定敌人时其身上出现的白点标记——1.0.68 起接游戏自己的锁定系统（`TargetingComponent`：藏 `LockWidget`/副目标指示器、关指示器开关、清锁定目标），锁定目标的血条也一并消失，退出成对恢复（`hide_lockon_marker` 可关）
 - **可配置**：键位、移动速度、灵敏度、FOV 范围、冻结方式等全部写在 `config.ini` 里
 - **游戏内设置菜单（可选）**：安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu) 后，游戏内按其呼出键（默认 `F8`）即可在菜单里改键位/开关/参数并**实时生效**（改动写回 `config.ini`）；不装则纯快捷键，零依赖
 
 ## 当前版本
+
+**1.0.71-cpp** —— 已编译：
+
+- **修复「字幕/交互提示反复进出后仍消失」**：1.0.70 的 UI 一次性修复从未执行（`find_live_player_pawn()` 要求 Player+Pawn+bBegunPlay 全命中，实机 Player/世界属性读不到）；且设置原值 getter 优先读到未同步旧副本（`GetSubtitlesEnabled()`=关但字幕实际在显示），退出把原值还原成关。现在玩家就绪判定只要求 Pawn 可读、`bBegunPlay` 只在明确 false 时拦截；`read_bool_setting()` 改为属性优先（`bEnableSubtitles` / `bSceneInteractPromptVisible`）、getter 兜底，写仍走 setter + Pending + 属性三路
+- 核心层测试 **2294 项全绿**
+
+**1.0.70-cpp** —— 已编译：
+
+- **修复「进入游戏时崩溃」**：1.0.69 的 UI 一次性修复在启动 3 秒调用 `player_pawn()`，`controller()` 缓存的 PlayerController 在换图/读档时已销毁，`GetClassPrivate()` 读出 `0xFFFFFFFFFFFFFFFF`，旧 `is_ok` 只判非空 → `find_property` 把 -1 当 `UStruct*` 构造 `TFieldIterator` 读地址 -1 崩溃（dump：`crash_2026_11_02_15_36_45`，RIP=`PBZPhotoModeCpp.dll+0x198A3`）。现在 `is_ok` 增加指针范围/对齐 + SEH 保护的类指针读取 + `FUObjectItem` 对象数组反查；UI 修复改用 `find_live_player_pawn()` 实时枚举（Player+Pawn 都在且 `UWorld.bBegunPlay=true`）
+- 核心层测试 **2294 项全绿**
+
+**1.0.69-cpp** —— 已编译：
+
+- **修复「退出摄影模式后字幕与交互按钮一直消失」**：一次性修复（`repair_ui_settings_once` 默认开）把字幕/场景交互提示两个游戏设置强制打开、回读校验并立即存盘（写 `ui_settings_repair_done.flag`，只做一次）；同时给这两个设置加 getter 优先读取 + setter/pending/属性三路写 + 回读校验，不再静默写坏玩家设置
+- 核心层测试 **2294 项全绿**
+
+**1.0.68-cpp** —— 已编译：
+
+- **锁定白点与锁定血条一起隐藏**：实机日志确认血条残留根因是「OnlyLockedTarget 只为锁定目标显示血条」；exe 取证找到游戏锁定系统 `TargetingComponent`（`LockWidget`/`SecondaryLockIndicators`/`SetShowLockIndicator`/`HasLockTarget`/`GetLockTarget`/`SetLockTarget`/`StopLockTarget`）。进入摄影模式时藏指示器控件、关指示器开关、保存并清掉锁定目标（血条随之消失），退出成对恢复；关键词补 `focus`/`indicator`/`hpbar` 等，怪物世界控件（WidgetComponent）兜底；诊断④输出锁定系统详情
+- 核心层测试 **2294 项全绿**
 
 **1.0.67-cpp** —— 已编译：
 

@@ -24,7 +24,7 @@ Free-camera photo mode for Phantom Blade Zero. Press F2 (or L3+R3 on a controlle
 [*][b]Time freeze[/b] — time is paused automatically when you enter photo mode (default on, can be disabled in config.ini); press F to freeze / unfreeze at any time. Game-pause mode stops enemies, NPCs and effects while the photo camera keeps moving. Cutscene (Sequencer) players are paused together with the world and resumed on unfreeze / exit, so freezing also works during story scenes; if the game refuses the pause, the mod falls back to time dilation automatically. Wwise audio (dialogue, character voices, weapons, ambience, music) is paused too while frozen ([code]stop_wwise_on_freeze[/code] and [code]wwise_engine_suspend[/code], both on by default): the mod first suspends the whole Wwise engine with [code]AK::SoundEngine::Suspend(false,false)[/code] (resolved from PBZ.exe's static Wwise exports, falling back to per-voice pause if unavailable).
 [*][b]Rock-still frames[/b] — on freeze the mod also stops camera shakes and disables camera modifiers, zeroes the wind sources and pins material parameter collections (the drivers behind cloth/foliage flutter and crawling shadows), each toggleable in config.ini ([code]stop_camera_shakes_on_freeze[/code] / [code]freeze_wind[/code] / [code]freeze_mpc[/code]); [code]freeze_diag[/code] prints a per-second diagnostic if something still moves.
 [*][b]Seamless entry[/b] — the photo camera inherits the game camera's exact position, aim and current FOV (no FOV jump on entering), and class-cached scans keep entering / exiting fast even in large levels.
-[*][b]Clean shots[/b] — the game HUD (health, quickslot, quest text, boss bars), enemy (monster) health bars, dialogue subtitles, the E-key interaction prompts and the lock-on marker dot on enemies are hidden automatically on entering photo mode and restored on exit; optionally hide the player character from the config.
+[*][b]Clean shots[/b] — the game HUD (health, quickslot, quest text, boss bars), enemy (monster) health bars (including the locked target's), dialogue subtitles, the E-key interaction prompts and the lock-on marker dot on enemies are hidden automatically on entering photo mode and restored on exit; optionally hide the player character from the config.
 [*][b]Input isolation[/b] — while photo mode is active the game does not receive movement/attack inputs, so you can hold a mouse button to move the camera without swinging a sword. Everything is restored on exit.
 [*][b]Optional in-game menu[/b] — with the free [url=https://github.com/lin-414/PBZ-Framework-Menu]PBZ-Framework-Menu[/url] installed, its menu key (default F8) opens a PBZ Photo Mode section in-game: press-capture key rebinding, behavior / hide / freeze toggles, camera, movement and gamepad parameters — changes apply live and are written back to config.ini, plus a Status page with state, pose readouts and quick buttons. Without it the mod stays pure hotkeys, zero dependencies.
 [*][b]Menu languages[/b] — the menu ships with English / 简体中文 / 日本語 / 한국어; texts live in languages/*.json inside the mod folder — edit a translation or drop in a new language file and the menu hot-reloads it within seconds.
@@ -87,19 +87,19 @@ When upgrading, overwrite the whole PBZPhotoModeCpp mod folder — copying only 
 [b]Option A — with the mod manager (recommended)[/b]
 [list=1]
 [*]Install [url=https://www.nexusmods.com/phantombladezero/mods/2][b]Phantom Blade Mod Manager[/b][/url] from Nexus Mods and set it up following its own instructions.
-[*]Use it to install this mod from [b]PBZPhotoModeCpp_1.0.67-cpp.zip[/b] (Files tab) — the manager also installs the required UE4SS Phantom Blade Zero build for you.
+[*]Use it to install this mod from [b]PBZPhotoModeCpp_1.0.71-cpp.zip[/b] (Files tab) — the manager also installs the required UE4SS Phantom Blade Zero build for you.
 [*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller).
 [/list]
 [b]Option B — manual[/b]
 [list=1]
 [*]Install the Phantom Blade Zero build of UE4SS into your game root folder (you should see dwmapi.dll and an ue4ss folder next to the game executable).
-[*]Download [b]PBZPhotoModeCpp_1.0.67-cpp.zip[/b] from the Files tab and extract it into the game root folder.
+[*]Download [b]PBZPhotoModeCpp_1.0.71-cpp.zip[/b] from the Files tab and extract it into the game root folder.
 [*]Check that the resulting structure is: [code]ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll[/code] plus config.ini, enabled.txt and the languages/ folder in the same mod folder.
 [*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller).
 [/list]
 
 [b]Configuration[/b]
-Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, roll_speed, pitch_speed, yaw_speed, slow_look_mult, freeze_mode (pause or dilation), freeze_sequences, stop_wwise_on_freeze, wwise_engine_suspend, stop_camera_shakes_on_freeze, freeze_wind, freeze_mpc, freeze_diag, auto_pause_time, hide_player, hide_game_hud, hide_interact_prompt, hide_enemy_health_bars, hide_lockon_marker, hide_subtitles, ultrawide_unlock, menu_language, all keybinds (including the arrow-key look keys, the roll-reset key, and key_vertical_up / key_vertical_down for camera rise/descend — mouse middle/side buttons or keyboard keys accepted), and the [gamepad] section (pad_toggle / pad_freeze / pad_reset / pad_fov_up / pad_fov_down, pad_pitch_up / pad_pitch_down, pad_yaw_left / pad_yaw_right, pad_roll_reset, pad_look_speed, pad_move_scale, pad_deadzone, pad_enabled).
+Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall back to defaults with a warning in UE4SS.log. Useful options include move_speed, look_sensitivity, fov_min/fov_max, roll_speed, pitch_speed, yaw_speed, slow_look_mult, freeze_mode (pause or dilation), freeze_sequences, stop_wwise_on_freeze, wwise_engine_suspend, stop_camera_shakes_on_freeze, freeze_wind, freeze_mpc, freeze_diag, auto_pause_time, hide_player, hide_game_hud, hide_interact_prompt, hide_enemy_health_bars, hide_lockon_marker, hide_subtitles, repair_ui_settings_once (one-time repair that re-enables subtitles / interaction prompts if an older build left them off), ultrawide_unlock, menu_language, all keybinds (including the arrow-key look keys, the roll-reset key, and key_vertical_up / key_vertical_down for camera rise/descend — mouse middle/side buttons or keyboard keys accepted), and the [gamepad] section (pad_toggle / pad_freeze / pad_reset / pad_fov_up / pad_fov_down, pad_pitch_up / pad_pitch_down, pad_yaw_left / pad_yaw_right, pad_roll_reset, pad_look_speed, pad_move_scale, pad_deadzone, pad_enabled).
 
 [b]Troubleshooting[/b]
 [list]
@@ -109,6 +109,7 @@ Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall bac
 [*][b]Game input stuck after exiting:[/b] press F2 again to toggle out, or restart the game. Please report it with the relevant UE4SS.log lines.
 [*][b]Where is the menu?[/b] There is none by default — the mod is pure hotkeys unless you install the optional PBZ-Framework-Menu (menu key F8); a status/keybind panel is also available in the UE4SS console.
 [*][b]Menu shows raw keys like #pad_enabled:[/b] the [code]languages/[/code] folder is missing — reinstall the whole mod folder (see Installation).
+[*][b]Subtitles or the E-key interaction prompt stay hidden:[/b] this can happen after using an older build that wrote the setting off — install 1.0.69 or newer, which runs a one-time repair that turns both back on ([code]repair_ui_settings_once[/code], on by default). If you intentionally play with subtitles off, set it to false in config.ini and delete [code]ui_settings_repair_done.flag[/code].
 [*][b]Gamepad not detected, or gamepad hotkeys don't trigger:[/b] disable [b]Steam Input[/b] for the game (Steam library → right-click → Properties → Controller → untick Enable Steam Input) — with Steam Input on, the game's XInput usually sees no controller at all, and even when it does, the mod's gamepad hotkeys (L3 + R3, A/B FOV, D-pad tilt / turn, stick-click speed shift…) may fail to trigger; this is especially common with DS4Windows / GameSir and other virtual-gamepad remappers. UE4SS.log shows whether XInput loaded (1.0.18+ loads it from the system directory) and logs a line whenever a controller connects or disconnects.
 [/list]
 
@@ -120,6 +121,10 @@ Edit [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]. Invalid values fall bac
 
 [b]What's new since 1.0.40[/b]
 [list]
+[*][b]1.0.71[/b] — fixed: subtitles and E-key interaction prompts stayed hidden after a few photo-mode enter/exit cycles. The 1.0.70 one-time repair never ran (its [code]find_live_player_pawn()[/code] demanded Player + Pawn + [code]bBegunPlay[/code], which are not all readable in the real game), and reading the original setting through getters returned a stale copy ([code]GetSubtitlesEnabled()[/code]=off while subtitles were actually visible), so every exit restored "off". The repair now only needs a readable Pawn ([code]bBegunPlay[/code] blocks only when explicitly false) and runs only outside photo mode; [code]read_bool_setting()[/code] now reads the [code]bEnableSubtitles[/code] / [code]bSceneInteractPromptVisible[/code] properties first with getters as fallback.
+[*][b]1.0.70[/b] — fixed: a crash when entering the game. The 1.0.69 one-time UI repair called [code]player_pawn()[/code] three seconds after startup; the cached PlayerController from [code]controller()[/code] had been destroyed during the level load, [code]GetClassPrivate()[/code] read 0xFFFFFFFFFFFFFFFF, and the old [code]is_ok[/code] only checked for non-null — [code]find_property[/code] then constructed a [code]TFieldIterator[/code] on -1 and crashed reading address -1. [code]is_ok[/code] now validates pointer range/alignment, reads the class pointer under SEH, and cross-checks the [code]FUObjectItem[/code]; the UI repair uses [code]find_live_player_pawn()[/code] (fresh enumeration, requires Player + Pawn and [code]UWorld.bBegunPlay=true[/code]).
+[*][b]1.0.69[/b] — fixed: subtitles and the E-key interaction prompts could stay hidden after leaving photo mode. A one-time repair ([code]repair_ui_settings_once[/code], default on) turns both game settings back on, verifies and saves them; the settings are now read through their getters and written through setter + pending setter + property with read-back verification, so they can no longer be silently corrupted.
+[*][b]1.0.68[/b] — the lock-on white dot **and** the locked target's health bar now disappear together in photo mode: the mod drives the game's own targeting system (TargetingComponent) — hides LockWidget/secondary indicators, turns off the lock indicator, and clears the lock target on entry, restoring everything (including the re-lock) on exit.
 [*][b]1.0.67[/b] — cleaner logs: the false "PostProcess snapshot failed" warning is gone (this build doesn't touch post-processing) and the camera-modifier list now also matches UE5's [code]ModifierList[/code], so freeze-time shake and modifier suppression actually engages (no more "no array" warning).
 [*][b]1.0.63–1.0.66[/b] — freezing now suspends the whole Wwise audio engine in one call ([code]AK::SoundEngine::Suspend[/code], resolved from PBZ.exe's static exports) instead of pausing voice by voice; the short-lived time-offset experiment was removed after it caused stutter when moving the camera while frozen.
 [*][b]1.0.62[/b] — Korean glyphs no longer show as ? in the menu's side tree (Malgun Gothic merged into the framework font; switching languages in-game needs no restart).
@@ -155,12 +160,13 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 - 真正的自由相机，不受角色位置限制
 - 方向键视角控制：↑/↓ 按住持续俯仰（30 度/秒），←/→ 按住持续左右转视角（90 度/秒）；按住 Ctrl（手柄按下右摇杆 RS）时鼠标/右摇杆视角降到十分之一速，精调构图
 - 升降键可自定义：`[keys] key_vertical_up` / `key_vertical_down` 默认鼠标左/右键，可改用鼠标中键/侧键（`MOUSE_MIDDLE` / `MOUSE_X1` / `MOUSE_X2`）或键盘键（如 `PAGE_UP` / `PAGE_DOWN`）；PBZFM 菜单改键同样支持捕获鼠标键
+- 旧版遗留修复：首次运行 1.0.69+ 会把被旧版本写坏的字幕/交互提示开关一次性恢复（`repair_ui_settings_once` 默认开，成功后写 `ui_settings_repair_done.flag`；本就习惯关字幕可设为 false）
 - 进入体验顺滑：进入摄影模式继承游戏当前镜头的真实 FOV（不再跳变到 90），进出扫描按类缓存提速，大场景也流畅；新增滚转归零快捷键——键盘 Z / 手柄 LB+RB 同按，只摆平地平线、不动构图
 - 时间冻结：进入摄影模式自动暂停时间（`auto_pause_time` 默认开启，可在 `config.ini` 关闭）；角色、敌人、NPC 与特效会真正静止，相机仍可移动；剧情/过场播放器一并暂停（解冻或退出时恢复，`freeze_sequences` 可关），游戏拒绝暂停时自动回退时间缩放；冻结时同步暂停 Wwise 音频（`stop_wwise_on_freeze` 默认开启）：优先整引擎 `AK::SoundEngine::Suspend(false,false)`（`wwise_engine_suspend` 默认开启）一次覆盖对话/角色语音/枪声/环境/音乐（当前 PBZ 从主程序静态导出解析，失败回落逐语音），解冻后从原处续播
 - 冻结增强：冻结时同时停用相机修饰器与相机 shake、风源归零、钉住材质参数集合——专治冻结后布料/植被边缘闪烁与脸部阴影爬动（`stop_camera_shakes_on_freeze` / `freeze_wind` / `freeze_mpc` 均可单独关闭，`freeze_diag` 每秒输出冻结诊断）
 - 手柄支持：**左右摇杆同时按下（L3+R3）** 进入 / 退出摄影模式；左摇杆移动、右摇杆转视角、RT/LT 升降、**RB/LB 滚转画面**（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）、**LB+RB 同按滚转归零**、L3/R3 变速（LS 加速 / RS 减速，按下 RS 同时把视角速度降到十分之一精调；两杆同按为进出组合，不触发变速）、A/B 调 FOV（单击一格、按住连发）、十字键上/下俯仰、十字键左/右转视角、X 冻结、Y 重置；键位全部可在 `config.ini` 的 `[gamepad]` 段修改（Xbox / PS 按钮叫法都认，`NONE` 解绑）
 - 手柄注意：Steam 需把本作的「使用 Steam 输入」关掉（Steam 库 → 右键游戏 → 属性 → 控制器），否则游戏进程可能看不到手柄，或手柄快捷键（L3+R3 进出摄影模式、A/B 调 FOV、十字键俯仰/转向、摇杆按下变速、X 冻结、Y 重置）无法触发
-- 可隐藏角色、HUD、交互提示、敌人血条、锁定白点标记与对话字幕，拍出干净的画面
+- 可隐藏角色、HUD、交互提示、敌人血条（含锁定目标血条）、锁定白点标记与对话字幕，拍出干净的画面
 - 可选游戏内菜单：安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu) 后按其呼出键（默认 F8）打开「PBZ Photo Mode」——捕获式改键、行为/隐藏/冻结增强开关、相机/移动/手柄参数，改动**实时生效并写回 config.ini**；另有运行状态页（状态/位姿/快捷按钮）；不装则纯快捷键、零依赖
 - 菜单界面四语言：自带 简体中文 / English / 日本語 / 한국어 词典（`languages/*.json`），改译文或加新语言文件约 2 秒热生效；UE4SS 控制台另有 ImGui 诊断面板
 - 所有键位、速度、灵敏度、FOV 范围、自动暂停开关都可在 `config.ini` 中修改
@@ -173,14 +179,18 @@ Source code, issue tracker and development notes: [url=https://github.com/lin-41
 
 **安装**
 
-- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_1.0.67-cpp.zip` 完成安装（所需 UE4SS 也会由它一并装好）。
-- 方法二（手动）：解压 `PBZPhotoModeCpp_1.0.67-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构（同级还有 config.ini、enabled.txt 与 languages/），进游戏按 F2（或手柄 L3+R3）。
+- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_1.0.71-cpp.zip` 完成安装（所需 UE4SS 也会由它一并装好）。
+- 方法二（手动）：解压 `PBZPhotoModeCpp_1.0.71-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构（同级还有 config.ini、enabled.txt 与 languages/），进游戏按 F2（或手柄 L3+R3）。
 - 升级安装请**整个模组目录覆盖**：只拷 DLL 会缺 `languages/` 词典，菜单文案会显示成键名。
 
 详细说明与源码见：https://github.com/lin-414/PBZPhotoMode
 
-## 4. 更新日志（1.0.40 → 1.0.67，可粘贴到 Nexus Changelog）
+## 4. 更新日志（1.0.40 → 1.0.71，可粘贴到 Nexus Changelog）
 
+- **1.0.71**：修复「字幕/交互提示反复进出后仍消失」——1.0.70 的 UI 一次性修复因玩家就绪判定过严从未执行（`find_live_player_pawn()` 要求 Player+Pawn+bBegunPlay 全命中）；且设置原值 getter 优先读到未同步旧副本（`GetSubtitlesEnabled()`=关但字幕实际在显示），退出把原值还原成关。现在只要求 Pawn 可读、`bBegunPlay` 仅在明确 false 时拦截，修复只在非摄影模式 Tick 执行；`read_bool_setting()` 改为属性优先（`bEnableSubtitles` / `bSceneInteractPromptVisible`）、getter 兜底。
+- **1.0.70**：修复「进入游戏时崩溃」——1.0.69 的 UI 一次性修复启动 3 秒调用 `player_pawn()`，`controller()` 缓存的 PlayerController 在换图/读档时已销毁，`GetClassPrivate()` 读出 `0xFFFFFFFFFFFFFFFF`，旧 `is_ok` 只判非空 → `find_property` 把 -1 当 `UStruct*` 构造 `TFieldIterator` 读地址 -1 崩溃（dump `crash_2026_11_02_15_36_45`，RIP=`PBZPhotoModeCpp.dll+0x198A3`）。现在 `is_ok` 做指针范围/对齐检查 + SEH 保护的类指针读取 + `FUObjectItem` 对象数组反查；UI 修复改用 `find_live_player_pawn()` 实时枚举（Player+Pawn 都在且 `UWorld.bBegunPlay=true`）。
+- **1.0.69**：修复「退出摄影模式后字幕与交互按钮一直消失」——一次性修复（`repair_ui_settings_once` 默认开）把字幕/场景交互提示设置强制打开、回读校验并立即存盘（`ui_settings_repair_done.flag` 只执行一次）；两个开关改为 getter 优先读 + setter/pending/属性三路写 + 回读校验，不再静默写坏玩家设置。
+- **1.0.68**：锁定白点与锁定血条一起隐藏——接游戏自己的锁定系统 `TargetingComponent`：进入摄影模式藏 `LockWidget`/副目标指示器、关锁定指示器开关、保存并清掉锁定目标（OnlyLockedTarget 模式下血条随之消失），退出全部恢复（含重新锁定）；关键词补 `focus`/`indicator`/`hpbar` 等，怪物世界控件兜底，诊断④输出锁定系统详情。
 - **1.0.67**：清理旧日志提示——PostProcess 快照不再误报失败；相机修饰器列表兼容 UE5 的 `ModifierList`（保留 `CameraModifiers` 回退），冻结/恢复不再打印“无数组”警告。
 - **1.0.66**：修复 1.0.65 移动视角卡顿——移除会冻结 PBZ.exe/MRTCEngine QPC 的时间偏移补偿 IAT Hook；Wwise 整引擎 Suspend 改为优先从 PBZ.exe 静态导出解析，1.0.65 只查 AkSoundEngineDLL.dll 导致静默回落。
 - **1.0.65**：修复 1.0.64 冻结崩溃——IAT 导入名解析补上 module_base + AddressOfData（漏基址导致 strcmp 读取低地址 RVA 崩溃），并增加导入表边界校验。

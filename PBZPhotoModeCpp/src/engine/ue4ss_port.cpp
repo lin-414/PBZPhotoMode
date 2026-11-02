@@ -15,6 +15,8 @@
 
 #include "engine/ue4ss_port.h"
 
+#include "core/version.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -22,6 +24,7 @@
 #include <cstring>
 #include <cmath>
 #include <filesystem>
+#include <fstream>
 #include <map>
 #include <string>
 #include <system_error>
@@ -102,15 +105,44 @@ auto emit(pbzpm::LogLevel level, const RC::StringType& text) -> void {
     }
 }
 
+// 指针可信度：防止已释放对象（内存被覆写为 0xFF）被当成有效 UObject 继续解引用。
+// 1.0.69 实机崩溃（crash_2026_11_02_15_36_45）：controller() 缓存的 PlayerController 在换图后
+// 已释放，ClassPrivate 读出 0xFFFFFFFFFFFFFFFF；is_ok 只判非空 → find_property 的 TFieldIterator
+// 直接读地址 -1 崩溃。这里三管齐下：指针地址范围 + 对象数组反查 + 类指针范围。
+auto is_plausible_pointer(const void* pointer) -> bool {
+    const auto value = reinterpret_cast<uintptr_t>(pointer);
+    return value >= 0x10000 && value < 0x0000800000000000ULL && (value & 0x7) == 0;
+}
+
+// 对象已释放且内存不可读时，GetClassPrivate 本身也可能触发访问违例，用 SEH 隔离。
+auto safe_class_of(const UObject* object) -> const UClass* {
+    if (!is_plausible_pointer(object)) return nullptr;
+    __try {
+        return object->GetClassPrivate();
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+}
+
 auto is_ok(const UObject* object) -> bool {
-    return object != nullptr && object->GetClassPrivate() != nullptr;
+    if (!is_plausible_pointer(object)) return false;
+    const UClass* object_class = safe_class_of(object);
+    if (!is_plausible_pointer(object_class)) return false;
+    // 对象数组反查：GC 释放/复用槽位后的旧指针在这里暴露（GetObjectItem 会按 InternalIndex 查表）
+    __try {
+        const FUObjectItem* item = const_cast<UObject*>(object)->GetObjectItem();
+        if (item == nullptr || item->GetUObject() != object || !item->IsValid(true)) return false;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
 }
 
 // ------------------------------------------------------------------ 反射小工具
 
 // 在 UStruct/UClass/UFunction 的字段链里按名字找属性
 auto find_property(const UStruct* owner, const RC::StringType& name) -> FProperty* {
-    if (owner == nullptr) return nullptr;
+    if (!is_plausible_pointer(owner)) return nullptr;
     for (TFieldIterator<FProperty> it(const_cast<UStruct*>(owner)); it; ++it) {
         FProperty* candidate = *it;
         if (candidate != nullptr && candidate->GetName() == name) return candidate;
@@ -119,12 +151,14 @@ auto find_property(const UStruct* owner, const RC::StringType& name) -> FPropert
 }
 
 auto find_property(UObject* owner, const char* name) -> FProperty* {
-    if (owner == nullptr) return nullptr;
-    return find_property(owner->GetClassPrivate(), widen(name));
+    if (!is_plausible_pointer(owner)) return nullptr;
+    const UClass* owner_class = safe_class_of(owner);
+    if (!is_plausible_pointer(owner_class)) return nullptr;
+    return find_property(owner_class, widen(name));
 }
 
 auto find_function(UObject* owner, const char* name) -> UFunction* {
-    if (owner == nullptr) return nullptr;
+    if (!is_ok(owner)) return nullptr;
     return owner->GetFunctionByNameInChain(widen(name).c_str());
 }
 
@@ -591,6 +625,83 @@ auto invoke_set_bool(UObject* target, const char* fn, bool value) -> bool {
     return true;
 }
 
+// ------------------------------------------------------------------ 游戏设置开关（当前值 + Pending）读写
+
+// PBZSettingsShared 上这类开关统一是「GetX()/SetX() 当前值 + GetPendingX()/SetPendingX()
+// 待定值 + bX 属性」三件套（字幕 / 场景交互提示 / 锁定标记 / 怪物血条模式…）。
+// 历史教训（1.0.30 实机）：只写属性或只写 setter 可能只改到副本，退出还原静默失败
+// 会把玩家设置永久写坏。这里统一：getter 优先读、setter + pending + 属性三路写、
+// 写完由调用方用 getter 回读校验并把结果写日志。
+struct BoolSettingSpec {
+    const char* label;
+    const char* const* getters;          // 以 nullptr 结尾
+    const char* const* setters;          // 以 nullptr 结尾
+    const char* const* pending_setters;  // 以 nullptr 结尾
+    const char* const* properties;       // 以 nullptr 结尾
+};
+
+auto fill_bool_setting_param(ParamBlock& params, bool value) -> bool {
+    return params.set_bool("Value", value) || params.set_bool("bValue", value) || params.set_bool("bEnabled", value) ||
+           params.set_bool("bInEnabled", value) || params.set_bool("bNewValue", value) ||
+           params.set_bool("bNewEnabled", value) || params.set_bool("bVisible", value) ||
+           params.set_bool("bNewVisible", value) || params.set_bool("bNewVisibility", value) ||
+           params.set_bool("bInVisibility", value) || params.set_bool("InVisible", value) ||
+           params.set_bool("bShow", value) || params.set_bool("bInValue", value) || params.set_bool("InValue", value);
+}
+
+auto read_bool_setting(UObject* owner, const BoolSettingSpec& spec, bool& out, std::string* via = nullptr) -> bool {
+    if (!is_ok(owner)) return false;
+    // 属性优先，getter 兜底（1.0.34 实机结论：设置类上的 bEnableSubtitles / bSceneInteractPromptVisible
+    // 才是当前生效值；1.0.70 实机日志出现 GetSubtitlesEnabled()=关 但字幕仍在显示——
+    // getter 可能返回未同步的旧副本，拿它当原值会在退出时把「本来开着」还原成关，永久消失）。
+    for (const char* const* name = spec.properties; *name != nullptr; ++name) {
+        double raw = 0.0;
+        if (read_number(find_property(owner, *name), owner, raw)) {
+            out = raw != 0.0;
+            if (via != nullptr) *via = *name;
+            return true;
+        }
+    }
+    for (const char* const* name = spec.getters; *name != nullptr; ++name) {
+        bool value = false;
+        if (invoke_bool(owner, *name, [](ParamBlock&) { return true; }, value)) {
+            out = value;
+            if (via != nullptr) *via = std::string(*name) + "()";
+            return true;
+        }
+    }
+    return false;
+}
+
+auto write_bool_setting(UObject* owner, const BoolSettingSpec& spec, bool value) -> bool {
+    if (!is_ok(owner)) return false;
+    bool any = false;
+    for (const char* const* name = spec.setters; *name != nullptr; ++name) {
+        if (invoke(owner, *name, [&](ParamBlock& params) { return fill_bool_setting_param(params, value); })) any = true;
+    }
+    for (const char* const* name = spec.pending_setters; *name != nullptr; ++name) {
+        if (invoke(owner, *name, [&](ParamBlock& params) { return fill_bool_setting_param(params, value); })) any = true;
+    }
+    for (const char* const* name = spec.properties; *name != nullptr; ++name) {
+        if (write_bool(find_property(owner, *name), owner, value)) any = true;
+    }
+    return any;
+}
+
+static const char* const kPromptSettingGetters[] = {"GetSceneInteractPromptVisible", nullptr};
+static const char* const kPromptSettingSetters[] = {"SetSceneInteractPromptVisible", nullptr};
+static const char* const kPromptSettingPending[] = {"SetPendingSceneInteractPromptVisible", nullptr};
+static const char* const kPromptSettingProps[] = {"bSceneInteractPromptVisible", nullptr};
+static const BoolSettingSpec kPromptSettingSpec{"场景交互提示开关", kPromptSettingGetters, kPromptSettingSetters,
+                                                kPromptSettingPending, kPromptSettingProps};
+
+static const char* const kSubtitleSettingGetters[] = {"GetSubtitlesEnabled", "AreSubtitlesEnabled", nullptr};
+static const char* const kSubtitleSettingSetters[] = {"SetSubtitlesEnabled", nullptr};
+static const char* const kSubtitleSettingPending[] = {"SetPendingSubtitlesEnabled", nullptr};
+static const char* const kSubtitleSettingProps[] = {"bEnableSubtitles", "bSubtitlesEnabled", nullptr};
+static const BoolSettingSpec kSubtitleSettingSpec{"字幕开关", kSubtitleSettingGetters, kSubtitleSettingSetters,
+                                                  kSubtitleSettingPending, kSubtitleSettingProps};
+
 auto kismet_material_library() -> UObject* {
     return find_object("/Script/Engine.Default__KismetMaterialLibrary");
 }
@@ -637,6 +748,57 @@ auto mpc_read_param_names(UObject* collection, const char* array_name, std::vect
     }
 }
 
+// ------------------------------------------------------------------ MPC 安全调用
+
+// 本作部分 native UFUNCTION（例如 SetScalarParameterValue）在集合/参数失效时会直接在游戏代码里
+// 读 0xFFFFFFFFFFFFFFFF，不拦就是整局崩（crash_2026_11_02_14_42_23 实测即此）。这里把 ProcessEvent
+// 统一包进 SEH：捕获到访问违例就返回 false，由调用方隔离该参数。
+// 注意：此函数内不能有带析构的 C++ 对象，否则 /EHsc 下 __try 会报 C2712。
+auto seh_process_event(UObject* object, UFunction* function, void* params) -> bool {
+    if (object == nullptr || function == nullptr || params == nullptr) return false;
+    __try {
+        object->ProcessEvent(function, params);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+    return true;
+}
+
+// 写回前复核集合类（含 BP 子类）；FindAllOf 按父类匹配，冻结期间对象也可能被卸载/替换，
+// 快照里存的是裸指针，不能假定它现在还是 MaterialParameterCollection。
+auto mpc_is_collection_class(UClass* cls) -> bool {
+    if (cls == nullptr) return false;
+    static const RC::Unreal::FName target = RC::Unreal::FName(widen("MaterialParameterCollection"));
+    for (UStruct* node = cls; node != nullptr; node = node->GetSuperStruct()) {
+        if (node->GetNamePrivate().Equals(target)) return true;
+    }
+    return false;
+}
+
+// Kismet 的 Set* 签名核对：ParameterName 必须是 FName，Value 必须是（标量=数值 / 向量=结构体）。
+// 签名不符（换版本/换函数）就整条不写，避免把值写进错误参数位。
+auto mpc_value_property(UFunction* function) -> FProperty* {
+    if (function == nullptr) return nullptr;
+    if (FProperty* by_name = find_property(function, widen("Value")); by_name != nullptr) return by_name;
+    int index = 0;
+    for (TFieldIterator<FProperty> it(function); it; ++it, ++index) {
+        if (index == 3) return *it;
+    }
+    return nullptr;
+}
+
+auto mpc_set_signature_ok(UFunction* function, bool want_vector) -> bool {
+    if (function == nullptr) return false;
+    FProperty* name_prop = find_property(function, widen("ParameterName"));
+    if (name_prop == nullptr || !name_prop->IsA<FNameProperty>()) return false;
+    FProperty* value_prop = mpc_value_property(function);
+    if (value_prop == nullptr) return false;
+    if (want_vector) return value_prop->IsA<FStructProperty>();
+    return value_prop->IsA<FFloatProperty>() || value_prop->IsA<FDoubleProperty>() ||
+           value_prop->IsA<FIntProperty>() || value_prop->IsA<FByteProperty>() ||
+           value_prop->IsA<FUInt32Property>();
+}
+
 // KismetMaterialLibrary 的 MPC 读写：走世界的 CollectionInstance，材质 uniforms 同步更新，
 // 这是运行时改 MPC 的正路（直接改资产默认值不影响运行中的实例）。
 auto mpc_get_scalar(UObject* statics, UObject* world, UObject* collection, const std::string& name,
@@ -649,16 +811,18 @@ auto mpc_get_scalar(UObject* statics, UObject* world, UObject* collection, const
         !params.set_name("ParameterName", name.c_str())) {
         return false;
     }
-    statics->ProcessEvent(function, params.data());
+    if (!seh_process_event(statics, function, params.data())) return false;
     // 实机签名（1.0.48 诊断）：object,object,other:ParameterName,float:ReturnValue(ret)——
     // 该版本把唯一的出参直接作为返回值（属性名 ReturnValue），旧签名才是 bool + OutValue 出参
     return params.get_number("OutValue", out) || params.get_number("ReturnValue", out);
 }
 
 auto mpc_set_scalar(UObject* statics, UObject* world, UObject* collection, const std::string& name,
-                    double value) -> bool {
+                    double value, bool& faulted) -> bool {
+    faulted = false;
     UFunction* function = find_function(statics, "SetScalarParameterValue");
     if (function == nullptr) return false;
+    if (!mpc_set_signature_ok(function, false)) return false;
     ParamBlock params(function);
     if (!params.valid()) return false;
     if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
@@ -669,7 +833,10 @@ auto mpc_set_scalar(UObject* statics, UObject* world, UObject* collection, const
         // 值参数名对不上时按位置兜底（第 4 个参数；类型校验仍由 write_number 把关）
         if (!write_number(params.prop({"Value"}, 3), params.data(), value)) return false;
     }
-    statics->ProcessEvent(function, params.data());
+    if (!seh_process_event(statics, function, params.data())) {
+        faulted = true;
+        return false;
+    }
     return true;
 }
 
@@ -683,7 +850,7 @@ auto mpc_get_vector(UObject* statics, UObject* world, UObject* collection, const
         !params.set_name("ParameterName", name.c_str())) {
         return false;
     }
-    statics->ProcessEvent(function, params.data());
+    if (!seh_process_event(statics, function, params.data())) return false;
     // 与 get_scalar 同款：出参可能叫 OutValue（旧）或直接是返回值 ReturnValue（实机）
     FProperty* out_value = params.property("OutValue");
     if (out_value == nullptr) out_value = params.property("ReturnValue");
@@ -697,9 +864,11 @@ auto mpc_get_vector(UObject* statics, UObject* world, UObject* collection, const
 }
 
 auto mpc_set_vector(UObject* statics, UObject* world, UObject* collection, const std::string& name,
-                    const float in[4]) -> bool {
+                    const float in[4], bool& faulted) -> bool {
+    faulted = false;
     UFunction* function = find_function(statics, "SetVectorParameterValue");
     if (function == nullptr) return false;
+    if (!mpc_set_signature_ok(function, true)) return false;
     ParamBlock params(function);
     if (!params.valid()) return false;
     if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
@@ -712,7 +881,10 @@ auto mpc_set_vector(UObject* statics, UObject* world, UObject* collection, const
     for (int i = 0; i < 4; ++i) {
         if (!write_struct_number(value_prop, params.data(), kMembers[i], in[i])) return false;
     }
-    statics->ProcessEvent(function, params.data());
+    if (!seh_process_event(statics, function, params.data())) {
+        faulted = true;
+        return false;
+    }
     return true;
 }
 
@@ -729,6 +901,31 @@ Ue4ssPort::~Ue4ssPort() {
 }
 
 // ------------------------------------------------------------------ 上下文查找
+
+// 不走 controller_cache_ 的实时玩家 Pawn 查询：读档/换图期间缓存的 PlayerController 可能已经被
+// 销毁（1.0.69 crash_2026_11_02_15_36_45 的根因），而且此时世界往往还没 BeginPlay，写设置会被
+// 随后载入的存档覆盖。这里每次从对象数组重新枚举：只要求 Pawn 可读且对象有效；世界若可读且
+// bBegunPlay 明确为 false 才继续等，属性读不到时不拦截（1.0.70 实机就是被过严的属性要求卡死）。
+auto find_live_player_pawn() -> UObject* {
+    std::vector<UObject*> candidates;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("PlayerController"), candidates);
+    for (UObject* candidate : candidates) {
+        if (!is_ok(candidate)) continue;
+        UObject* pawn = nullptr;
+        // 不强制要求 Player 属性可读：不同版本/蓝图里它可能是 FObjectPtrProperty 或读不到；
+        // 能拿到真实 Pawn 就说明这是玩家控制器（观察者/过场 PC 通常没有 Pawn）。
+        if (!read_object(find_property(candidate, "Pawn"), candidate, pawn)) continue;
+        if (!is_ok(pawn)) continue;
+        // 世界已经 BeginPlay 才写设置，避免读档期间写入被随后载入的存档覆盖；
+        // 属性读不到时不拦截（不同引擎版本可能没有/不可读），只拦明确 false。
+        if (UObject* scene = pawn->GetWorld(); is_ok(scene)) {
+            double begun = 1.0;
+            if (read_number(find_property(scene, "bBegunPlay"), scene, begun) && begun == 0.0) continue;
+        }
+        return pawn;
+    }
+    return nullptr;
+}
 
 RC::Unreal::UObject* Ue4ssPort::controller() const {
     if (is_ok(controller_cache_)) return controller_cache_;
@@ -1477,13 +1674,6 @@ auto set_component_visibility(UObject* component, bool visible) -> bool {
     return write_bool(find_property(component, "bVisible"), component, visible);
 }
 
-// 设置开关 setter 的参数名离线确认不了，按候选名试；全不中由调用方直写属性。
-auto fill_prompt_setting_param(ParamBlock& params, bool value) -> bool {
-    return params.set_bool("bVisible", value) || params.set_bool("bNewValue", value) ||
-           params.set_bool("bNewVisible", value) || params.set_bool("bNewVisibility", value) ||
-           params.set_bool("Value", value) || params.set_bool("InVisible", value);
-}
-
 }  // namespace
 
 bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
@@ -1495,22 +1685,20 @@ bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
         // 逐个 FindAllOf（每个都是一遍全对象数组扫描），失败重试期间是纯浪费
         UObject* owner = prompt_setting_saved_ ? prompt_setting_owner_ : find_scene_prompt_setting_owner();
         if (is_ok(owner)) {
-            FProperty* property = find_property(owner, "bSceneInteractPromptVisible");
-            double original = 1.0;
-            if (read_number(property, owner, original)) {
-                prompt_setting_saved_ = true;
-                prompt_setting_original_ = original != 0.0;
-                prompt_setting_owner_ = owner;
-            }
-            bool set_ok = invoke(owner, "SetSceneInteractPromptVisible",
-                                 [&](ParamBlock& params) { return fill_prompt_setting_param(params, visible); });
-            // setter 参数名对不上时直接写属性（值本身一定在）；广播缺失只影响“立刻隐藏已画出的”，
-            // 那部分由路线 ② 的组件隐藏兜住。
-            if (!set_ok) set_ok = write_bool(property, owner, visible);
-            if (set_ok) {
+            bool original = true;
+            std::string via = "默认(true)";
+            read_bool_setting(owner, kPromptSettingSpec, original, &via);
+            prompt_setting_saved_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+            prompt_setting_original_ = original;
+            prompt_setting_owner_ = owner;
+            log(LogLevel::Info, "场景交互提示开关原值=" + std::string(original ? "开" : "关") + "（读取=" + via +
+                                    "，owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+            const bool wrote = write_bool_setting(owner, kPromptSettingSpec, false);
+            bool readback = true;
+            const bool verified = read_bool_setting(owner, kPromptSettingSpec, readback) && !readback;
+            if (wrote) {
                 touched = true;
-                log(LogLevel::Info, "场景交互提示开关已" + std::string(visible ? "打开" : "关闭") +
-                                        "（owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+                log(LogLevel::Info, std::string("场景交互提示开关已关闭（回读=") + (verified ? "关" : "开-未生效!") + "）");
             }
         } else if (!prompt_setting_missing_logged_) {
             prompt_setting_missing_logged_ = true;
@@ -1518,20 +1706,23 @@ bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
         }
     } else if (prompt_setting_saved_) {
         bool restored = false;
+        bool verified = false;
         if (is_ok(prompt_setting_owner_)) {
-            restored = invoke(prompt_setting_owner_, "SetSceneInteractPromptVisible",
-                              [&](ParamBlock& params) { return fill_prompt_setting_param(params, prompt_setting_original_); });
-            if (!restored) {
-                restored = write_bool(find_property(prompt_setting_owner_, "bSceneInteractPromptVisible"),
-                                      prompt_setting_owner_, prompt_setting_original_);
+            restored = write_bool_setting(prompt_setting_owner_, kPromptSettingSpec, prompt_setting_original_);
+            bool readback = !prompt_setting_original_;
+            verified = read_bool_setting(prompt_setting_owner_, kPromptSettingSpec, readback) &&
+                       readback == prompt_setting_original_;
+            if (restored) {
+                log(LogLevel::Info, std::string("场景交互提示开关已还原（原值=") +
+                                        (prompt_setting_original_ ? "开" : "关") + "，回读=" +
+                                        (verified ? (readback ? "开" : "关") : "未生效!") + "）");
+            } else {
+                log(LogLevel::Warn, "场景交互提示开关还原失败（setter/pending/属性都写不进去）——把这条日志发回来");
             }
         }
         prompt_setting_saved_ = false;
         prompt_setting_owner_ = nullptr;
-        if (restored) {
-            touched = true;
-            log(LogLevel::Info, "场景交互提示开关已还原");
-        }
+        if (restored) touched = true;
     }
 
     // ---- 路线 ②：控件组件（管住此刻已经画出来的）----
@@ -1777,15 +1968,6 @@ auto class_chain_contains(UClass* cls, const char* base_name) -> bool {
 
 
 
-// 字幕开关的真属性名：1.0.33 实机诊断确认设置类上是 **bEnableSubtitles**（此前一直找
-// bSubtitlesEnabled——那是引擎 GlobalUserParam 的名字，不在设置类属性链里，导致原值读取
-// 失败、还原只能按默认兜底）。两个名字都试，覆盖引擎实例路径。
-auto find_subtitle_flag_property(UObject* owner) -> FProperty* {
-    if (owner == nullptr) return nullptr;
-    if (FProperty* p = find_property(owner, "bEnableSubtitles"); p != nullptr) return p;
-    return find_property(owner, "bSubtitlesEnabled");
-}
-
 // 设置开关挂在哪个类离线确定不了（exe 里只有函数名），运行时按候选探测：
 // 第一个带 SetSubtitlesEnabled 函数或 bSubtitlesEnabled 属性的实例就是它（跳过 CDO，优先活对象）。
 // 1.0.30 实机：PBZSettingsShared 命中（只有 setter，属性在引擎 GlobalUserParam 上）。
@@ -1818,29 +2000,6 @@ auto find_subtitle_setting_owner() -> UObject* {
         }
     }
     return cdo_fallback;
-}
-
-// 读当前字幕开关状态：设置类上没有 property 时走 AreSubtitlesEnabled（exe 扫描确认存在，
-// 与 SetSubtitlesEnabled 成对）；都没有才失败（调用方按 true 兜底）。
-auto read_subtitles_enabled_state(UObject* owner, FProperty* property, bool& out) -> bool {
-    double raw = 0.0;
-    if (read_number(property, owner, raw)) {
-        out = raw != 0.0;
-        return true;
-    }
-    bool getter_result = true;
-    if (invoke_bool(owner, "AreSubtitlesEnabled", [](ParamBlock&) { return true; }, getter_result)) {
-        out = getter_result;
-        return true;
-    }
-    return false;
-}
-
-// 设置开关 setter 的参数名离线确认不了，按候选名试；全不中由调用方直写属性。
-auto fill_subtitle_setting_param(ParamBlock& params, bool value) -> bool {
-    return params.set_bool("bEnabled", value) || params.set_bool("bInEnabled", value) ||
-           params.set_bool("bNewValue", value) || params.set_bool("bInSubtitlesEnabled", value) ||
-           params.set_bool("bNewEnabled", value) || params.set_bool("Value", value);
 }
 
 }  // namespace
@@ -1998,36 +2157,21 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
             UObject* owner = find_subtitle_setting_owner();
             if (is_ok(owner)) {
                 dump_subtitle_setting_diagnostics(owner);
-                FProperty* property = find_subtitle_flag_property(owner);
-                bool captured = read_subtitles_enabled_state(owner, property, subtitle_setting_original_);
-                subtitle_setting_saved_ = captured;
-                subtitle_setting_touched_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+                bool original = true;
+                std::string via = "默认(true)";
+                read_bool_setting(owner, kSubtitleSettingSpec, original, &via);
+                subtitle_setting_saved_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+                subtitle_setting_touched_ = true;
+                subtitle_setting_original_ = original;
                 subtitle_setting_owner_ = owner;
-                bool set_ok = invoke(owner, "SetSubtitlesEnabled",
-                                     [&](ParamBlock& params) { return fill_subtitle_setting_param(params, false); });
-                if (!set_ok) set_ok = write_bool(property, owner, false);
-                // 回读验证：bEnableSubtitles 在设置类上，读得到就核对真值；不匹配用属性强写一次
-                double actual = -1.0;
-                if (read_number(property, owner, actual)) {
-                    const bool actual_on = actual != 0.0;
-                    if (actual_on) {
-                        write_bool(property, owner, false);
-                        read_number(property, owner, actual);
-                        actual = actual != 0.0 ? 1.0 : 0.0;
-                    }
-                    log(LogLevel::Info, "字幕设置开关已关闭（owner=" +
-                                            narrow(owner->GetFullName()).substr(0, 140) + "，原值=" +
-                                            (subtitle_setting_original_ ? "开" : "关") + "，回读=" +
-                                            (actual != 0.0 ? "开-未生效!" : "关") + "）");
+                log(LogLevel::Info, "字幕设置开关原值=" + std::string(original ? "开" : "关") + "（读取=" + via +
+                                        "，owner=" + narrow(owner->GetFullName()).substr(0, 140) + "）");
+                const bool wrote = write_bool_setting(owner, kSubtitleSettingSpec, false);
+                bool readback = true;
+                const bool verified = read_bool_setting(owner, kSubtitleSettingSpec, readback) && !readback;
+                if (wrote) {
                     touched = true;
-                } else {
-                    if (set_ok) {
-                        touched = true;
-                        log(LogLevel::Info, "字幕设置开关已关闭（owner=" +
-                                                narrow(owner->GetFullName()).substr(0, 140) + "，原值=" +
-                                                (subtitle_setting_original_ ? "开" : "关") +
-                                                "，属性读不到无法回读）");
-                    }
+                    log(LogLevel::Info, std::string("字幕设置开关已关闭（回读=") + (verified ? "关" : "开-未生效!") + "）");
                 }
             } else if (!subtitle_setting_missing_logged_) {
                 subtitle_setting_missing_logged_ = true;
@@ -2036,24 +2180,24 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
         }
     } else if (subtitle_setting_touched_) {
         bool restored = false;
+        bool verified = false;
+        bool readback = !subtitle_setting_original_;
         if (is_ok(subtitle_setting_owner_)) {
-            FProperty* property = find_subtitle_flag_property(subtitle_setting_owner_);
-            restored = invoke(subtitle_setting_owner_, "SetSubtitlesEnabled",
-                              [&](ParamBlock& params) { return fill_subtitle_setting_param(params, subtitle_setting_original_); });
-            if (!restored) {
-                restored = write_bool(property, subtitle_setting_owner_, subtitle_setting_original_);
+            restored = write_bool_setting(subtitle_setting_owner_, kSubtitleSettingSpec, subtitle_setting_original_);
+            verified = read_bool_setting(subtitle_setting_owner_, kSubtitleSettingSpec, readback) &&
+                       readback == subtitle_setting_original_;
+            if (restored) {
+                log(LogLevel::Info, std::string("字幕设置开关已还原（原值=") + (subtitle_setting_original_ ? "开" : "关") +
+                                        "，回读=" + (verified ? (readback ? "开" : "关") : "未生效!") + "）");
+            } else if (!subtitle_restore_failed_logged_) {
+                subtitle_restore_failed_logged_ = true;
+                log(LogLevel::Warn, "字幕设置开关还原失败（setter/pending/属性都写不进去），字幕可能保持隐藏——把这条日志发回来");
             }
         }
         subtitle_setting_touched_ = false;
         subtitle_setting_saved_ = false;
         subtitle_setting_owner_ = nullptr;
-        if (restored) {
-            touched = true;
-            log(LogLevel::Info, "字幕设置开关已还原");
-        } else if (!subtitle_restore_failed_logged_) {
-            subtitle_restore_failed_logged_ = true;
-            log(LogLevel::Warn, "字幕设置开关还原失败（setter 与属性都写不进去），字幕可能保持隐藏——把这条日志发回来");
-        }
+        if (restored) touched = true;
     }
 
     // ---- 路线 ②：字幕显示控件（管住此刻已经画出来的）----
@@ -2152,6 +2296,73 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
     return touched;
 }
 
+// ------------------------------------------------------------------ 旧版卡掉的 UI 设置一次性修复（1.0.69）
+
+// 1.0.30 时代起，字幕/场景交互提示开关就曾被旧版写坏过（还原静默失败 + 游戏存盘，
+// 玩家只能进游戏设置手动开回来）。1.0.69 首次运行做一次修复：把两个开关强制打开、
+// 回读校验、立即存盘，成功后写 ui_settings_repair_done.flag 不再执行。
+// 只做一次；若你本来就关闭字幕，把 config.ini 的 repair_ui_settings_once 设为 false。
+bool Ue4ssPort::recover_ui_settings_once() {
+    const std::filesystem::path marker = mod_dir_ / "ui_settings_repair_done.flag";
+    std::error_code ec;
+    if (std::filesystem::exists(marker, ec)) return true;  // 已修复过（或用户关掉了自动修复后再运行）
+
+    // 等真正的游戏世界就绪再做：设置对象可能比存档加载先存在，过早写会被随后载入的存档覆盖。
+    // 注意不要用 controller()/player_pawn()：读档/换图时 controller_cache_ 可能指向已销毁的旧 PC
+    // （1.0.69 crash_2026_11_02_15_36_45 即此），这里每次重新枚举并要求世界已 BeginPlay。
+    if (find_live_player_pawn() == nullptr) {
+        if (!ui_repair_wait_logged_) {
+            ui_repair_wait_logged_ = true;
+            log(LogLevel::Info, "UI 设置修复：等待玩家进入游戏世界（Player/Pawn/bBegunPlay）后执行");
+        }
+        return false;
+    }
+    UObject* subtitle_owner = find_subtitle_setting_owner();
+    UObject* prompt_owner = find_scene_prompt_setting_owner();
+    if (!is_ok(subtitle_owner) || !is_ok(prompt_owner)) {
+        if (!ui_repair_missing_logged_) {
+            ui_repair_missing_logged_ = true;
+            log(LogLevel::Info, "UI 设置修复：设置对象暂未就绪，稍后重试");
+        }
+        return false;
+    }
+
+    bool subtitle_before = true;
+    bool prompt_before = true;
+    std::string subtitle_via = "默认";
+    std::string prompt_via = "默认";
+    read_bool_setting(subtitle_owner, kSubtitleSettingSpec, subtitle_before, &subtitle_via);
+    read_bool_setting(prompt_owner, kPromptSettingSpec, prompt_before, &prompt_via);
+    log(LogLevel::Info, std::string("UI 设置修复：字幕开关=") + (subtitle_before ? "开" : "关") +
+                            "（读取=" + subtitle_via + "），场景交互提示=" + (prompt_before ? "开" : "关") +
+                            "（读取=" + prompt_via + "）");
+
+    write_bool_setting(subtitle_owner, kSubtitleSettingSpec, true);
+    write_bool_setting(prompt_owner, kPromptSettingSpec, true);
+    bool subtitle_after = false;
+    bool prompt_after = false;
+    const bool subtitle_ok = read_bool_setting(subtitle_owner, kSubtitleSettingSpec, subtitle_after) && subtitle_after;
+    const bool prompt_ok = read_bool_setting(prompt_owner, kPromptSettingSpec, prompt_after) && prompt_after;
+    if (!subtitle_ok || !prompt_ok) {
+        log(LogLevel::Warn, std::string("UI 设置修复未完全生效（字幕回读=") + (subtitle_ok ? "开" : "关") +
+                                "，场景交互提示回读=" + (prompt_ok ? "开" : "关") + "），引擎 Tick 稍后重试");
+        return false;
+    }
+
+    // 立即存盘：设置类自带 SaveSettings（exe 确认），否则修复值只在内存、游戏退出可能被旧档覆盖
+    if (find_function(subtitle_owner, "SaveSettings") != nullptr) {
+        invoke(subtitle_owner, "SaveSettings", [](ParamBlock&) { return true; });
+    }
+
+    std::ofstream marker_file(marker);
+    marker_file << "repaired by " << PBZPM_VERSION << " (subtitles=on, scene_interact_prompt=on)\n";
+    marker_file.close();
+    log(LogLevel::Info, std::string("UI 设置修复完成：字幕开关与场景交互提示已打开并存盘（只执行一次；")
+                            + "若你本来关闭字幕，可在 config.ini 把 repair_ui_settings_once 设为 false 并删除 "
+                            + "ui_settings_repair_done.flag）");
+    return true;
+}
+
 // ------------------------------------------------------------------ 锁定标记（锁定敌人身上的白点）
 
 namespace {
@@ -2179,6 +2390,16 @@ auto name_lockish(const std::string& key, const std::string& lower) -> bool {
     if (key.find("reticle") != std::string::npos) return true;
     if (key.find("crosshair") != std::string::npos) return true;
     if (key.find("mark") != std::string::npos) return true;
+    // 1.0.67 实机诊断补充：目标的锁定系统在 PBZ 里叫 Focus（exe 证据 CharacterState.Targeting.
+    // Forbid.FocusControl / PBZAbilityTask_FocusControlTick），锁定标记控件类是 WG_PBZFocus_C；
+    // 指示器/血条家族（LockIndicator、MonsterHpBar 等）一并收网。误收的都是战斗 UI，
+    // 摄影模式本来就要藏，而且全部按原值还原、逐条记日志。
+    if (key.find("focus") != std::string::npos) return true;
+    if (key.find("indicator") != std::string::npos) return true;
+    if (key.find("monsterhp") != std::string::npos) return true;
+    if (key.find("enemyhp") != std::string::npos) return true;
+    if (key.find("hpbar") != std::string::npos) return true;
+    if (key.find("healthbar") != std::string::npos) return true;
     return false;
 }
 
@@ -2218,6 +2439,66 @@ auto visual_asset_properties(UClass* cls) -> const std::vector<FProperty*>& {
     return it->second;
 }
 
+// ---- 游戏锁定系统（TargetingComponent）——1.0.68 真机+exe 取证 ----
+// exe 字符串确认（PBZ.exe）：锁定系统有自己的一套指示器与目标状态——
+//   LockWidget / SecondaryLockIndicators（锁定/副目标指示器控件）、
+//   SetShowLockIndicator(bool)（游戏自带的指示器显隐接口）、
+//   HasLockTarget / GetLockTarget / SetLockTarget / StopLockTarget（锁定目标状态）、
+//   TargetingHandlers / CurrentHandler / TargetingSubsystem（内部结构）。
+// 关键：MonsterHealthBarMode=OnlyLockedTarget 只为「当前锁定目标」显示血条——只要锁定
+// 目标还在，那条血条就永远不隐藏（1.0.67 实机日志：原模式=OnlyLockedTarget，切档无效）。
+// 所以进摄影模式要按游戏自己的接口把锁定目标清掉（退出恢复），指示器控件一并 Collapsed。
+
+auto name_targetingish(const std::string& lower) -> bool {
+    if (lower.find("targeting") != std::string::npos) return true;
+    if (lower.find("locktarget") != std::string::npos) return true;
+    // 类名没证死：锁定系统也可能叫 LockOn/Focus 家族（exe：FocusControl 属锁定体系）
+    if (lower.find("lock") != std::string::npos && lower.find("block") == std::string::npos) return true;
+    if (lower.find("focus") != std::string::npos) return true;
+    return false;
+}
+
+// 找锁定系统对象：类名带 Targeting/LockTarget，且具备任一锁定系统特征
+//（TargetingHandlers 属性 / LockWidget 属性 / SetShowLockIndicator 函数 / GetLockTarget 函数）。
+// 只在类名命中后做属性/函数探测——这类对象全场至多个位数，成本可忽略。
+auto find_targeting_roots(std::vector<UObject*>& out) -> void {
+    static std::unordered_map<UClass*, bool> class_cache;
+    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+        UClass* cls = object->GetClassPrivate();
+        if (cls == nullptr) return RC::LoopAction::Continue;
+        // CDO 跳过（对象名固定以 Default__ 开头）
+        if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
+        auto it = class_cache.find(cls);
+        if (it == class_cache.end()) {
+            it = class_cache.emplace(cls, name_targetingish(lower_ascii(narrow(cls->GetName())))).first;
+        }
+        if (!it->second) return RC::LoopAction::Continue;
+        if (find_property(object, "TargetingHandlers") == nullptr &&
+            find_property(object, "LockWidget") == nullptr && find_function(object, "SetShowLockIndicator") == nullptr &&
+            find_function(object, "GetLockTarget") == nullptr) {
+            return RC::LoopAction::Continue;
+        }
+        out.push_back(object);
+        return RC::LoopAction::Continue;
+    });
+}
+
+// 函数声明里的目标对象参数（SetLockTarget 的参数名离线未知）：优先名字带 target/actor
+// 的对象参数，没有就退回第一个对象参数
+auto first_object_param(UFunction* function) -> FProperty* {
+    if (function == nullptr) return nullptr;
+    FProperty* first_object = nullptr;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* prop = *it;
+        if (prop == nullptr || !prop->IsA<FObjectProperty>()) continue;
+        if (first_object == nullptr) first_object = prop;
+        const std::string lower = lower_ascii(narrow(prop->GetName()));
+        if (lower.find("target") != std::string::npos || lower.find("actor") != std::string::npos) return prop;
+    }
+    return first_object;
+}
+
 // 锁定标记扫描的类级判定：继承链/类名/资产属性都只依赖类。全对象扫描时对象几十万、
 // 类 ~1 万，按类缓存一次算完（lockon_absent_ 每次退出重置、进模式都要重扫，这里是
 // 每次进入卡顿的主要来源）。类指针存活期与进程同序——与 visual_asset_properties
@@ -2255,8 +2536,9 @@ auto collect_lockon_superset(std::vector<UObject*>& out) -> void {
         if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
         UClass* cls = object->GetClassPrivate();
         if (cls == nullptr) return RC::LoopAction::Continue;
+        // 用 Widget 基类（不是 UserWidget）：锁定系统的 LockWidget 可能是 UWidget 子类（UImage 之类）
         const LockonClassVerdict& verdict = lockon_class_verdict(cls);
-        if (!verdict.in_superset) return RC::LoopAction::Continue;
+        if (!verdict.in_superset && !class_chain_contains(cls, "Widget")) return RC::LoopAction::Continue;
         // CDO 的对象名固定以 Default__ 开头；查对象自身名比拼全名（外层链展开）便宜得多
         if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
         out.push_back(object);
@@ -2288,19 +2570,30 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
             const LockonClassVerdict& verdict = lockon_class_verdict(cls);
             if (!verdict.in_superset) return RC::LoopAction::Continue;
             if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
-            if (verdict.name_matched) {
-                candidates.push_back({object, verdict.is_widget, verdict.class_name});
-                return RC::LoopAction::Continue;
-            }
-            if (verdict.is_widget || verdict.asset_props->empty()) return RC::LoopAction::Continue;
-            for (FProperty* property : *verdict.asset_props) {
-                UObject* asset = nullptr;
-                if (read_object(property, object, asset) && is_ok(asset) &&
-                    name_matches_lockon(lower_ascii(narrow(asset->GetName())))) {
-                    candidates.push_back({object, verdict.is_widget, verdict.class_name});
-                    break;
+
+            bool matched = verdict.name_matched;
+            if (!matched && !verdict.is_widget && !verdict.asset_props->empty()) {
+                // 泛型组件类名认不出标记时认资产名（NS_LockOnMarker 之类）
+                for (FProperty* property : *verdict.asset_props) {
+                    UObject* asset = nullptr;
+                    if (read_object(property, object, asset) && is_ok(asset) &&
+                        name_matches_lockon(lower_ascii(narrow(asset->GetName())))) {
+                        matched = true;
+                        break;
+                    }
                 }
             }
+            if (!matched && !verdict.is_widget && class_chain_contains(cls, "WidgetComponent")) {
+                // 怪物身上的世界空间控件组件（敌人头顶血条/名牌/锁定标记多为此类）：
+                // 全名里带 Monster/Enemy 的组件一并藏——暂停下只清锁定目标可能不刷新，
+                // 控件组件直接压掉最稳（退出按原 bVisible 还原）
+                const std::string full_lower = lower_ascii(narrow(object->GetFullName()));
+                if (full_lower.find("monster") != std::string::npos ||
+                    full_lower.find("enemy") != std::string::npos) {
+                    matched = true;
+                }
+            }
+            if (matched) candidates.push_back({object, verdict.is_widget, verdict.class_name});
             return RC::LoopAction::Continue;
         });
 
@@ -2353,6 +2646,173 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
             }
         }
 
+        // ---- 路线②：游戏锁定系统（TargetingComponent）自己的指示器与锁定目标 ----
+        // 只有这条路线能治「血条」：MonsterHealthBarMode=OnlyLockedTarget 只为当前锁定目标
+        // 显示血条，锁定目标不清掉，血条永远在（1.0.67 实机日志证实原模式就是 OnlyLockedTarget）。
+        // 所有动作都按游戏自己的接口执行，退出时成对恢复。
+        std::vector<UObject*> targeting_roots;
+        find_targeting_roots(targeting_roots);
+        int targeting_acted = 0;
+        // 藏一个“视觉对象”：可能是 UMG 控件（UWidget 家族），也可能是控件组件本体
+        // （WidgetComponent 家族）。两条路都试，成功即记账。
+        auto hide_visual_object = [&](UObject* object) -> int {
+            if (!is_ok(object)) return 0;
+            UClass* cls = object->GetClassPrivate();
+            if (class_chain_contains(cls, "Widget")) {
+                if (tracked_hud_widget(lockon_widgets_, object)) return 0;
+                int original = 0;
+                if (get_widget_visibility(object, original)) {
+                    if (original == 1 || original == 2) return 0;
+                    if (set_widget_visibility(object, 1)) {
+                        lockon_widgets_.emplace_back(object, original);
+                        return 1;
+                    }
+                    return 0;
+                }
+            }
+            if (class_chain_contains(cls, "ActorComponent")) {
+                for (const auto& entry : lockon_components_) {
+                    if (entry.first == object) return 0;
+                }
+                double original_visible = 1.0;
+                if (!read_number(find_property(object, "bVisible"), object, original_visible)) original_visible = 1.0;
+                if (original_visible == 0.0) return 0;
+                if (set_component_visibility(object, false)) {
+                    lockon_components_.emplace_back(object, true);
+                    return 1;
+                }
+            }
+            return 0;
+        };
+        // 世界空间 UMG 的宿主 WidgetComponent 一并藏掉：暂停下控件 Tick 冻结，
+        // 只改控件可见性可能不刷新世界空间渲染（与交互提示同样的坑）
+        auto hide_host_widget_component = [&](UObject* widget) -> int {
+            static UClass* widget_component_class = nullptr;
+            if (widget_component_class == nullptr) {
+                if (UObject* sample = RC::Unreal::UObjectGlobals::FindFirstOf(STR("WidgetComponent")); is_ok(sample)) {
+                    widget_component_class = sample->GetClassPrivate();
+                }
+            }
+            if (widget_component_class == nullptr) return 0;
+            UObject* host = widget->GetTypedOuter(widget_component_class);
+            if (!is_ok(host)) return 0;
+            for (const auto& entry : lockon_components_) {
+                if (entry.first == host) return 0;
+            }
+            double original_visible = 1.0;
+            if (!read_number(find_property(host, "bVisible"), host, original_visible)) original_visible = 1.0;
+            if (original_visible == 0.0) return 0;
+            if (!set_component_visibility(host, false)) return 0;
+            lockon_components_.emplace_back(host, true);
+            return 1;
+        };
+        for (UObject* root : targeting_roots) {
+            std::string detail;
+            const std::string root_class = narrow(root->GetClassPrivate()->GetName());
+            // ① 锁定指示器控件（LockWidget）：白点/目标信息很可能就是它
+            FProperty* lock_widget_prop = find_property(root, "LockWidget");
+            if (lock_widget_prop != nullptr) {
+                UObject* lock_widget = nullptr;
+                if (read_object(lock_widget_prop, root, lock_widget) && is_ok(lock_widget)) {
+                    detail += " LockWidget=" + narrow(lock_widget->GetClassPrivate()->GetName());
+                    targeting_acted += hide_visual_object(lock_widget);
+                    targeting_acted += hide_host_widget_component(lock_widget);
+                } else {
+                    detail += " LockWidget不可读(类型=" + narrow(lock_widget_prop->GetClass().GetFName().ToString()) + ")";
+                }
+            }
+            // ② 副目标指示器（SecondaryLockIndicators 数组）
+            FProperty* secondary_prop = find_property(root, "SecondaryLockIndicators");
+            if (auto* array_prop = as_array_property(secondary_prop)) {
+                FScriptArrayHelper_InContainer helper(array_prop, static_cast<const void*>(root));
+                const int32 count = helper.Num();
+                detail += " 副指示器=" + std::to_string(count);
+                for (int32 i = 0; i < count && i < 64; ++i) {
+                    UObject* indicator = nullptr;
+                    if (!read_object(array_prop->GetInner(), helper.GetRawPtr(i), indicator) || !is_ok(indicator)) continue;
+                    targeting_acted += hide_visual_object(indicator);
+                    targeting_acted += hide_host_widget_component(indicator);
+                }
+            } else if (secondary_prop != nullptr) {
+                detail += " 副指示器属性类型=" + narrow(secondary_prop->GetClass().GetFName().ToString());
+            }
+            // ③ 游戏自带的指示器开关（暂停下控件 Tick 冻结，所以上面还用 Collapsed 兜底）
+            if (UFunction* show_fn = find_function(root, "SetShowLockIndicator")) {
+                bool tracked = false;
+                for (UObject* suppressed : lockon_indicator_suppressed_) {
+                    if (suppressed == root) tracked = true;
+                }
+                if (!tracked) {
+                    const bool ok = invoke(root, "SetShowLockIndicator", [&](ParamBlock& params) {
+                        return params.set_bool("bShow", false) || params.set_bool("Show", false) ||
+                               params.set_bool("bNewShow", false) || params.set_bool("bVisible", false) ||
+                               params.set_bool("bEnable", false) || params.set_bool("Value", false);
+                    });
+                    if (ok) {
+                        lockon_indicator_suppressed_.push_back(root);
+                        ++targeting_acted;
+                    } else {
+                        // 参数名不符时回落写 Show 属性（若存在）
+                        if (write_bool(find_property(root, "Show"), root, false)) {
+                            lockon_indicator_suppressed_.push_back(root);
+                            ++targeting_acted;
+                        } else {
+                            detail += " SetShowLockIndicator参数不符(" + describe_params(show_fn) + ")";
+                        }
+                    }
+                }
+            }
+            // ④ 锁定目标：先存后清（血条只为锁定目标显示，不清血条永远在）
+            bool has_lock = false;
+            invoke_bool(root, "HasLockTarget", [&](ParamBlock&) { return true; }, has_lock);
+            if (has_lock) {
+                UFunction* getter = find_function(root, "GetLockTarget");
+                FProperty* ret = getter != nullptr ? getter->GetReturnProperty() : nullptr;
+                UObject* target = nullptr;
+                bool got_target = false;
+                if (getter != nullptr && ret != nullptr && ret->IsA<FObjectProperty>()) {
+                    ParamBlock params(getter);
+                    if (params.valid()) {
+                        root->ProcessEvent(getter, params.data());
+                        got_target = read_object(params.property("ReturnValue"), params.data(), target) && is_ok(target);
+                    }
+                }
+                if (got_target) {
+                    detail += " 锁定目标=" + narrow(target->GetName());
+                    bool already = false;
+                    for (const auto& entry : lockon_cleared_targets_) {
+                        if (entry.component == root) already = true;
+                    }
+                    if (!already) {
+                        if (UFunction* stop_fn = find_function(root, "StopLockTarget")) {
+                            ParamBlock stop_params(stop_fn);
+                            if (stop_params.valid()) {
+                                root->ProcessEvent(stop_fn, stop_params.data());
+                                lockon_cleared_targets_.push_back({root, target});
+                                ++targeting_acted;
+                                detail += "（已清）";
+                            }
+                        } else {
+                            detail += "（无StopLockTarget）";
+                        }
+                    }
+                } else {
+                    detail += " 有锁定但GetLockTarget不可读(" +
+                              (getter != nullptr ? describe_params(getter) : std::string("无函数")) + ")";
+                }
+            }
+            if (UFunction* set_fn = find_function(root, "SetLockTarget")) {
+                detail += " SetLockTarget(" + describe_params(set_fn) + ")";
+            }
+            log(LogLevel::Info, "锁定系统：类=" + root_class + " 对象=" + narrow(root->GetName()) + detail);
+        }
+        if (targeting_acted > 0) {
+            touched = true;
+            log(LogLevel::Info, "锁定系统指示器/锁定目标已处理：动作数=" + std::to_string(targeting_acted) +
+                                    "，退出摄影模式时恢复");
+            return true;
+        }
+
         if (hidden_count > 0) {
             touched = true;
             log(LogLevel::Info, "已隐藏锁定标记：数量=" + std::to_string(hidden_count) + "（" + hidden_names +
@@ -2362,14 +2822,15 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
         if (hide_failed > 0) return false;  // 有目标但藏不住：按秒重试
 
         // 全量扫描零可隐藏对象：白点要么此刻不在（没锁定），要么类名不在关键词网里。
-        // 打一次性诊断清单（可见控件/可视组件/玩家组件），真实类名靠这份日志收敛。
+        // 打一次性诊断清单（可见控件/可视组件/玩家组件/锁定系统），真实类名靠这份日志收敛。
         lockon_absent_ = true;
         dump_lockon_diagnostics();
         if (!lockon_absent_logged_) {
             lockon_absent_logged_ = true;
             log(LogLevel::Warn,
                 "场上未找到可见的锁定标记对象（锁定/目标/标记关键词零命中，已按隐藏=" + std::to_string(already_hidden) +
-                    " 个同名家族对象）——若白点仍在屏上，把上面的诊断清单发回来");
+                    " 个同名家族对象，锁定系统对象=" + std::to_string(targeting_roots.size()) +
+                    " 个）——若白点仍在屏上，把上面的诊断清单发回来");
         }
         return true;
     }
@@ -2387,6 +2848,57 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
         if (!pointer_in(alive, entry.first)) continue;
         if (set_component_visibility(entry.first, entry.second)) ++restored_count;
     }
+    // 游戏锁定系统的指示器开关恢复
+    for (UObject* component : lockon_indicator_suppressed_) {
+        if (!is_ok(component)) continue;
+        if (invoke(component, "SetShowLockIndicator", [&](ParamBlock& params) {
+                return params.set_bool("bShow", true) || params.set_bool("Show", true) ||
+                       params.set_bool("bNewShow", true) || params.set_bool("bVisible", true) ||
+                       params.set_bool("bEnable", true) || params.set_bool("Value", true);
+            })) {
+            ++restored_count;
+        } else if (write_bool(find_property(component, "Show"), component, true)) {
+            ++restored_count;
+        }
+    }
+    lockon_indicator_suppressed_.clear();
+    // 锁定目标恢复：SetLockTarget 的参数名离线未知——按声明顺序第一个对象参数填保存的目标
+    const size_t cleared_count = lockon_cleared_targets_.size();
+    int relocked_count = 0;
+    std::string relock_failed_detail;
+    for (const auto& entry : lockon_cleared_targets_) {
+        if (!is_ok(entry.component) || !is_ok(entry.target)) continue;
+        UFunction* setter = find_function(entry.component, "SetLockTarget");
+        if (setter == nullptr) {
+            relock_failed_detail = "无 SetLockTarget 函数";
+            continue;
+        }
+        FProperty* target_param = first_object_param(setter);
+        if (target_param == nullptr) {
+            relock_failed_detail = "SetLockTarget(" + describe_params(setter) + ") 无对象参数";
+            continue;
+        }
+        ParamBlock params(setter);
+        if (!params.valid()) continue;
+        if (write_object(target_param, params.data(), entry.target)) {
+            entry.component->ProcessEvent(setter, params.data());
+            ++relocked_count;
+            ++restored_count;
+        } else {
+            relock_failed_detail = "SetLockTarget(" + describe_params(setter) + ") 参数写不进去";
+        }
+    }
+    if (cleared_count > 0) {
+        if (relocked_count == static_cast<int>(cleared_count)) {
+            log(LogLevel::Info, "锁定目标已恢复：数量=" + std::to_string(relocked_count));
+        } else {
+            log(LogLevel::Warn, "锁定目标恢复失败 " + std::to_string(cleared_count - relocked_count) + "/" +
+                                    std::to_string(cleared_count) + "（" +
+                                    (relock_failed_detail.empty() ? std::string("目标已失效") : relock_failed_detail) +
+                                    "）——退出后若未锁定，重新按锁定键即可");
+        }
+    }
+    lockon_cleared_targets_.clear();
     if (restored_count > 0) {
         touched = true;
         log(LogLevel::Info, "已恢复锁定标记：数量=" + std::to_string(restored_count));
@@ -2400,7 +2912,8 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
 // 一次性诊断（每会话一次，关键词没接住白点时给下一轮指认真身）：
 //   ① 可见 UserWidget 类——白点若是屏幕/世界 UMG，必在其中；
 //   ② 场上可视组件类——白点若是粒子/贴花/小面片，类名在这里；
-//   ③ 玩家 pawn 名下类名带锁定/目标语义的组件——锁定目标状态所在，为下一版直接清锁定指路。
+//   ③ 玩家 pawn 名下类名带锁定/目标语义的组件；
+//   ④ 锁定系统（TargetingComponent）对象、锁定状态与关键成员（1.0.68 起）。
 void Ue4ssPort::dump_lockon_diagnostics() {
     if (lockon_diag_dumped_) return;
     lockon_diag_dumped_ = true;
@@ -2436,9 +2949,9 @@ void Ue4ssPort::dump_lockon_diagnostics() {
         return names;
     };
     log(LogLevel::Info, "锁定标记诊断① 可见 UserWidget：" +
-                            (visible_widgets.empty() ? std::string("（无）") : join_counts(visible_widgets, 40)));
+                            (visible_widgets.empty() ? std::string("（无）") : join_counts(visible_widgets, 120)));
     log(LogLevel::Info, "锁定标记诊断② 可视组件：" +
-                            (visual_components.empty() ? std::string("（无）") : join_counts(visual_components, 40)));
+                            (visual_components.empty() ? std::string("（无）") : join_counts(visual_components, 120)));
 
     UObject* pawn = player_pawn();
     if (is_ok(pawn)) {
@@ -2462,6 +2975,64 @@ void Ue4ssPort::dump_lockon_diagnostics() {
         });
         log(LogLevel::Info, "锁定标记诊断③ 玩家锁定/目标组件：" +
                                 (pawn_components.empty() ? std::string("（未发现）") : pawn_components));
+    }
+
+    // ④ 锁定系统对象（1.0.68 起）：类/关键成员/锁定状态——白点与锁定血条的真身在这里
+    std::vector<UObject*> roots;
+    find_targeting_roots(roots);
+    if (roots.empty()) {
+        // 类名像锁定系统但特征不符的对象也列出来（组件可能换了名字/成员）
+        std::map<std::string, int> name_hits;
+        RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
+            if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
+            UClass* cls = object->GetClassPrivate();
+            if (cls == nullptr) return RC::LoopAction::Continue;
+            if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
+            if (name_targetingish(lower_ascii(narrow(cls->GetName())))) ++name_hits[narrow(cls->GetName())];
+            return RC::LoopAction::Continue;
+        });
+        std::string names;
+        for (const auto& entry : name_hits) names += (names.empty() ? "" : ", ") + entry.first + " x" + std::to_string(entry.second);
+        log(LogLevel::Info, "锁定标记诊断④ 锁定系统对象：（未发现）" +
+                                (names.empty() ? std::string("") : "；类名疑似：" + names));
+    } else {
+        for (UObject* root : roots) {
+            std::string members;
+            for (TFieldIterator<FProperty> it(root->GetClassPrivate()); it; ++it) {
+                FProperty* prop = *it;
+                if (prop == nullptr) continue;
+                const std::string name = narrow(prop->GetName());
+                const std::string lower = lower_ascii(name);
+                if (lower.find("lock") == std::string::npos && lower.find("show") == std::string::npos &&
+                    lower.find("target") == std::string::npos && lower.find("indicator") == std::string::npos) {
+                    continue;
+                }
+                members += (members.empty() ? "" : ", ") + name + "(" +
+                           narrow(prop->GetClass().GetFName().ToString()) + ")";
+            }
+            bool has_lock = false;
+            invoke_bool(root, "HasLockTarget", [&](ParamBlock&) { return true; }, has_lock);
+            std::string detail = "锁定标记诊断④ 锁定系统：类=" + narrow(root->GetClassPrivate()->GetName()) +
+                                 " 对象=" + narrow(root->GetName()) + " 有锁定=" + (has_lock ? "是" : "否");
+            if (has_lock) {
+                UFunction* getter = find_function(root, "GetLockTarget");
+                FProperty* ret = getter != nullptr ? getter->GetReturnProperty() : nullptr;
+                UObject* target = nullptr;
+                if (getter != nullptr && ret != nullptr && ret->IsA<FObjectProperty>()) {
+                    ParamBlock params(getter);
+                    if (params.valid()) {
+                        root->ProcessEvent(getter, params.data());
+                        if (read_object(params.property("ReturnValue"), params.data(), target) && is_ok(target)) {
+                            detail += " 目标=" + narrow(target->GetName()) + "(" +
+                                      narrow(target->GetClassPrivate()->GetName()) + ")";
+                        }
+                    }
+                } else {
+                    detail += " GetLockTarget(" + (getter != nullptr ? describe_params(getter) : std::string("无")) + ")";
+                }
+            }
+            log(LogLevel::Info, detail + " 成员：" + (members.empty() ? std::string("（无）") : members));
+        }
     }
 }
 
@@ -3003,6 +3574,9 @@ WindFreezeReport Ue4ssPort::freeze_wind(bool frozen) {
 
 int Ue4ssPort::mpc_take_snapshot() {
     mpc_snapshots_.clear();
+    mpc_bad_params_.clear();
+    mpc_bad_collections_.clear();
+    mpc_hold_last_ = {};
     UObject* statics = kismet_material_library();
     UObject* scene = world();
     if (!is_ok(statics) || !is_ok(scene)) {
@@ -3091,17 +3665,44 @@ int Ue4ssPort::mpc_take_snapshot() {
 
 int Ue4ssPort::mpc_hold_snapshot() {
     if (mpc_snapshots_.empty()) return 0;
+    // 限频到 4Hz：原来每帧对 34 集合/347 参数逐个 ProcessEvent，开销和崩溃面都太大。
+    // 冻结诊断整场都是“变化:无”，4Hz 足够压住偶发漂移，同时把 ProcessEvent 降到约 1/15。
+    const auto now = std::chrono::steady_clock::now();
+    if (mpc_hold_last_.time_since_epoch().count() != 0 &&
+        now - mpc_hold_last_ < std::chrono::milliseconds(250)) {
+        return 0;
+    }
+    mpc_hold_last_ = now;
+
     UObject* statics = kismet_material_library();
     UObject* scene = world();
     if (!is_ok(statics) || !is_ok(scene)) return 0;
     int written = 0;
     for (const MpcCollectionSnapshot& snapshot : mpc_snapshots_) {
         if (!is_ok(snapshot.collection)) continue;
+        // 复核集合类：FindAllOf 按父类匹配，冻结期间对象也可能被卸载/替换；
+        // 不是 MaterialParameterCollection 就整体跳过，避免拿实例/过期指针去 ProcessEvent。
+        if (!mpc_is_collection_class(snapshot.collection->GetClassPrivate())) {
+            if (mpc_bad_collections_.insert(snapshot.name).second) {
+                log(LogLevel::Warn, "MPC 写回跳过：集合类名不符或已失效 " + snapshot.name);
+            }
+            continue;
+        }
         for (const MpcParamValue& param : snapshot.params) {
+            const std::string key = snapshot.name + "\x1f" + param.name;
+            if (mpc_bad_params_.count(key) != 0) continue;
+            bool faulted = false;
             const bool ok = param.is_vector
-                                ? mpc_set_vector(statics, scene, snapshot.collection, param.name, param.value)
-                                : mpc_set_scalar(statics, scene, snapshot.collection, param.name, param.value[0]);
-            if (ok) ++written;
+                                ? mpc_set_vector(statics, scene, snapshot.collection, param.name, param.value, faulted)
+                                : mpc_set_scalar(statics, scene, snapshot.collection, param.name,
+                                                 param.value[0], faulted);
+            if (ok) {
+                ++written;
+            } else if (faulted) {
+                // SEH 抓到游戏侧访问违例：隔离该参数，后续不再写，避免反复触发
+                mpc_bad_params_.insert(key);
+                log(LogLevel::Warn, "MPC 写回触发游戏访问违例，已隔离参数：" + snapshot.name + "." + param.name);
+            }
         }
     }
     return written;
@@ -3109,6 +3710,9 @@ int Ue4ssPort::mpc_hold_snapshot() {
 
 void Ue4ssPort::mpc_release_snapshot() {
     mpc_snapshots_.clear();
+    mpc_bad_params_.clear();
+    mpc_bad_collections_.clear();
+    mpc_hold_last_ = {};
     mpc_diag_last_.clear();
     mpc_diag_has_last_ = false;
 }

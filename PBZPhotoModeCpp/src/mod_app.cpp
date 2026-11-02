@@ -429,6 +429,28 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
         }
     }
 
+    // 1.0.69 一次性修复：旧版本可能把字幕/场景交互提示开关写坏（1.0.30 起的老问题），
+    // 首次运行本版时把两个开关强制打开。设置对象/玩家 Pawn 可能比引擎 Tick 晚就绪：
+    // 每 3 秒试一次、上限 20 次（约 1 分钟，覆盖读档时间）。
+    if (!ui_repair_done_) {
+        if (!cfg_.repair_ui_settings_once) {
+            ui_repair_done_ = true;  // 配置关闭：不再尝试
+        } else if (ui_repair_attempts_ < 20 && !mode_->active()) {
+            // 摄影模式内不要做这项修复：模式内正把字幕/提示开关压成关闭，此时强开会和退出还原打架。
+            ui_repair_accum_ += dt;
+            if (ui_repair_accum_ >= 3.0) {
+                ui_repair_accum_ = 0.0;
+                ++ui_repair_attempts_;
+                ui_repair_done_ = port_->recover_ui_settings_once();
+                if (!ui_repair_done_ && ui_repair_attempts_ >= 20) {
+                    port_->log(LogLevel::Warn, "UI 设置修复多次重试未成功（设置对象没就绪），跳过；可在游戏设置里手动打开字幕/场景交互提示");
+                }
+            }
+        } else {
+            ui_repair_done_ = true;
+        }
+    }
+
     if (input_source_ != nullptr) {
         input_source_->poll(input_, cfg_.pad_enabled);
         // DInput 后端的一次性诊断（接入成功/初始化失败时各产出一条）

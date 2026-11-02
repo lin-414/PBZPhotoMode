@@ -110,6 +110,11 @@ hide_enemy_health_bars = true
 hide_lockon_marker = true
 ; 进入摄影模式时隐藏对话字幕（关游戏字幕设置 + 藏字幕显示控件，退出时还原）
 hide_subtitles = true
+; 1.0.69 一次性修复：首次运行本版时把字幕与场景交互提示两个游戏设置强制打开
+;（旧版本可能把它们写坏并让游戏存盘；只执行一次，成功后写 ui_settings_repair_done.flag）。
+; 如果你本来就关闭字幕、不要这项修复，设为 false。
+repair_ui_settings_once = true
+
 ; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）
 auto_pause_time = true
 ; pause=游戏暂停（默认，真正冻结角色/敌人/特效）；dilation=只调全局时间倍率

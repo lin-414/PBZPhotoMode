@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <filesystem>
 #include <functional>
 #include <set>
@@ -74,6 +75,11 @@ public:
 
     // 尽早挂上 Post 钩子截获 PlayingID（mod_app 引擎 tick 里每 2 秒重试直到成功）
     bool install_voice_hooks();
+
+    // 一次性修复：旧版本（≤1.0.68）可能把字幕/场景交互提示开关写坏并让游戏存盘
+    //（1.0.30 时代就有先例）。首次运行本版时把两个开关强制打开并回读校验，
+    // 成功后写 ui_settings_repair_done.flag 不再执行。返回 true=已完成（含之前已修过）。
+    bool recover_ui_settings_once();
 
     bool save_postfx() override;
     void restore_postfx() override;
@@ -188,6 +194,11 @@ private:
         std::vector<MpcParamValue> params;
     };
     std::vector<MpcCollectionSnapshot> mpc_snapshots_;
+    // 写回限频时间戳：进入快照后首帧立即写，此后 4Hz（原为每帧，347 次 ProcessEvent/帧）
+    std::chrono::steady_clock::time_point mpc_hold_last_{};
+    // 冻结期内已确认会触发游戏访问违例的参数（集合名+参数名）与类名不符的集合，隔离不再写
+    std::set<std::string> mpc_bad_params_;
+    std::set<std::string> mpc_bad_collections_;
     // 冻结诊断：MPC 上一拍样本（两次诊断之间比对参数变化）
     std::vector<MpcCollectionSnapshot> mpc_diag_last_;
     bool mpc_diag_has_last_{false};
@@ -239,7 +250,17 @@ private:
     std::vector<std::pair<RC::Unreal::UObject*, bool>> lockon_components_;
     bool lockon_absent_{false};         // 本会话已确认场上没有可隐藏的锁定对象（进模式后玩家无法再锁定）
     bool lockon_absent_logged_{false};  // “未找到锁定标记”只告警一次
-    bool lockon_diag_dumped_{false};    // 一次性诊断（可见控件/可视组件/玩家组件清单）每会话只打一次
+    bool lockon_diag_dumped_{false};    // 一次性诊断（可见控件/可视组件/玩家组件/锁定系统清单）每会话只打一次
+    bool ui_repair_missing_logged_{false};  // UI 设置一次性修复：设置对象未就绪只提示一次
+    bool ui_repair_wait_logged_{false};     // UI 设置一次性修复：等待玩家世界就绪只提示一次
+    // 游戏锁定系统（TargetingComponent，1.0.68 exe 取证）：调过 SetShowLockIndicator(false)
+    // 的组件与 StopLockTarget 清掉的锁定目标——退出时都要恢复（指示器开关 + 重新锁定）
+    std::vector<RC::Unreal::UObject*> lockon_indicator_suppressed_;
+    struct LockonClearedTarget {
+        RC::Unreal::UObject* component{nullptr};
+        RC::Unreal::UObject* target{nullptr};
+    };
+    std::vector<LockonClearedTarget> lockon_cleared_targets_;
     void dump_lockon_diagnostics();
 
     // 字幕设置（bSubtitlesEnabled）：进入时保存的原开关状态，退出时写回。

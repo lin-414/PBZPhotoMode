@@ -181,6 +181,7 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         else if (key == "hide_enemy_health_bars") set_bool(cfg.hide_enemy_health_bars, value, error, key.c_str());
         else if (key == "hide_lockon_marker") set_bool(cfg.hide_lockon_marker, value, error, key.c_str());
         else if (key == "hide_subtitles") set_bool(cfg.hide_subtitles, value, error, key.c_str());
+        else if (key == "repair_ui_settings_once") set_bool(cfg.repair_ui_settings_once, value, error, key.c_str());
         else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
         else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
         else if (key == "freeze_sequences") set_bool(cfg.freeze_sequences, value, error, key.c_str());
@@ -432,6 +433,10 @@ std::string config_ini_text(const Config& c) {
         << "hide_lockon_marker = " << (c.hide_lockon_marker ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏对话字幕（关游戏字幕设置 + 藏字幕显示控件，退出时还原）\n"
         << "hide_subtitles = " << (c.hide_subtitles ? "true" : "false") << "\n"
+        << "; 1.0.69 一次性修复：首次运行本版时把字幕与场景交互提示两个游戏设置强制打开\n"
+        << ";（旧版本可能把它们写坏并让游戏存盘；只执行一次，成功后写 ui_settings_repair_done.flag）。\n"
+        << "; 如果你本来就关闭字幕、不要这项修复，设为 false。\n"
+        << "repair_ui_settings_once = " << (c.repair_ui_settings_once ? "true" : "false") << "\n"
         << "; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）\n"
         << "auto_pause_time = " << (c.auto_pause_time ? "true" : "false") << "\n"
         << "; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停\n"

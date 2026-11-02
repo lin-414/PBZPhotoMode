@@ -84,6 +84,10 @@ private:
     double diag_accum_{0.0};
     double voice_hook_accum_{0.0};  // 对话语音钩子重试节流（每 2 秒试一次直到挂上）
     int voice_hook_attempts_{0};    // 重试次数（有上限：每次重试都是两遍全对象数组扫描）
+    // 1.0.69 一次性修复：旧版本可能把字幕/场景交互提示设置写坏并让游戏存盘
+    double ui_repair_accum_{0.0};   // 重试节流（每 3 秒一次）
+    int ui_repair_attempts_{0};     // 重试次数上限（设置对象可能晚就绪）
+    bool ui_repair_done_{false};    // 已完成（成功 / 之前修过 / 配置关闭）
     double last_tick_time_{0.0};
     bool pad_logged_connected_{false};  // 手柄连接状态只在与上次不同时打日志
     bool pad_scan_logged_{false};       // 启动 10 秒后报一次扫描状态，证明轮询管线活着

@@ -4,7 +4,7 @@
 
 ## 一句话状态
 
-**C++ 版 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译**——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
+**C++ 版 1.0.71（字幕/交互提示反复进出后仍消失：修复 UI 修复的玩家就绪判定 + 设置原值改读属性）已实现并编译**——见「v1.0.71 修了什么」。此前 1.0.70（进入游戏时崩溃：修复 controller 缓存悬空指针，UI 一次性修复改用实时玩家查询）已实现并编译——见「v1.0.70 修了什么」。此前 1.0.69（字幕/交互提示退出后一直消失：一次性修复 + 设置读写加固）已实现并编译——见「v1.0.69 修了什么」。此前 1.0.68（锁定白点与锁定血条一起隐藏：接游戏锁定系统 TargetingComponent）已实现并编译——见「v1.0.68 修了什么」。此前 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
 核心层 **2294 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
 
 ## 交付流程（2026-10-31 起固定）
@@ -24,6 +24,67 @@
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
 | 文档 | `docs/README.md`、`docs/BUILD.md`（含 6 条编译踩坑表）、`docs/P1_CHECKLIST.md` |
+
+## v1.0.71 修了什么（2026-11-02 字幕/交互提示反复进出后仍消失）
+
+实机反馈：1.0.70 不再崩溃，但**进入相机模式再退出几次后字幕和交互图标还是一直消失**。
+
+日志证据（UE4SS.log 15:52-15:55）：
+- 只有 `UI 设置修复：等待玩家进入游戏世界（Player/Pawn/bBegunPlay）后执行`，20 次重试后 `UI 设置修复多次重试未成功（设置对象没就绪），跳过`——一次性修复**从未执行**。
+- 每次进入摄影模式都是 `字幕设置开关原值=关（读取=GetSubtitlesEnabled()）` / `场景交互提示开关原值=关（读取=GetSceneInteractPromptVisible()）`，退出还原也写回关——两个开关被原值读成关后反复固化。
+
+根因两处：
+1. **玩家就绪判定过严**：1.0.70 的 `find_live_player_pawn()` 要求 `Player` 属性可读 + `Pawn` + `UWorld.bBegunPlay` 全部命中。实机 PlayerController 的 `Player` 属性/世界属性可能读不到（不同蓝图/版本属性链差异），整个修复被卡死。
+2. **设置原值 getter 优先是错的**：`GetSubtitlesEnabled()` / `GetSceneInteractPromptVisible()` 返回的是未同步的旧副本（实机字幕与 E 提示明明在显示，getter 却是关）。进入时把原值记成关 → 退出还原成关，反复几次后永久消失。1.0.34 实机早已证明设置类上的 `bEnableSubtitles` / `bSceneInteractPromptVisible` 属性才是生效值，1.0.69 的 getter 优先改写把这个结论丢掉了。
+
+本版修复：
+- `find_live_player_pawn()` 放宽：只要求 `Pawn` 可读且对象有效；`bBegunPlay` 只有在**明确读到 false** 时才拦截，读不到不拦；修复只在**非摄影模式**的引擎 Tick 执行（避免和模式内的关闭/还原打架）。
+- `read_bool_setting()` 改为**属性优先、getter 兜底**：字幕先读 `bEnableSubtitles`/再 `bSubtitlesEnabled`，提示读 `bSceneInteractPromptVisible`；写仍走 setter + Pending + 属性三路，回读校验也按属性。
+- **实机验证（2026-11-02 16:08-16:10，UE4SS.log）**：9 轮进出，字幕与场景交互提示每次都是 `原值=开（读取=bEnableSubtitles / bSceneInteractPromptVisible）` → `还原（回读=开）`，无 `未生效`/`还原失败`；`ui_settings_repair_done.flag` 内容 `repaired by 1.0.71-cpp (subtitles=on, scene_interact_prompt=on)`，一次性修复已生效；用户确认正常。无新 crash dump。
+- 版本 `1.0.71-cpp`；核心层 2294 项测试全绿；DLL 重编通过；dist 重打包。
+
+## v1.0.70 修了什么（2026-11-02 进入游戏时崩溃）
+
+实机反馈：安装 1.0.69 后**进入游戏即崩溃**，dump = `crash_2026_11_02_15_36_45.7956922.dmp`（41 MB）。
+
+minidump 取证：
+- 异常线程 tid=48440，异常码 `0xC0000005`（读地址 `0xFFFFFFFFFFFFFFFF`），RIP = `PBZPhotoModeCpp.dll+0x198A3`。
+- 符号化（build-dll\PBZPhotoModeCpp.pdb）：`pbzpm::find_property +0x63`（`src/engine/ue4ss_port.cpp:117`，`TFieldIterator<FProperty>` 构造）。
+- 栈帧（RSP 0xf7f100）：`recover_ui_settings_once +0x208`（ue4ss_port.cpp:2252）→ `player_pawn +0x35`（ue4ss_port.cpp:939）→ `find_property(UObject*) +0x7e`（ue4ss_port.cpp:126）→ `find_property(UStruct*) +0x63`（ue4ss_port.cpp:117）。
+- 根因：1.0.69 的 UI 一次性修复在引擎 Tick 起 3 秒就调用 `player_pawn()`；`controller()` 的 `controller_cache_` 缓存的 PlayerController 在换图/读档时已被销毁，`GetClassPrivate()` 读出 `0xFFFFFFFFFFFFFFFF`。旧 `is_ok` 只判「非空」，于是 `find_property` 把 -1 当 `UStruct*` 去构造 `TFieldIterator`，直接读地址 -1 崩溃。
+
+本版修复：
+- **`is_ok()` 加固（三管齐下）**：指针地址范围/对齐检查 + `safe_class_of()`（SEH 保护 `GetClassPrivate`）+ `FUObjectItem` 对象数组反查（`GetObjectItem()` / `IsValid(true)`）；`find_property` / `find_function` 同样前置校验。已释放/复用槽位的对象不再被当成有效。
+- **UI 修复改用实时玩家查询**：新增 `find_live_player_pawn()`——每次重新枚举 PlayerController，要求 `Player` + `Pawn` 都在且 Pawn 所在 `UWorld.bBegunPlay=true` 才执行（既绕开 `controller_cache_` 悬空指针，也避免读档期间过早写设置被存档覆盖）。
+- 版本 `1.0.70-cpp`；核心层 2294 项测试全绿；DLL 重编通过；dist 重打包。
+
+## v1.0.69 修了什么（2026-11-02 字幕/交互提示退出后一直消失）
+
+实机反馈：1.0.68 白点/血条正常了，但**退出摄影模式后字幕与交互按钮一直消失**，重进重出也不行。
+
+日志证据（UE4SS.log 15:17-15:19）：首次进入即 `字幕设置开关已关闭（…原值=关，回读=关）`——两个开关在测试前就已经是关闭态。这是**旧版本遗留**的老问题（1.0.30 时代就有：还原静默失败被游戏存盘，PROGRESS 1.0.31 备注当年就要求用户手动在游戏设置里开回来）；1.0.68 的锁定路线没有碰这两个设置（日志里字幕/提示的原值在 15:17 首次进入时就是关）。
+
+本版：
+- **一次性修复 `repair_ui_settings_once`（默认开）**：引擎 Tick 起每 3 秒试一次（上限 20 次/约 1 分钟，设置对象与玩家 Pawn 都就绪后才执行），把字幕与场景交互提示两个开关强制打开、getter 回读校验、调 `PBZSettingsShared::SaveSettings()` 立即存盘，成功后写 `ui_settings_repair_done.flag`（只做一次）。如果你本来就关闭字幕、不要这项修复，config.ini 里设为 false 并删除该标记文件。
+- **设置读写加固（通用 `BoolSettingSpec`）**：getter 优先读（`GetSubtitlesEnabled`/`AreSubtitlesEnabled`/`GetSceneInteractPromptVisible`），写走 setter + Pending setter + 属性三路，写完回读校验并把「原值（读取方式）/回读」打进日志——以后还原失败一眼可见，不再静默写坏玩家设置。
+- 版本 `1.0.69-cpp`；核心层 2294 项测试全绿；DLL 重编通过；dist 重打包（config.ini 含新配置项）。
+
+## v1.0.68 修了什么（2026-11-02 锁定白点与锁定血条一起残留）
+
+实机反馈：锁定敌人后进摄影模式，**血条与白点一起残留**。UE4SS.log 证据链：
+
+1. 血条：`敌人血条显示模式已切到 OnlyLockedTarget（原模式=OnlyLockedTarget）`——该模式**只为「当前锁定目标」显示血条**，锁定目标不清掉，切档毫无作用（1.0.44 的假设「摄影模式没有锁定目标」被推翻）。
+2. 白点：关键词扫描零命中（诊断①可见控件/②可视组件/③玩家组件），不是普通 UMG/可视化组件。可见控件清单里出现 `WG_PBZFocus_C`（PBZ 里锁定=Focus 家族：exe 字符串 `CharacterState.Targeting.Forbid.FocusControl`、`PBZAbilityTask_FocusControlTick`）。
+3. exe 反射字符串取证（PBZ.exe）找到游戏自己的锁定系统 `TargetingComponent`：`LockWidget` / `SecondaryLockIndicators`（锁定/副目标指示器控件）、`SetShowLockIndicator(bool)`、`HasLockTarget` / `GetLockTarget` / `SetLockTarget` / `StopLockTarget`、`TargetingHandlers` / `CurrentHandler` / `TargetingSubsystem`。
+
+本版实现（仍由 `hide_lockon_marker` 控制，默认开）：
+- **锁定系统路线（主）**：运行时找类名带 Targeting/Lock/Focus 且具备锁定系统特征（TargetingHandlers / LockWidget / SetShowLockIndicator / GetLockTarget）的对象；`LockWidget` 与 `SecondaryLockIndicators` 逐个 Collapsed（宿主 WidgetComponent 一并 bVisible=false，暂停下世界空间 UMG 只藏控件可能不刷新）；`SetShowLockIndicator(false)`（参数名不符回落写 `Show` 属性）；**读 `GetLockTarget` 存目标后调 `StopLockTarget`** 清掉锁定目标（血条根因）。退出时 `SetLockTarget(保存目标)`（参数名离线未知：按声明顺序第一个对象参数、优先名字带 target/actor）+ `SetShowLockIndicator(true)` 成对恢复，接不住会提示重新锁定。
+- **关键词补网**：`focus` / `indicator` / `monsterhp` / `enemyhp` / `hpbar` / `healthbar`。
+- **怪物世界控件兜底**：全名带 Monster/Enemy 的 WidgetComponent（敌人头顶血条/名牌类）一并隐藏。
+- **诊断④**：锁定系统对象清单（类/对象/有锁定/目标/GetLockTarget 与 SetLockTarget 签名/类成员表）；诊断①②清单上限 40→120，下一轮日志可完整收敛。
+- 所有动作逐条记日志、退出按原值还原；扫描/行动分离（枚举中不跑 ProcessEvent）不变。
+
+核心层 2294 项测试全绿（本版无 core 逻辑改动）；DLL 重编通过。
 
 ## v1.0.63 改了什么（2026-11-02 升降键可在 config.ini 配置）
 

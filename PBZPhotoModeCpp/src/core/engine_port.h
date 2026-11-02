@@ -73,14 +73,18 @@ public:
     // 敌人（怪物）血条：SetHideUIForPV 与 HUD 布局根控件都不覆盖它们（头顶血条不在
     // W_FrontEndHUDLayout 子树下）。游戏侧唯一的总开关是设置项 MonsterHealthBarMode
     // （EPBZMonsterHealthBarMode：AlwaysShow/OnlyLockedTarget/HideFullHealth）——
-    // 摄影模式下没有锁定目标，切到 OnlyLockedTarget 即全部隐藏；进入时保存原值，退出还原。
+    // 切到 OnlyLockedTarget 只能压掉「非锁定目标」的血条；**锁定中的那个目标血条照常显示**
+    //（1.0.67 实机：原模式本就是 OnlyLockedTarget，切档无效）。锁定目标由
+    // set_lockon_marker_visible 按游戏接口清掉，两条路配合才干净。
     virtual bool set_enemy_health_bars_visible(bool visible) = 0;
 
-    // 锁定标记（锁定敌人时其身上出现的白点）：SetHideUIForPV 与 HUD 布局都不覆盖它，
-    // 血条设置（MonsterHealthBarMode）也只管血条不管点。渲染载体离线拿不到（类名未证），
-    // 运行时按类名/资产名关键词全量扫描锁定/目标家族的 UMG 控件与可视组件，命中即藏，
-    // 退出还原；零命中时打一次性诊断清单（真实类名靠实机日志收敛）。暂停下游戏 UI 不再
-    // 刷新，事件驱动的标记不会自己消失，必须藏住渲染载体本身（同交互提示的道理）。
+    // 锁定标记（锁定敌人时其身上出现的白点）与锁定目标状态：SetHideUIForPV 与 HUD
+    // 布局都不覆盖它，血条设置也只管血条不管点。1.0.68 起走游戏自己的锁定系统：
+    // 找 TargetingComponent（LockWidget / SecondaryLockIndicators / SetShowLockIndicator /
+    // HasLockTarget / GetLockTarget / SetLockTarget / StopLockTarget），藏指示器控件 + 关
+    // 指示器开关 + 清锁定目标（血条只为锁定目标显示），退出全部成对恢复；另按类名/资产名
+    // 关键词全量扫描 UMG 与可视组件兜底，零命中打一次性诊断清单。暂停下游戏 UI 不再刷新，
+    // 事件驱动的标记不会自己消失，必须动渲染载体本身（同交互提示的道理）。
     virtual bool set_lockon_marker_visible(bool visible) = 0;
 
     // 对话字幕：SetHideUIForPV 不管它们。双路径：游戏设置开关 bSubtitlesEnabled

@@ -4,7 +4,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.67 |
+| 版本 | v1.0.71 |
 | 核心层测试 | 2294 项，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
@@ -126,6 +126,36 @@ tools\build_tests.bat
 - **实现**：新增 `[keys] key_vertical_up` / `key_vertical_down`（默认 `MOUSE_LEFT` / `MOUSE_RIGHT`）。键名表新增 `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` / `MOUSE_X1` / `MOUSE_X2`（别名 `LMB` / `RMB` / `MMB` / `MOUSE_BACK` / `MOUSE_FORWARD`）；输入层把 5 个鼠标键并入 `GetAsyncKeyState` 轮询，`translate`（上下平移）与 `look`（俯仰）两种模式都按新键工作。
 - PBZFM 菜单「快捷键（键盘）」页同步显示两项，改键捕获支持鼠标键；四语言词典新增对应标签。
 - 核心层测试 **2216 项全绿**（新增鼠标键名解析、默认值、交换键位、键盘键替代与 PBZFM 字段往返用例）。
+
+## 1.0.71 这次改了什么（字幕/交互提示反复进出后仍消失）
+
+- 实机反馈：1.0.70 不再崩溃，但进入相机模式再退出几次后字幕和 E 交互图标一直消失。
+- 日志证据：只有 `UI 设置修复：等待玩家进入游戏世界…`，20 次后 `UI 设置修复多次重试未成功…跳过`（修复从未执行）；每次进出都是 `字幕设置开关原值=关（读取=GetSubtitlesEnabled()）`、`场景交互提示开关原值=关（读取=GetSceneInteractPromptVisible()）`。
+- 根因：① `find_live_player_pawn()` 要求 Player 属性 + Pawn + `bBegunPlay` 全部命中，实机 Player 属性/世界属性读不到导致永远失败；② 设置原值 getter 优先读到了未同步旧副本，退出把「本来开着」还原成关。1.0.34 实机证明 `bEnableSubtitles` / `bSceneInteractPromptVisible` 属性才是生效值。
+- 修复：`find_live_player_pawn()` 只要求 Pawn 可读、`bBegunPlay` 仅在明确 false 时拦截；修复只在非摄影模式的 Tick 执行。`read_bool_setting()` 改为属性优先、getter 兜底，回读校验按属性；写仍走 setter + Pending + 属性三路。
+- 核心层 2294 项测试全绿；DLL 重编通过。
+
+## 1.0.70 这次改了什么（进入游戏时崩溃）
+
+- 实机反馈：安装 1.0.69 后进入游戏即崩溃（`crash_2026_11_02_15_36_45.7956922.dmp`）。
+- minidump 取证：异常 `0xC0000005` 读地址 `0xFFFFFFFFFFFFFFFF`，RIP=`PBZPhotoModeCpp.dll+0x198A3`（`pbzpm::find_property`，ue4ss_port.cpp:117）；调用链 `recover_ui_settings_once` → `player_pawn`（ue4ss_port.cpp:939）→ `find_property(UObject*)`（:126）→ `find_property(UStruct*)`（:117）。
+- 根因：1.0.69 的 UI 一次性修复启动 3 秒就调用 `player_pawn()`；`controller()` 缓存的 PlayerController 在换图/读档时已被销毁，`GetClassPrivate()` 读成 `0xFFFFFFFFFFFFFFFF`，旧 `is_ok` 只判非空，`find_property` 把 -1 当 `UStruct*` 构造 `TFieldIterator` 读地址 -1 崩溃。
+- 修复：`is_ok()` 增加指针范围/对齐 + SEH 保护的 `GetClassPrivate` + `FUObjectItem` 对象数组反查；`find_property`/`find_function` 同样前置校验。UI 修复改用新增的 `find_live_player_pawn()`——每次重新枚举 PlayerController，要求 Player+Pawn 都在且 Pawn 所在 `UWorld.bBegunPlay=true`。
+- 核心层 2294 项测试全绿；DLL 重编通过。
+
+## 1.0.69 这次改了什么（字幕/交互提示退出后一直消失）
+
+- 实机反馈：1.0.68 白点/血条正常了，但退出摄影模式后**字幕与交互按钮一直消失**，重进重出也不行。日志证据：首次进入即「字幕设置开关已关闭（原值=关，回读=关）」——两个开关在测试前就已是关闭态（旧版本 1.0.30 时代遗留：还原静默失败被游戏存盘）。
+- **一次性修复**：新配置 `repair_ui_settings_once`（默认开）——引擎 Tick 起每 3 秒试一次（上限 20 次/约 1 分钟），把字幕/场景交互提示两个设置强制打开、回读校验、调用 `PBZSettingsShared::SaveSettings()` 立即存盘，成功后写 `ui_settings_repair_done.flag` 只执行一次。若你本来就关闭字幕，把它设为 false。
+- **设置读写加固**：字幕/提示开关改为 getter 优先读（`GetSubtitlesEnabled`/`AreSubtitlesEnabled`/`GetSceneInteractPromptVisible`）、setter + Pending + 属性三路写、回读校验，日志记录原值与回读，不再静默写坏玩家设置。
+
+## 1.0.68 这次改了什么（锁定白点与锁定血条一起残留）
+
+- 实机反馈：锁定敌人后进摄影模式，**血条与白点一起残留**。日志证据：原血条模式=OnlyLockedTarget（切档无效——该模式只为当前锁定目标显示血条，锁定目标不清就永远在）；关键词扫描零命中（白点不是普通 UMG/可视化组件）。
+- exe 反射字符串取证找到游戏自己的锁定系统 `TargetingComponent`（PBZ 里锁定 = Focus 家族）：`LockWidget` / `SecondaryLockIndicators`（锁定/副目标指示器控件）、`SetShowLockIndicator(bool)`、`HasLockTarget` / `GetLockTarget` / `SetLockTarget` / `StopLockTarget`、`TargetingHandlers`。
+- 本版（`hide_lockon_marker` 默认开）：运行时定位锁定系统对象 → `LockWidget`/`SecondaryLockIndicators` 逐个 Collapsed（宿主 WidgetComponent 一并隐藏）→ `SetShowLockIndicator(false)` → **保存 `GetLockTarget` 后 `StopLockTarget` 清掉锁定目标**（血条根因）；退出时 `SetLockTarget(保存目标)` + `SetShowLockIndicator(true)` 成对恢复。
+- 关键词补网：`focus`/`indicator`/`monsterhp`/`enemyhp`/`hpbar`/`healthbar`（实机可见清单 `WG_PBZFocus_C` 即疑似白点控件）；全名带 Monster/Enemy 的 WidgetComponent（敌人头顶血条/名牌）一并隐藏兜底。
+- 诊断④：锁定系统对象清单（类/对象/有锁定/目标/成员表）；诊断①②上限 40→120。所有动作逐条记日志、退出按原值还原。
 
 ## 1.0.44 这次改了什么（隐藏锁定标记）
 
