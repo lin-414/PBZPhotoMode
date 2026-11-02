@@ -99,6 +99,10 @@ const std::vector<PbzfmField>& pbzfm_fields() {
             [](const KeyMap& k) { return k.yaw_left; }),
         Key(kKeysGroup, "key_yaw_right", "#key_yaw_right", &Config::key_yaw_right,
             [](const KeyMap& k) { return k.yaw_right; }),
+        Key(kKeysGroup, "key_vertical_up", "#key_vertical_up", &Config::key_vertical_up,
+            [](const KeyMap& k) { return k.vertical_up; }),
+        Key(kKeysGroup, "key_vertical_down", "#key_vertical_down", &Config::key_vertical_down,
+            [](const KeyMap& k) { return k.vertical_down; }),
 
         // ---- 行为 ----
         Bool(kBehaviorGroup, "auto_pause_time", "#auto_pause_time",
@@ -145,6 +149,9 @@ const std::vector<PbzfmField>& pbzfm_fields() {
         Bool(kFreezeGroup, "stop_wwise_on_freeze", "#stop_wwise_on_freeze",
              [](const Config& c) { return c.stop_wwise_on_freeze; },
              [](Config& c, bool v) { c.stop_wwise_on_freeze = v; }),
+        Bool(kFreezeGroup, "wwise_engine_suspend", "#wwise_engine_suspend",
+             [](const Config& c) { return c.wwise_engine_suspend; },
+             [](Config& c, bool v) { c.wwise_engine_suspend = v; }),
         Bool(kFreezeGroup, "freeze_sequences", "#freeze_sequences",
              [](const Config& c) { return c.freeze_sequences; },
              [](Config& c, bool v) { c.freeze_sequences = v; }),

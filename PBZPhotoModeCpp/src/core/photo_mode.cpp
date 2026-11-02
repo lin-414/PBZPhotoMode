@@ -121,6 +121,8 @@ bool PhotoMode::enter() {
     active_ = true;
     frozen_ = false;
     sequences_paused_ = false;
+    wwise_paused_ = false;
+    wwise_engine_suspended_ = false;
     shakes_frozen_ = false;
     wind_frozen_ = false;
     mpc_hold_active_ = false;
@@ -154,7 +156,7 @@ bool PhotoMode::enter() {
 void PhotoMode::leave(const char* reason) {
     if (!active_ && !spawned_ && !view_attached_ && !ignore_move_set_ && !game_input_blocked_ && !player_hidden_ &&
         !hud_hidden_ && !prompt_hidden_ && !bars_hidden_ && !lockon_hidden_ && !subtitles_hidden_ && !aspect_unlocked_ &&
-        !postfx_saved_) {
+        !postfx_saved_ && !wwise_engine_suspended_ && !wwise_paused_) {
         return;  // 幂等：没进过模式就没有可还原的东西
     }
 
@@ -180,6 +182,13 @@ void PhotoMode::leave(const char* reason) {
             engine_.set_paused(false);
         } else {
             engine_.set_time_dilation(prev_dilation_);
+        }
+        if (wwise_engine_suspended_) {
+            if (engine_.suspend_wwise_engine(false)) {
+                wwise_engine_suspended_ = false;
+            } else {
+                log(LogLevel::Warn, "Wwise 音频引擎唤醒失败，保持挂起状态");
+            }
         }
         if (wwise_paused_) {
             engine_.pause_wwise_voices(false);
@@ -332,11 +341,27 @@ void PhotoMode::toggle_freeze() {
     // 对话语音真暂停：截获的 PlayingID 走游戏自有 PBZPausePlayingID（Wwise 原生暂停），
     // 解冻 PBZResumePlayingID 后当前句从原位置继续；无 ID 时回落组件音量兜底
     if (want && cfg_.stop_wwise_on_freeze) {
-        engine_.pause_wwise_voices(true);
-        wwise_paused_ = true;
-    } else if (!want && wwise_paused_) {
-        engine_.pause_wwise_voices(false);
-        wwise_paused_ = false;
+        // 第一层：整引擎 Suspend（PBZPause 方案）——一次覆盖环境/音乐/语音/UI 所有声音；
+        // 不可用或失败才回落逐 PlayingID + 组件音量兜底。
+        if (cfg_.wwise_engine_suspend && !wwise_engine_suspended_) {
+            wwise_engine_suspended_ = engine_.suspend_wwise_engine(true);
+        }
+        if (!wwise_engine_suspended_) {
+            engine_.pause_wwise_voices(true);
+            wwise_paused_ = true;
+        }
+    } else if (!want) {
+        if (wwise_engine_suspended_) {
+            if (engine_.suspend_wwise_engine(false)) {
+                wwise_engine_suspended_ = false;
+            } else {
+                log(LogLevel::Warn, "Wwise 音频引擎唤醒失败，保持挂起状态");
+            }
+        }
+        if (wwise_paused_) {
+            engine_.pause_wwise_voices(false);
+            wwise_paused_ = false;
+        }
     }
 
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
@@ -452,7 +477,7 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         pose_dirty_ = true;
     }
 
-    // look 模式下左右键改俯仰（持续按住持续转）
+    // look 模式下升降键改俯仰（持续按住持续转）
     if (intent.pitch_up_click) {
         pose_.rot.pitch = clamp_pitch(pose_.rot.pitch + kPitchSpeedDegPerSec * dt, cfg_.pitch_limit);
         pose_dirty_ = true;

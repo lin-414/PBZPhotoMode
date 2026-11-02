@@ -14,6 +14,12 @@ struct Entry {
 
 // 顺序无关，查找时先精确匹配（大小写不敏感）。
 constexpr Entry kTable[] = {
+    // 鼠标键（Win32 VK_LBUTTON / VK_RBUTTON / VK_MBUTTON / VK_XBUTTON1 / VK_XBUTTON2）。
+    // 规范名放最前，保证 vk_to_name 输出 MOUSE_*；别名只用于输入。
+    {"MOUSE_LEFT", 0x01}, {"MOUSE_RIGHT", 0x02}, {"MOUSE_MIDDLE", 0x04},
+    {"MOUSE_X1", 0x05}, {"MOUSE_X2", 0x06},
+    {"LMB", 0x01}, {"RMB", 0x02}, {"MMB", 0x04},
+    {"MOUSE_BACK", 0x05}, {"MOUSE_FORWARD", 0x06}, {"XBUTTON1", 0x05}, {"XBUTTON2", 0x06},
     {"BACKSPACE", 0x08}, {"TAB", 0x09}, {"ENTER", 0x0D}, {"RETURN", 0x0D}, {"SHIFT", 0x10},
     {"CONTROL", 0x11}, {"CTRL", 0x11}, {"ALT", 0x12}, {"PAUSE", 0x13}, {"CAPS_LOCK", 0x14},
     {"ESCAPE", 0x1B}, {"ESC", 0x1B}, {"SPACE", 0x20}, {"PAGE_UP", 0x21}, {"PRIOR", 0x21},

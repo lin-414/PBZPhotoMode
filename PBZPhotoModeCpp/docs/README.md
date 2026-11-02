@@ -4,16 +4,16 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.44 |
-| 核心层测试 | 668 项，全部通过 |
-| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
+| 版本 | v1.0.67 |
+| 核心层测试 | 2294 项，全部通过 |
+| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
 ## 项目结构
 
 ```
 src/core/      纯逻辑，不碰引擎 —— 已完成
   config        配置解析（含容错、范围夹紧、默认配置生成）
-  vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…）
+  vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…，含 MOUSE_LEFT/RIGHT/MIDDLE/X1/X2）
   input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿）
   math3         前/右向量、俯仰夹紧、偏航/滚转回绕
   photo_mode    进/退/每帧状态机（含失败回滚、幂等退出、1 秒视角守护）
@@ -31,7 +31,7 @@ src/ui_tab     UE4SS 控制台诊断面板（滑块/按钮，纯展示 + 回传�
 tools\build_tests.bat
 ```
 
-不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 565 项，失败 0 项`。
+不需要游戏、不需要 UE4SS，只需要 VS 2022 生成工具。当前输出：`检查 2294 项，失败 0 项`。
 
 ## 键位
 
@@ -41,7 +41,7 @@ tools\build_tests.bat
 | 自由转视角 | 按住 `Alt` + 移动鼠标 |
 | 前后左右平移 | `W` `A` `S` `D` |
 | 方向键转向/俯仰 | 方向键 左/右转视角（`yaw_speed`，默认 90 度/秒）、上/下俯仰（`pitch_speed`，默认 30 度/秒） |
-| 升降 | 左键上移 / 右键下移（translate 模式；手柄 RT / LT） |
+| 升降 | 默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改成鼠标中键、侧键或键盘键；translate 模式；手柄 RT / LT） |
 | 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`roll_speed` 可调）；手柄 `RB` / `LB` |
 | 加速 / 减速 | `Shift` / `Ctrl` |
 | 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-`（单击一格，按住约 0.35 秒后连发） |
@@ -78,7 +78,7 @@ tools\build_tests.bat
 1.0.42 起本模组是 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（游戏内 ImGui 菜单框架，DirectComposition 覆盖窗实现，不碰游戏交换链、不影响 FSR3 帧生成）的**第一个客户端模组**。两个模组各自解压进 `ue4ss\Mods\`（enabled.txt 启用，互不改 mods.txt）后：
 
 - 游戏内按 PBZFM 的呼出键（默认 `F8`）打开菜单，侧栏出现「**PBZ Photo Mode**」分区（1.0.43 起两页均由本模组自绘，ImGui 版本与框架 1.92.1 对齐）
-- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 静音 / 剧情暂停 / 相机震动 / 风源 / MPC / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
+- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
 - **「状态 · Status」页**：OFF / LIVE / FROZEN 状态、位置与朝向读数、键位速查；FOV 滑条（实时变焦）与「进入/退出摄影模式」「冻结/恢复时间」「重置视角」「重新载入 config.ini」按钮
 - **多语言**：内置 zh-CN / en-US / ja-JP / ko-KR；**外部词典**放 `PBZPhotoModeCpp\languages\<id>.json`——UTF-8 扁平 JSON，key=中文原文、value=译文，可选 `__display` 当显示名；同名覆盖内置、新文件名即新语言，游戏内热重载（点按钮或等 2 秒）。翻译缺失的条目回落中文。韩文渲染用自建「雅黑 + Malgun Gothic」合并字体，不受框架启动字体限制
 - 手柄组合键绑定（多按钮同按）在菜单里表达不了，仍写在 `config.ini` 的 `[gamepad]` 节
@@ -92,6 +92,40 @@ tools\build_tests.bat
 - **P0**：核心逻辑 + 单元测试 → 完成
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
 - **P2**：PostProcess 快照还原、滤镜、连拍、录像
+
+## 1.0.67 这次改了什么（清理两处旧日志提示）
+
+- **PostProcess 快照不再误报失败**：本版不修改后期处理设置，`save_postfx()` 没有需要保存的内容；此前返回 `false` 导致每次进摄影模式都打 `PostProcess 快照失败`。现在按“无需还原”处理并返回成功，退出时 `restore_postfx()` 为空操作，不再刷警告。
+- **相机修饰器列表改用 UE5 正确字段名**：`APlayerCameraManager` 的运行时列表在 UE5 叫 `ModifierList`，旧代码只查 `CameraModifiers`（旧名/部分分支）导致找不到数组、冻结时跳过修饰器治理。现在按 `ModifierList` → `CameraModifiers` → `CameraModifierList` 顺序尝试；找到后正常停用/恢复，确实不存在时才打一次信息日志（恢复阶段也不再无条件警告）。
+
+## 1.0.66 这次改了什么（修复移动视角卡顿）
+
+- **现象**：1.0.65 相比 1.0.64 没有明显改善，反而在冻结状态下移动视角时频繁卡顿。
+- **根因（时间偏移补偿）**：1.0.65 的 IAT Hook 把 `PBZ.exe` 和 `MRTCEngine.dll` 的 `QueryPerformanceCounter` 也换成了“冻结期返回常量”的钩子。PBZPause 能这么做，是因为它把进程内所有线程（包括渲染线程）都挂起了；摄影模式必须保留渲染线程和相机 Tick，QPC 被冻住后渲染线程的帧计时/引擎 delta 变成 0，画面就会一顿一顿。这个前提在本项目不成立，套用后只有副作用。
+- **修复**：整段移除时间偏移补偿（IAT Hook、`time_offset_begin/end`、配置项、菜单项与四语言标签全部删除）；旧 `config.ini` 若保留 `time_offset_compensation = true` 会收到“已移除并忽略”的 warning，不影响启动。摄影模式仍用 `SetGamePaused` / 时间缩放冻结，不依赖 QPC 钩子。
+- **同时修复 Wwise 整引擎 Suspend 的静默失效**：当前 PBZ 把 Wwise 静态链接进 `PBZ.exe`，`AkSoundEngineDLL.dll` 并不会被加载；1.0.65 只查 DLL，导致 `AK::SoundEngine::Suspend` 从未真正调用、每次都回落逐语音。1.0.66 优先从主程序导出表解析 `Suspend` / `WakeupFromSuspend` / `IsInitialized`，失败才回落 DLL 与逐语音，并在日志中写明接口来源；同时修正 `AKRESULT` 成功值判断（`AK_Success = 1`，旧代码误把 1 当失败）。
+- 核心层测试 **2294 项全绿**（移除时间偏移用例，保留 Wwise 整引擎优先/回落/关闭用例）。
+
+## 1.0.65 这次改了什么（修复 1.0.64 冻结崩溃）
+
+- **根因**：1.0.64 的 `PatchModuleImports` 在解析导入函数名时把 `IMAGE_THUNK_DATA.AddressOfData`（RVA）直接当指针传给 `strcmp`，没有加模块基址。PBZ.exe 的 RVA 是 `0xD9CEABE`，`strcmp` 访问 `0xD9CEAC0` 触发 `0xC0000005`，所以一按 F2 自动冻结就崩。
+- **修复**：按 PBZPause 原实现改为 `module_base + AddressOfData + sizeof(WORD)`，并对 `FirstThunk` / `OriginalFirstThunk` / 名称 RVA 增加模块 `SizeOfImage` 边界校验，坏模块/怪 import 表直接跳过而不是让 `strcmp` 读飞。
+- 本次崩溃 dump：`crash_2026_11_02_13_17_56.3389705.dmp`，异常地址 `ucrtbase.dll+0xED8B0`，栈顶回到 `PBZPhotoModeCpp.dll!patch_module_time_imports`。
+
+## 1.0.64 这次改了什么（Wwise 整引擎 Suspend + 时间偏移补偿）
+
+- **Wwise 整引擎挂起**：冻结时优先调用 `AkSoundEngineDLL.dll` 的 `AK::SoundEngine::Suspend(false,false)`，解冻 `WakeupFromSuspend(0)`——一次覆盖环境/音乐/语音/UI 全部声音，解冻从冻结位置继续；引擎未初始化或调用失败自动回落原有逐 `PlayingID` + 组件音量兜底（`stop_wwise_on_freeze` 仍总开关，新配置 `wwise_engine_suspend` 默认 true）。
+- **时间偏移补偿**：借鉴 PBZPause 的 IAT Hook 方案，冻结前把主程序与游戏侧 DLL（MRTCEngine/AkSoundEngineDLL/Media Foundation/audioclient）的 `QueryPerformanceCounter`、`GetTickCount`、`GetTickCount64`、`timeGetTime` 换成钩子；冻结期间返回暂停瞬间值，解冻时把本次暂停时长累加进偏移——动画/物理/粒子/计时器不会在解冻瞬间跳时间。新配置 `time_offset_compensation` 默认 true，Hook 失败自动降级并告警；不 patch 本模组自身的 CRT，摄影相机 dt 不受影响。
+- **安全边界**：只改 IAT 不挂线程；钩子只用原子变量、不分配/不加锁；`Ue4ssPort` 析构时恢复所有 IAT 槽，避免 DLL 卸载后悬空。
+- 核心层测试 **2372 项全绿**（新增 Wwise 整引擎优先/回落、时间偏移时序/失败降级/关闭用例）。
+- **后续（1.0.66）**：实测确认时间偏移补偿会冻结渲染线程 QPC、导致移动视角卡顿，已整段移除；Wwise 整引擎 Suspend 保留并从 PBZ.exe 静态导出解析。
+
+## 1.0.63 这次改了什么（升降键可配置）
+
+- **需求**：右键/左键是升降键，但 config.ini 里没有键位项，无法改成其它鼠标键或键盘键。
+- **实现**：新增 `[keys] key_vertical_up` / `key_vertical_down`（默认 `MOUSE_LEFT` / `MOUSE_RIGHT`）。键名表新增 `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` / `MOUSE_X1` / `MOUSE_X2`（别名 `LMB` / `RMB` / `MMB` / `MOUSE_BACK` / `MOUSE_FORWARD`）；输入层把 5 个鼠标键并入 `GetAsyncKeyState` 轮询，`translate`（上下平移）与 `look`（俯仰）两种模式都按新键工作。
+- PBZFM 菜单「快捷键（键盘）」页同步显示两项，改键捕获支持鼠标键；四语言词典新增对应标签。
+- 核心层测试 **2216 项全绿**（新增鼠标键名解析、默认值、交换键位、键盘键替代与 PBZFM 字段往返用例）。
 
 ## 1.0.44 这次改了什么（隐藏锁定标记）
 

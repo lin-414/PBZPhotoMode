@@ -261,8 +261,11 @@ PadState xinput_to_pad(const XINPUT_STATE& st) {
     return p;
 }
 
-// 需要轮询的键：功能键 + 摄影模式里用到的所有键
+// 需要轮询的键：功能键 + 摄影模式里用到的所有键。
+// 鼠标键也走同一套 GetAsyncKeyState 轮询：VK_LBUTTON/VK_RBUTTON/VK_MBUTTON/VK_XBUTTON1/VK_XBUTTON2，
+// 这样 key_vertical_up/down 就能和普通键位一样由 config.ini 指定。
 constexpr int kPolledKeys[] = {
+    VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
     VK_F1,  VK_F2,  VK_F3,  VK_F4,  VK_F5,  VK_F6,  VK_F7,  VK_F8,  VK_F9,  VK_F10, VK_F11, VK_F12,
     'A',    'B',    'C',    'D',    'E',    'F',    'G',    'H',    'I',    'J',    'K',    'L',
     'M',    'N',    'O',    'P',    'Q',    'R',    'S',    'T',    'U',    'V',    'W',    'X',
@@ -783,7 +786,7 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
         }
     }
 
-    // 3) 键盘 + 鼠标左右键：GetAsyncKeyState 轮询，只在状态边沿上报
+    // 3) 键盘 + 鼠标键：GetAsyncKeyState 轮询，只在状态边沿上报
     for (const int vk : kPolledKeys) {
         const bool down = (::GetAsyncKeyState(vk) & 0x8000) != 0;
         const bool next = active ? down : false;
@@ -792,19 +795,7 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
         logic.on_key(vk, next);
     }
 
-    // 4) 左右键
-    const bool left = active && (::GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-    const bool right = active && (::GetAsyncKeyState(VK_RBUTTON) & 0x8000) != 0;
-    if (left != left_down_) {
-        left_down_ = left;
-        logic.on_mouse_button(MouseButton::Left, left);
-    }
-    if (right != right_down_) {
-        right_down_ = right;
-        logic.on_mouse_button(MouseButton::Right, right);
-    }
-
-    // 5) 手柄：每帧喂一份快照。XInput 优先——Xbox 手柄在 XInput 和 DInput 里各出现一次，
+    // 4) 手柄：每帧喂一份快照。XInput 优先——Xbox 手柄在 XInput 和 DInput 里各出现一次，
     //    锁定槽位即视为 Xbox，忽略 DInput；DualSense/DS4 不是 XInput 设备（槽位永远扫不到），
     //    由 DInput 后端接手。没接手柄/被禁用时喂空状态，组合键视为全部松开。
     //    没锁定槽位时每帧只扫一个槽位（最坏 4 帧轮完），避免每帧 4 次 XInput 调用的卡顿。

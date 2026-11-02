@@ -80,8 +80,6 @@ private:
 
     void* thread_{nullptr};
     bool key_state_[256]{};
-    bool left_down_{false};
-    bool right_down_{false};
     POINT cursor_{};
     POINT last_cursor_{};
     bool have_last_cursor_{false};

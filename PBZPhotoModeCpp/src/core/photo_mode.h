@@ -79,6 +79,8 @@ private:
     bool sequences_paused_{false};
     // 冻结时把 Wwise 组件音量归零了（解冻/退出时要恢复，声音是可恢复静音）
     bool wwise_paused_{false};
+    // 冻结时整个 Wwise 音频引擎被 Suspend（解冻/退出时要 WakeupFromSuspend）
+    bool wwise_engine_suspended_{false};
     // 冻结时停用了相机修饰器/结束 shake（解冻/退出时按原状态还原）
     bool shakes_frozen_{false};
     // 冻结时风源参数归零了（解冻/退出时要还原原值）

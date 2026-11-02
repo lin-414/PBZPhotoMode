@@ -62,6 +62,7 @@ public:
     SequenceFreezeReport pause_sequences(bool paused) override;
     int wwise_component_count() override;
     int pause_wwise_voices(bool pause) override;
+    bool suspend_wwise_engine(bool suspend) override;
     void pov_watch_tick(bool camera_idle) override;
 
     CameraShakeFreezeReport freeze_camera_shakes(bool frozen) override;
@@ -133,6 +134,18 @@ private:
 
     // Wwise 组件可用函数只探测一次，避免每次冻结都重复打日志
     bool wwise_probe_done_{false};
+    // Wwise 整引擎 Suspend/Wakeup 的函数指针（优先主程序静态导出，回退 AkSoundEngineDLL.dll）
+    using AkSuspendFn = int (*)(bool, bool);
+    using AkWakeupFn = int (*)(unsigned int);
+    using AkIsInitializedFn = bool (*)();
+    bool wwise_engine_resolved_{false};
+    bool wwise_engine_suspended_{false};
+    AkSuspendFn ak_suspend_{nullptr};
+    AkWakeupFn ak_wakeup_{nullptr};
+    AkIsInitializedFn ak_is_initialized_{nullptr};
+    bool resolve_wwise_engine();
+    std::string wwise_engine_module_{};
+    bool wwise_engine_failure_logged_{false};
     void probe_wwise_components(const std::vector<RC::Unreal::UObject*>& components);
     // 对话语音 PlayingID 截获：钩住 PBZSoundFXSubsystem 的 Post 系列函数，
     // 冻结/解冻用游戏自有 PBZPausePlayingID / PBZResumePlayingID 真暂停（原位置续播）

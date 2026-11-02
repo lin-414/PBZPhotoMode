@@ -116,6 +116,10 @@ public:
     // 没有截获到 ID 时回落组件音量归零/恢复。返回执行的调用量。
     virtual int pause_wwise_voices(bool pause) = 0;
 
+    // Wwise 整引擎挂起/唤醒（AK::SoundEngine::Suspend(false,false) /
+    // WakeupFromSuspend(0)）。成功返回 true；不可用或失败由上层回落逐语音暂停。
+    virtual bool suspend_wwise_engine(bool suspend) = 0;
+
     // ---- 冻结期残余微动治理：世界暂停拦不住的“每帧变化源”逐个掐掉 ----
 
     // 相机管理层：shake/修饰器用真实时间驱动，暂停期间照常推视角——冻结画面边缘

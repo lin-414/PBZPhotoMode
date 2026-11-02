@@ -10,8 +10,6 @@
 
 namespace pbzpm {
 
-enum class MouseButton { Left, Right };
-
 // 配置里的键名解析结果。任一键解析失败会退回默认键并记 warning。
 struct KeyMap {
     int toggle{0x71};    // F2
@@ -24,6 +22,8 @@ struct KeyMap {
     int pitch_down{0x28};  // 俯视（低头）：方向键下
     int yaw_left{0x25};    // 左转视角：方向键左（1.0.46 起从左右平移改来）
     int yaw_right{0x27};   // 右转视角：方向键右
+    int vertical_up{kMouseLeft};    // 升降上：默认鼠标左键（可改键盘键/其它鼠标键）
+    int vertical_down{kMouseRight}; // 升降下：默认鼠标右键
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
     std::vector<PadButton> pad_toggle{PadButton::LS, PadButton::RS};  // 默认：左右摇杆同时按下
     std::vector<PadButton> pad_freeze{PadButton::X};
@@ -47,12 +47,12 @@ struct Intent {
     double wheel{};     // 滚轮凹槽累积
     double move_forward{};  // W/S  -> +1/-1
     double move_right{};    // D/A  -> +1/-1
-    double move_up{};       // 左右键（translate 模式）+ 手柄 RT/LT
+    double move_up{};       // 升降键（translate 模式）+ 手柄 RT/LT
     double roll{};          // Q/E 滚转：E=+1 顺时针 / Q=-1 逆时针
     double pitch_axis{};    // 俯仰：+1 仰视 / -1 俯视（方向键或十字键上/下按住；tick 里乘 pitch_speed × dt）
     double yaw_axis{};      // 偏航：+1 右转 / -1 左转（方向键或十字键左/右按住；tick 里乘 yaw_speed × dt）
-    bool pitch_up_click{};  // look 模式：左键
-    bool pitch_down_click{};// look 模式：右键
+    bool pitch_up_click{};  // look 模式：升降上键
+    bool pitch_down_click{};// look 模式：升降下键
     bool boost{};           // Shift
     bool slow{};            // Ctrl
     bool toggle_mode{};
@@ -69,7 +69,6 @@ class InputLogic {
 public:
     void on_key(int vk, bool down);
     void on_mouse_move(double dx, double dy);
-    void on_mouse_button(MouseButton button, bool down);
     void on_wheel(double notches);
     // 每帧一次：喂入手柄快照（没接手柄/被禁用/切后台时喂空状态，所有组合视为松开）
     void on_gamepad(const PadState& state);
@@ -107,8 +106,6 @@ private:
     double dx_{};
     double dy_{};
     double wheel_{};
-    bool lmb_{};
-    bool rmb_{};
     PadState pad_{};
     PadState pad_prev_{};
     FovRepeat fov_up_repeat_{};

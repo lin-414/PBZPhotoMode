@@ -1,11 +1,11 @@
-# 进度存档（2026-11-01 更新）
+# 进度存档（2026-11-02 更新）
 
 接着做的入口：读这份文件 → 看「下一步」→ 直接干。
 
 ## 一句话状态
 
-**C++ 版 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现**——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
-核心层 **754 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
+**C++ 版 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译**——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
+核心层 **2294 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -24,6 +24,15 @@
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
 | 文档 | `docs/README.md`、`docs/BUILD.md`（含 6 条编译踩坑表）、`docs/P1_CHECKLIST.md` |
+
+## v1.0.63 改了什么（2026-11-02 升降键可在 config.ini 配置）
+
+用户反馈「右键/左键是升降键，为什么不能在 config.ini 里改」。根因：升降键此前硬编码在 `win_input.cpp`（只轮询 `VK_LBUTTON`/`VK_RBUTTON`，`InputLogic` 只认 `MouseButton::Left/Right`），而 `[keys]` 只覆盖键盘键位，所以 config.ini 里没有可写的键名。
+
+**实现**：新增 `[keys]` 配置项 `key_vertical_up` / `key_vertical_down`（默认 `MOUSE_LEFT` / `MOUSE_RIGHT`）。键名表新增鼠标键：`MOUSE_LEFT`、`MOUSE_RIGHT`、`MOUSE_MIDDLE`、`MOUSE_X1`、`MOUSE_X2`（别名 `LMB`/`RMB`/`MMB`/`MOUSE_BACK`/`MOUSE_FORWARD`）。输入层把 5 个鼠标键并入 `kPolledKeys` 的 `GetAsyncKeyState` 轮询，`InputLogic` 与键盘键同一套 `held` 语义；translate/look 两种模式都生效。PBZFM 菜单「快捷键（键盘）」页同步显示这两项，改键捕获也支持鼠标键；四语言词典补 `#key_vertical_up/down`。
+
+- 核心层测试 2084 → **2216 项全绿**（新增鼠标键名、默认值、自定义交换、键盘替代、PBZFM 字段往返断言）；DLL 编译通过，产物 `dist/PBZPhotoModeCpp_1.0.63-cpp.zip`（499,085 B）。
+- **待实机验证**：config.ini 写 `key_vertical_up = MOUSE_RIGHT` / `key_vertical_down = MOUSE_LEFT` 交换升降方向；写 `MOUSE_MIDDLE`/`MOUSE_X1`/`MOUSE_X2` 用其它鼠标键；写 `PAGE_UP`/`PAGE_DOWN` 用键盘升降。
 
 ## v1.0.62 修了什么（2026-11-01 分类树韩语节点全显问号：框架默认字体合并 Malgun）
 
@@ -1858,3 +1867,34 @@ OFL 许可跟着资产走。
 1. 对 0.5.0 框架：侧栏「PBZ Photo Mode」应显示展开箭头，展开后见「设置 · Settings」「状态 · Status」两个子节点；日志报框架 v0.5.0。
 2. 对 0.4.0/0.3.x 框架：回退为根节点 + 页签，与 1.0.54 一致。
 3. 框架仓库工作区尚有未提交的 src/layout.h、src/menu.cpp 改动（树渲染迭代中），若其后行为再变需复核。
+
+### 1.0.64：借用 PBZPause 的 Wwise Suspend + 时间偏移补偿（2026-11-02）
+
+背景：PBZPause 的逆向分析显示，它的“通用暂停”来自三层组合——IAT Hook 四个时间 API、进程级线程冻结、Wwise AK::SoundEngine::Suspend。摄影模式不能挂线程（相机要动），但可以借鉴其中两层：
+
+- **Wwise 整引擎挂起**：pause_wwise_voices 之前先尝试 AkSoundEngineDLL.dll 导出的 Suspend(false,false) / WakeupFromSuspend(0)。成功时一次覆盖环境/音乐/语音/UI 全部声音，解冻从冻结位置继续；IsInitialized() 未就绪、调用失败或模块未加载时自动回落原逐 PlayingID + 组件音量路径。配置 wwise_engine_suspend 默认 true，stop_wwise_on_freeze 仍是总开关。
+- **时间偏移补偿**：新增 time_offset_compensation（默认 true）。冻结前解析 kernel32 QueryPerformanceCounter / GetTickCount / GetTickCount64 与 winmm timeGetTime 原始指针；遍历主程序 + MRTCEngine.dll、AkSoundEngineDLL.dll、mfplat/mf/mfcore/RTWorkQ/mfreadwrite/evr/audioclient.dll 的导入表，VirtualProtect 后把 IAT 槽换成钩子。冻结期四 API 返回暂停瞬间值；解冻时把真实经过时长累加进全局 offset，之后返回值统一减去 offset——动画/物理/粒子/计时器不会把整段冻结当成一次巨大 delta。钩子只用 std::atomic、不分配/不加锁；刻意不 patch 本模组自身、vcruntime/msvcp/ucrtbase，摄影相机自己的 std::chrono::steady_clock dt 不会被冻住。Ue4ssPort 析构时 time_offset_shutdown() 恢复所有 IAT 槽，避免 DLL 卸载后悬空。
+- **状态机顺序**：time_offset_begin() 在 set_paused(true)/set_time_dilation() 之前；恢复时先 set_paused(false)/还原时间倍率，再 time_offset_end(commit=true) 结算；冻结/恢复失败则 time_offset_end(false) 取消且不累计。PhotoMode 用 time_offset_active_ / wwise_engine_suspended_ 记账，热重载改配置不影响当前冻结的恢复路径。
+- **配置/菜单/词典**：config.ini.example、default_config_text()、PBZFM 字段表、四语言词典同步新增 wwise_engine_suspend / time_offset_compensation 两项。
+- 核心层测试 **2372 项全绿**（新增 Wwise 整引擎优先/回落、时间偏移时序/失败降级/关闭用例）；DLL 重编链接通过（仅 C4191 FARPROC 转换警告，既有风格）。
+
+### 1.0.65：修复 1.0.64 冻结崩溃（2026-11-02）
+
+- **实机 crash**：crash_2026_11_02_13_17_56.3389705.dmp，进入摄影模式自动冻结瞬间 0xC0000005，异常地址 ucrtbase.dll+0xED8B0（strcmp 内部 mov rax,[rcx]）；栈顶返回地址落在 PBZPhotoModeCpp.dll!patch_module_time_imports。
+- **根因**：PatchModuleImports 解析函数名时把 IMAGE_THUNK_DATA.AddressOfData（RVA）直接强转成 const char* 传给 strcmp，漏加模块基址。PBZ.exe 第一条导入描述符的 AddressOfData=0xD9CEABE，strcmp 读取 0xD9CEAC0 低地址，触发访问违例。PBZPause 原实现是 module_base + AddressOfData + sizeof(WORD)，本次是移植时漏掉基址。
+- **修复**：按原实现补 module_base + AddressOfData + sizeof(WORD)；同时给 FirstThunk / OriginalFirstThunk / 名称 RVA 增加 SizeOfImage 边界校验，异常导入表直接跳过。核心层测试 2372 项全绿；DLL 重编链接通过。
+- 验证：重新生成 PBZPhotoModeCpp_v1.0.65-cpp.zip；实机应确认进入时不再崩溃且日志出现「时间偏移补偿已启用」。若仍异常，可先设 time_offset_compensation=false 定位是否为时间 Hook 路径。
+
+### 1.0.66：移除时间偏移补偿，修复移动视角卡顿；Wwise Suspend 真正生效（2026-11-02）
+
+- **实机反馈**：1.0.65 对本项目无明显改善，反而在冻结状态下移动视角时频繁卡顿。
+- **日志/代码核对**：UE4SS.log 显示 1.0.65 确实走到「时间偏移补偿已启用」，但只有 1.0.64/1.0.65 引入的时间偏移 IAT Hook 是新增每帧路径；Wwise 整引擎 Suspend 没有任何成功日志，说明一直静默回落逐语音。
+- **卡顿根因**：时间偏移 Hook 遍历主程序和 MRTCEngine.dll 的 IAT，把 QueryPerformanceCounter 换成「冻结期返回常量」的钩子。PBZPause 的前提是进程内所有线程（包括渲染线程）都被 SuspendThread 挂起；摄影模式必须保留渲染线程和相机 Tick，QPC 被冻结后渲染帧计时/引擎 delta 恒为 0，运动画面出现规律性顿挫。该机制不能直接移植到「引擎暂停 + 相机继续动」的场景。
+- **修复**：删除整段 IAT Hook（g_time_* 原子变量、hook_time_*、patch_module_time_imports、install/begin/end/shutdown）、EnginePort 的 time_offset_begin/end、PhotoMode 的 time_offset_active_ 状态与调用、PBZFM 字段表、四语言标签和 config.ini.example 配置项。旧 config.ini 保留 time_offset_compensation=true 时仅 warning 并忽略，不影响启动；SetGamePaused/时间缩放冻结路径不变。
+- **Wwise 修复**：当前 PBZ 把 Wwise 静态链接进 PBZ.exe（PBZ.exe 导出表可直接查到 Suspend/WakeupFromSuspend/IsInitialized 三个 C++ 符号），1.0.64/1.0.65 却只 GetModuleHandle(AkSoundEngineDLL.dll)，模块不存在导致 resolve 静默失败。1.0.66 优先从主程序导出表解析，失败再回落 AkSoundEngineDLL.dll，最后回落逐 PlayingID/组件音量；解析成功/失败/IsInitialized 状态均写日志，不再静默。另修正 AKRESULT 成功值：AK_Success=1，旧代码用 result!=0 判断会把成功误判为失败。
+- **验证**：核心层测试 2294 项全绿（移除时间偏移用例，保留 Wwise 整引擎优先/回落/关闭用例）；DLL 重编链接通过；**实机已验证（2026-11-02 14:01-14:03）：移动视角无卡顿，日志成对出现「Wwise 整引擎接口已解析：PBZ.exe（静态链接）」「Wwise 音频引擎已挂起/已唤醒」，全日志无「时间偏移」字样**。
+### 1.0.67：清理两处旧日志提示（2026-11-02）
+
+- **PostProcess 快照失败**：Ue4ssPort::save_postfx() 原本固定返回 false（本版不改后期处理），但 core 会把 false 当成失败并警告。改为返回 true 并标记 postfx_saved_，退出时 restore_postfx() 仍为空操作；不再误报。
+- **相机管理器无 CameraModifiers 数组**：UE5 APlayerCameraManager 的运行时修饰器列表字段叫 ModifierList，旧代码只查 CameraModifiers，实机 PBZPlayerCameraManager 上找不到后跳过了修饰器治理。新增 camera_modifiers_property()，按 ModifierList → CameraModifiers → CameraModifierList 兼容查找；freeze_camera_shakes() 与 freeze_diag_sample() 共用。恢复阶段仅当确实停用过修饰器才警告，避免无意义刷屏。
+- 核心层测试 2294 项全绿；DLL 重编链接通过。待实机确认日志不再出现这两条提示，且冻结诊断里的“修饰器=N”能读到非零数量（场景有相机修饰器时）。

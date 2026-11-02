@@ -47,6 +47,9 @@ double SteadySeconds() {
 // （键喂进 ImGui 后再查回来），不支持的键返回 ImGuiKey_None。
 constexpr ImGuiKey VkToImGuiKey(int vk) {
     switch (vk) {
+        case 0x01: return ImGuiKey_MouseLeft; case 0x02: return ImGuiKey_MouseRight;
+        case 0x04: return ImGuiKey_MouseMiddle; case 0x05: return ImGuiKey_MouseX1;
+        case 0x06: return ImGuiKey_MouseX2;
         case '0': return ImGuiKey_0; case '1': return ImGuiKey_1; case '2': return ImGuiKey_2;
         case '3': return ImGuiKey_3; case '4': return ImGuiKey_4; case '5': return ImGuiKey_5;
         case '6': return ImGuiKey_6; case '7': return ImGuiKey_7; case '8': return ImGuiKey_8;
@@ -92,6 +95,7 @@ constexpr ImGuiKey VkToImGuiKey(int vk) {
 
 // 改键捕获的候选 VK（修饰键不收——Shift/Ctrl 是保留的行为键；捕获时 Esc 直接关菜单）
 const int kCandidateVks[] = {
+    0x01, 0x02, 0x04, 0x05, 0x06,  // 鼠标左/右/中键、侧键 X1/X2（捕获时也可直接按鼠标键）
     0x08, 0x09, 0x0D, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E,
     0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39,
     0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D,

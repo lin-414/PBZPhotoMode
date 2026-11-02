@@ -596,7 +596,7 @@ auto kismet_material_library() -> UObject* {
 }
 
 // 数组属性判定：IsA<FArrayProperty> 走 UE4SS 的属性类注册表（FFieldClassRegistrar），
-// 注册失败时 IsA 对该类型永远 false 且无任何报错——1.0.46 实机 CameraModifiers 与
+// 注册失败时 IsA 对该类型永远 false 且无任何报错——1.0.46 实机 ModifierList/CameraModifiers 与
 // MPC 的 ScalarParameters/VectorParameters 全部因此被误判为“不是数组”。
 // 字段类名读的是引擎数据（FFieldClassVariant::GetFName），作权威判定；
 // 类名 "ArrayProperty" 即 FArrayProperty，此时 static_cast 是安全的。
@@ -605,6 +605,17 @@ auto as_array_property(FProperty* prop) -> FArrayProperty* {
     if (prop->IsA<FArrayProperty>()) return static_cast<FArrayProperty*>(prop);
     const std::string field_class = narrow(prop->GetClass().GetFName().ToString());
     if (field_class == "ArrayProperty") return static_cast<FArrayProperty*>(prop);
+    return nullptr;
+}
+
+// APlayerCameraManager 的运行时修饰器列表在 UE5 叫 ModifierList；旧版/部分分支叫
+// CameraModifiers。两个名字都试，避免再因为猜错属性名而跳过整个修饰器治理。
+auto camera_modifiers_property(UObject* manager) -> FProperty* {
+    if (!is_ok(manager)) return nullptr;
+    for (const char* name : {"ModifierList", "CameraModifiers", "CameraModifierList"}) {
+        FProperty* prop = find_property(manager, name);
+        if (as_array_property(prop) != nullptr) return prop;
+    }
     return nullptr;
 }
 
@@ -2859,7 +2870,7 @@ CameraShakeFreezeReport Ue4ssPort::freeze_camera_shakes(bool frozen) {
         shakes_stopped = invoke_set_bool(manager, "StopAllCameraShakes", true);
     }
 
-    FProperty* modifiers_prop = find_property(manager, "CameraModifiers");
+    FProperty* modifiers_prop = camera_modifiers_property(manager);
     auto* array_prop = as_array_property(modifiers_prop);
     if (array_prop != nullptr) {
         const void* container = manager;
@@ -2903,11 +2914,12 @@ CameraShakeFreezeReport Ue4ssPort::freeze_camera_shakes(bool frozen) {
         }
         std::string manager_class = "-";
         if (is_ok(manager)) manager_class = narrow(manager->GetClassPrivate()->GetName());
-        log(LogLevel::Info, std::string("相机管理器无 CameraModifiers 数组") + detail + "，管理器=" +
+        log(LogLevel::Info, std::string("相机管理器无 ModifierList/CameraModifiers 数组") + detail + "，管理器=" +
                                 manager_class + "；shake 停用=" + (shakes_stopped ? "成功" : "不可用"));
     } else {
+        const bool had_states = !camera_modifier_states_.empty();
         camera_modifier_states_.clear();
-        log(LogLevel::Warn, "相机管理器无 CameraModifiers 数组，修饰器还原跳过");
+        if (had_states) log(LogLevel::Warn, "相机管理器无 ModifierList/CameraModifiers 数组，修饰器还原跳过");
     }
     return report;
 }
@@ -3281,7 +3293,7 @@ std::string Ue4ssPort::freeze_diag_sample() {
             int modifier_count = 0;
             int disabled_count = 0;
             int shake_count = -1;
-            FProperty* modifiers_prop = find_property(manager, "CameraModifiers");
+            FProperty* modifiers_prop = camera_modifiers_property(manager);
             auto* array_prop = as_array_property(modifiers_prop);
             if (array_prop != nullptr) {
                 const void* container = manager;
@@ -3390,7 +3402,84 @@ int Ue4ssPort::pause_wwise_voices(bool pause) {
     return total;
 }
 
-// 钩住 PBZSoundFXSubsystem 的 Post 系列函数：Wwise 每次播放都会从这里返回 PlayingID，
+// Wwise 整引擎挂起：AK::SoundEngine::Suspend(false,false) / WakeupFromSuspend(0)。
+constexpr int kAkResultSuccess = 1;  // Wwise AKRESULT：AK_Success = 1（不是 0）
+// 旧版/部分安装从 AkSoundEngineDLL.dll 取导出；当前 PBZ 把 Wwise 静态链接进主程序，
+// 同一组 C++ 符号从 PBZ.exe 导出——两条路径都试，避免像 1.0.65 那样静默落回兜底。
+// 成功时一次覆盖环境/音乐/语音/UI 全部声音；失败返回 false，由 core 回落逐 PlayingID/组件路径。
+bool Ue4ssPort::resolve_wwise_engine() {
+    if (wwise_engine_resolved_) return ak_suspend_ != nullptr;
+
+    auto try_module = [this](HMODULE module, const char* label) -> bool {
+        if (module == nullptr) return false;
+        auto suspend = reinterpret_cast<AkSuspendFn>(GetProcAddress(
+            module, "?Suspend@SoundEngine@AK@@YA?AW4AKRESULT@@_N0@Z"));
+        auto wakeup = reinterpret_cast<AkWakeupFn>(GetProcAddress(
+            module, "?WakeupFromSuspend@SoundEngine@AK@@YA?AW4AKRESULT@@I@Z"));
+        auto initialized = reinterpret_cast<AkIsInitializedFn>(GetProcAddress(
+            module, "?IsInitialized@SoundEngine@AK@@YA_NXZ"));
+        if (suspend == nullptr || wakeup == nullptr) return false;
+        ak_suspend_ = suspend;
+        ak_wakeup_ = wakeup;
+        ak_is_initialized_ = initialized;
+        wwise_engine_module_ = label;
+        return true;
+    };
+
+    // 1) 当前 PBZ：Wwise 静态链接进 PBZ.exe，符号由主程序导出（优先，避免误选未初始化的独立 DLL）
+    if (try_module(GetModuleHandleW(nullptr), "PBZ.exe（静态链接）")) {
+        wwise_engine_resolved_ = true;
+        log(LogLevel::Info, "Wwise 整引擎接口已解析：" + wwise_engine_module_);
+        return true;
+    }
+    // 2) Wwise 作为独立 DLL 加载（PBZPause 原方案；旧版游戏或某些安装形态）
+    if (try_module(GetModuleHandleW(L"AkSoundEngineDLL.dll"), "AkSoundEngineDLL.dll")) {
+        wwise_engine_resolved_ = true;
+        log(LogLevel::Info, "Wwise 整引擎接口已解析：" + wwise_engine_module_);
+        return true;
+    }
+
+    if (!wwise_engine_failure_logged_) {
+        wwise_engine_failure_logged_ = true;
+        log(LogLevel::Warn,
+            "Wwise 整引擎接口未找到（AkSoundEngineDLL.dll 未加载，主程序也无导出），回落逐语音/组件暂停");
+    }
+    return false;  // 模块还没加载/初始化：下次冻结再试
+}
+
+bool Ue4ssPort::suspend_wwise_engine(bool suspend) {
+    if (suspend) {
+        if (!resolve_wwise_engine()) return false;
+        if (ak_is_initialized_ != nullptr && !ak_is_initialized_()) {
+            if (!wwise_engine_failure_logged_) {
+                wwise_engine_failure_logged_ = true;
+                log(LogLevel::Warn, "Wwise 音频引擎尚未初始化，先用逐语音/组件暂停");
+            }
+            return false;
+        }
+        const int result = ak_suspend_ != nullptr ? ak_suspend_(false, false) : -1;
+        if (result != kAkResultSuccess) {
+            log(LogLevel::Warn, "Wwise 整引擎挂起失败（AKRESULT=" + std::to_string(result) +
+                                    "），回落逐语音/组件暂停");
+            return false;
+        }
+        wwise_engine_suspended_ = true;
+        log(LogLevel::Info, "Wwise 音频引擎已挂起（AK::SoundEngine::Suspend(false,false)，接口=" +
+                                wwise_engine_module_ + "）");
+        return true;
+    }
+
+    if (!wwise_engine_suspended_) return false;
+    const int result = ak_wakeup_ != nullptr ? ak_wakeup_(0) : -1;
+    wwise_engine_suspended_ = false;
+    const bool woke = result == kAkResultSuccess;
+    log(woke ? LogLevel::Info : LogLevel::Warn,
+        woke ? "Wwise 音频引擎已唤醒（WakeupFromSuspend(0)）"
+             : "Wwise 音频引擎唤醒失败（AKRESULT=" + std::to_string(result) + "）");
+    return woke;
+}
+
+// 钩住 PBZSoundFXSubsystem 的 Post 系列函数...
 // 记下来冻结时才能真暂停。游戏加载后尽早挂（mod_app 的引擎 tick 里每 2 秒重试）。
 bool Ue4ssPort::install_voice_hooks() {
     if (voice_hooks_installed_) return true;
@@ -3599,9 +3688,9 @@ void Ue4ssPort::dump_audio_objects_once() {
 }
 
 bool Ue4ssPort::save_postfx() {
-    // 后期处理设置在这版里不改，因此无需保存/还原
-    postfx_saved_ = false;
-    return false;
+    // 本版不修改后期处理设置，没有需要还原的内容；标记为“已处理”避免退出时误报失败。
+    postfx_saved_ = true;
+    return true;
 }
 
 void Ue4ssPort::restore_postfx() { postfx_saved_ = false; }

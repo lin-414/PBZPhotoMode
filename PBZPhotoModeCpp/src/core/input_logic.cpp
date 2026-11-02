@@ -42,6 +42,8 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.pitch_down = resolve_key(cfg.key_pitch_down, map.pitch_down, "key_pitch_down", warnings, map.all_resolved);
     map.yaw_left = resolve_key(cfg.key_yaw_left, map.yaw_left, "key_yaw_left", warnings, map.all_resolved);
     map.yaw_right = resolve_key(cfg.key_yaw_right, map.yaw_right, "key_yaw_right", warnings, map.all_resolved);
+    map.vertical_up = resolve_key(cfg.key_vertical_up, map.vertical_up, "key_vertical_up", warnings, map.all_resolved);
+    map.vertical_down = resolve_key(cfg.key_vertical_down, map.vertical_down, "key_vertical_down", warnings, map.all_resolved);
 
     const auto resolve_combo = [&](const std::string& text, const std::vector<PadButton>& fallback, const char* label) {
         const PadCombo parsed = parse_pad_combo(text, fallback, label, warnings);
@@ -73,14 +75,6 @@ void InputLogic::on_key(int vk, bool down) {
 void InputLogic::on_mouse_move(double dx, double dy) {
     dx_ += dx;
     dy_ += dy;
-}
-
-void InputLogic::on_mouse_button(MouseButton button, bool down) {
-    if (button == MouseButton::Left) {
-        lmb_ = down;
-    } else {
-        rmb_ = down;
-    }
 }
 
 void InputLogic::on_wheel(double notches) {
@@ -149,18 +143,20 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
 
     // 方向键左/右转视角（1.0.46 起从左右平移改为偏航，与上/下俯仰组成完整视角旋转簇）；WASD 平移不受影响
     out.yaw_axis = (key_held(keys.yaw_right) ? 1.0 : 0.0) - (key_held(keys.yaw_left) ? 1.0 : 0.0);
-    // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给鼠标左右键与手柄 RT/LT
+    // Q/E 从升降改为滚转（v1.9.0）：上下平移只留给升降键（默认鼠标左右键）与手柄 RT/LT
     out.roll = (key_held(kE) ? 1.0 : 0.0) - (key_held(kQ) ? 1.0 : 0.0);
 
     // 方向键俯仰：按住持续转（+1 仰视 / -1 俯视），不受 free_look_requires_alt 限制
     out.pitch_axis = (key_held(keys.pitch_up) ? 1.0 : 0.0) - (key_held(keys.pitch_down) ? 1.0 : 0.0);
 
-    // 左右键：translate 模式下是上下平移，look 模式下是俯仰
+    // 升降键（默认鼠标左/右键，可在 [keys] 改）：translate 模式下是上下平移，look 模式下是俯仰
+    const bool vertical_up = key_held(keys.vertical_up);
+    const bool vertical_down = key_held(keys.vertical_down);
     if (cfg.mouse_vertical_mode == MouseVerticalMode::Translate) {
-        out.move_up += (lmb_ ? 1.0 : 0.0) - (rmb_ ? 1.0 : 0.0);
+        out.move_up += (vertical_up ? 1.0 : 0.0) - (vertical_down ? 1.0 : 0.0);
     } else {
-        out.pitch_up_click = lmb_;
-        out.pitch_down_click = rmb_;
+        out.pitch_up_click = vertical_up;
+        out.pitch_down_click = vertical_down;
     }
 
     // 自由转视角必须按住 Alt（可关），否则鼠标位移一律丢弃
@@ -237,8 +233,6 @@ void InputLogic::reset() {
     dx_ = 0.0;
     dy_ = 0.0;
     wheel_ = 0.0;
-    lmb_ = false;
-    rmb_ = false;
     // 注意：pad_/pad_prev_ 不能清。切换摄影模式时组合键还按着（如 LS+RS），
     // 清掉上一帧状态会让“仍按住”被当成新的按下沿，进出模式死循环。
     // 键盘没有这个问题：win_input 的 key_state_ 在 reset 之外自己记住边沿。

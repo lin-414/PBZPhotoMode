@@ -28,6 +28,8 @@ Copy-Item (Join-Path $root "config.ini.example") (Join-Path $stage "ue4ss/Mods/P
 
 Set-Content -Path (Join-Path $stage "ue4ss/Mods/PBZPhotoModeCpp/enabled.txt") -Value "PBZPhotoModeCpp : 1" -Encoding UTF8
 Copy-Item (Join-Path $root "docs/README.md") (Join-Path $stage "安装说明.md")
+# 发行包必须带 languages/*.json：DLL 内置四语兜底，但外部词典/热重载依赖这个目录
+Copy-Item -Recurse (Join-Path $root "languages") (Join-Path $stage "ue4ss/Mods/PBZPhotoModeCpp/languages")
 
 $zip = Join-Path $root "dist/$name.zip"
 if (Test-Path $zip) { Remove-Item $zip -Force }

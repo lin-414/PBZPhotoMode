@@ -202,6 +202,18 @@ public:
         return wwise_components;
     }
 
+    // Wwise 整引擎 Suspend 模拟：默认不可用，让原有测试继续覆盖逐语音兜底路径
+    bool wwise_engine_suspend_ok{false};
+    bool wwise_engine_suspended{false};
+    int wwise_engine_suspend_calls{0};
+    bool suspend_wwise_engine(bool suspend) override {
+        calls.push_back(suspend ? "wwise_engine_suspend" : "wwise_engine_wake");
+        ++wwise_engine_suspend_calls;
+        if (!wwise_engine_suspend_ok) return false;
+        wwise_engine_suspended = suspend;
+        return true;
+    }
+
     // ---- 冻结期残余微动治理模拟 ----
     int modifiers_found{0};      // CameraModifiers 数量
     int modifiers_disabled{0};   // 冻结时本次停用的数量

@@ -22,6 +22,10 @@ key_pitch_down = DOWN
 ; 左右转视角（按住持续转，速度 = yaw_speed）：方向键左 = 左转 / 右 = 右转
 key_yaw_left = LEFT
 key_yaw_right = RIGHT
+; 升降（translate=相机上下平移，look=俯仰）：默认鼠标左键上/右键下
+; 可写键盘键名（PAGE_UP/PAGE_DOWN 等）或鼠标键 MOUSE_LEFT/MOUSE_RIGHT/MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2
+key_vertical_up = MOUSE_LEFT
+key_vertical_down = MOUSE_RIGHT
 
 [control]
 ; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速
@@ -38,7 +42,7 @@ invert_y = false
 free_look_requires_alt = true
 ; 进入摄影模式时屏蔽角色移动/视角输入（退出时还原）
 block_game_input = true
-; 左键上移/右键下移：translate=相机上下平移，look=俯仰
+; 升降键行为（具体键位见 [keys] 的 key_vertical_up/down）：translate=相机上下平移，look=俯仰
 mouse_vertical_mode = translate
 vertical_speed = 200
 ; Q/E 滚转相机速度（度/秒）：E 顺时针，Q 逆时针；Shift 加速 / Ctrl 减速同样生效
@@ -114,9 +118,12 @@ freeze_dilation = 0.0001
 ; 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻/退出时恢复。
 ; 剧情系统常绕过世界暂停自顾自播（画面像冻住但动作声音还在走），默认开启
 freeze_sequences = true
-; 冻结时把所有 Wwise 音频组件的音量归零（对话/环境/音乐一并静音，可恢复）。
-; 声音在冻结期间继续无声播放，解冻恢复音量后当前句从原处继续
+; 冻结时处理 Wwise 音频（优先整引擎 Suspend，失败回落逐 PlayingID/组件音量）。
+; 推荐保持 true：摄影模式冻结时环境/音乐/语音一起停，解冻从原位置继续
 stop_wwise_on_freeze = true
+; 冻结时调用 AK::SoundEngine::Suspend(false,false) / WakeupFromSuspend(0)（PBZPause 方案）；
+; false=不挂起整个音频引擎，只走逐语音/组件兜底
+wwise_engine_suspend = true
 ; 冻结时停用相机修饰器并立即结束相机 shake。它们用真实时间驱动，世界暂停拦不住，
 ; 是冻结画面边缘抖动/脸部阴影爬动的主变化源；解冻时按冻结前状态还原
 stop_camera_shakes_on_freeze = true

@@ -8,7 +8,7 @@ namespace pbzpm {
 enum class LogLevel { Error, Warn, Info, Debug };
 
 // 鼠标竖向行为：
-//   Translate = 相机上/下平移（默认，"左键上移/右键下移"的字面语义）
+//   Translate = 相机上/下平移（默认，"上键上移/下键下移"的字面语义，默认升降键为鼠标左/右键）
 //   Look      = 夹角俯仰（部分人习惯的"抬头/低头"）
 enum class MouseVerticalMode { Translate, Look };
 
@@ -26,6 +26,10 @@ struct Config {
     std::string key_pitch_down{"DOWN"};  // 俯视（低头）：方向键下
     std::string key_yaw_left{"LEFT"};    // 左转视角：方向键左（1.0.46 起从左右平移改来）
     std::string key_yaw_right{"RIGHT"};  // 右转视角：方向键右
+    // 升降（translate 模式=相机上下平移，look 模式=俯仰）：默认鼠标左/右键；
+    // 也可写键盘键名（如 PAGE_UP/PAGE_DOWN）或其它鼠标键（MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2）
+    std::string key_vertical_up{"MOUSE_LEFT"};
+    std::string key_vertical_down{"MOUSE_RIGHT"};
 
     // ---- [control] ----
     double move_speed{400.0};        // 单位/秒
@@ -38,7 +42,7 @@ struct Config {
     bool free_look_requires_alt{true};
     bool block_game_input{true};
     MouseVerticalMode mouse_vertical_mode{MouseVerticalMode::Translate};
-    double vertical_speed{200.0};    // 左右键上下平移速度
+    double vertical_speed{200.0};    // 升降键上下平移速度
     double roll_speed{60.0};         // Q/E 滚转速度（度/秒）：E 顺时针，Q 逆时针
     double pitch_speed{30.0};        // 方向键上/下与十字键上/下俯仰速度（度/秒）：正方向 = 仰视
     double yaw_speed{90.0};          // 方向键左/右与十字键左/右转向速度（度/秒）：右 = 右转（1.0.46 起替代 arrow_pan_mult）
@@ -77,7 +81,8 @@ struct Config {
     FreezeMode freeze_mode{FreezeMode::Pause};
     double freeze_dilation{0.0001};
     bool freeze_sequences{true};  // 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻恢复
-    bool stop_wwise_on_freeze{true};  // 冻结时 Wwise 组件音量归零（可恢复静音：声音继续无声播放，解冻恢复音量后当前句继续）
+    bool stop_wwise_on_freeze{true};  // 冻结时处理 Wwise 音频（优先整引擎 Suspend，失败回落逐语音/组件）
+    bool wwise_engine_suspend{true};  // 冻结时调用 AK::SoundEngine::Suspend/WakeupFromSuspend（整段音频真冻结）
     bool stop_camera_shakes_on_freeze{true};  // 冻结时停用相机修饰器并立即结束 shake（真实时间驱动的残余微动，冻结画面边缘抖动/脸部阴影爬动的主变化源），解冻按原状态还原
     bool freeze_wind{true};  // 冻结时把风源（WindDirectionalSource）风强/风速归零：材质顶点摆动（布料/植被）的幅度源，暂停拦不住；解冻还原
     bool freeze_mpc{true};   // 冻结时钉住材质参数集合（MPC）当前值：冻结期每帧写回快照，压制实时驱动参数继续推布料/植被摆动；解冻释放

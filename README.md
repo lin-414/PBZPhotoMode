@@ -9,9 +9,9 @@
 ## 功能
 
 - **自由相机**：`F2` 进入 / 退出
-- **视角控制**：按住 `Alt` + 移动鼠标；`WASD` 平移；方向键 左/右转视角（`yaw_speed`）、上/下俯仰（`pitch_speed`）；左键上移 / 右键下移；`Q` / `E` 滚转（E 顺时针 / Q 逆时针）；手柄十字键同方向键、`RB` / `LB` 滚转；`Z` 滚转归零（只回正滚转、构图不动，手柄 `LB+RB` 同按）
+- **视角控制**：按住 `Alt` + 移动鼠标；`WASD` 平移；方向键 左/右转视角（`yaw_speed`）、上/下俯仰（`pitch_speed`）；升降默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改）；`Q` / `E` 滚转（E 顺时针 / Q 逆时针）；手柄十字键同方向键、`RB` / `LB` 滚转；`Z` 滚转归零（只回正滚转、构图不动，手柄 `LB+RB` 同按）
 - **镜头参数**：滚轮调 FOV，小键盘 `+` / `-` 微调，`R` 一键重置到进入时的视角
-- **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；对话语音走 Wwise 时可选一次性静音（`stop_wwise_on_freeze`，默认关闭）
+- **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；Wwise 音频优先整引擎 `Suspend`（当前 PBZ 从主程序静态导出解析，失败回落逐语音，`wwise_engine_suspend` 默认开启）
 - **超宽屏支持**：进入摄影模式自动解除 16:9 画幅约束（游戏官方支持 21:9 / 32:9 超宽屏），两侧黑边消除，退出时还原
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
 - **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性
@@ -22,6 +22,27 @@
 - **游戏内设置菜单（可选）**：安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu) 后，游戏内按其呼出键（默认 `F8`）即可在菜单里改键位/开关/参数并**实时生效**（改动写回 `config.ini`）；不装则纯快捷键，零依赖
 
 ## 当前版本
+
+**1.0.67-cpp** —— 已编译：
+
+- **清理两处旧日志提示**：`PostProcess 快照失败` 不再误报（本版不修改后期处理，标记为已处理）；相机修饰器列表改为同时兼容 UE5 的 `ModifierList` 与旧名 `CameraModifiers`，冻结时能正常停用/恢复，不再打印“无数组”警告
+- 核心层测试 **2294 项全绿**
+
+**1.0.66-cpp** —— 已编译：
+
+- **修复移动视角频繁卡顿**：彻底移除 1.0.65 的时间偏移补偿 IAT Hook。它把 `PBZ.exe` / `MRTCEngine.dll` 的 QPC 一起冻结，而摄影模式不能像 PBZPause 那样挂起渲染线程，渲染帧计时停摆就会被感知为卡顿；旧配置项 `time_offset_compensation` 自动忽略并告警。
+- **Wwise 整引擎 Suspend 真正生效**：当前 PBZ 把 Wwise 静态链接进 `PBZ.exe`，1.0.65 只查 `AkSoundEngineDLL.dll` 导致静默回落；现在优先从主程序导出解析 `Suspend` / `WakeupFromSuspend` / `IsInitialized`，日志会写明接口来源，失败才回落逐语音。
+- 核心层测试 **2294 项全绿**。
+
+**1.0.65-cpp** —— 已编译：
+
+- **修复 1.0.64 冻结崩溃**：`PatchModuleImports` 计算导入函数名时漏加模块基址，`strcmp` 读到 `AddressOfData` 的 RVA 裸值（PBZ.exe 为 0xD9CEABE）导致 0xC0000005；已按 PBZPause 原实现改为 `module_base + AddressOfData + 2`，并补上 IAT/名称 RVA 的边界校验
+- **Wwise 整引擎 Suspend**：冻结时优先调用 `AK::SoundEngine::Suspend(false,false)`，解冻 `WakeupFromSuspend(0)`，一次覆盖环境/音乐/语音/UI 全部声音；失败自动回落原逐 PlayingID + 组件音量路径（新配置 `wwise_engine_suspend` 默认 true）
+- **时间偏移补偿（1.0.66 已移除）**：借鉴 PBZPause 的 IAT Hook 方案，冻结前 hook 主程序与游戏侧 DLL 的 `QueryPerformanceCounter` / `GetTickCount` / `GetTickCount64` / `timeGetTime`，解冻时把暂停时长累加进偏移——动画/物理/粒子/计时器不跳时间（新配置 `time_offset_compensation` 默认 true，Hook 失败自动降级；不碰本模组自身 CRT）
+
+**1.0.63-cpp** —— 已编译：
+
+- **升降键可在 config.ini 配置**：新增 `[keys] key_vertical_up` / `key_vertical_down`（默认 `MOUSE_LEFT` / `MOUSE_RIGHT`）。此前鼠标左右键硬编码在输入层，config.ini 只能改 `mouse_vertical_mode`（translate/look）和 `vertical_speed`，不能换键。现在可写 `MOUSE_MIDDLE` / `MOUSE_X1` / `MOUSE_X2` 等鼠标键，也可改成键盘键（如 `PAGE_UP` / `PAGE_DOWN`）；PBZFM 菜单同步支持捕获鼠标键
 
 **1.0.46-cpp** —— 已编译：
 
@@ -82,7 +103,7 @@
 
 不需要改 `mods.txt`（`enabled.txt` 即启用）。详细说明见 [PBZPhotoModeCpp/docs/README.md](PBZPhotoModeCpp/docs/README.md)。
 
-> **图形菜单已移除（v1.8.0）**：《影之刃零》Shipping 定制引擎对本模组是彻底黑盒——引擎内图形菜单路线（IoStore 资产 pak / puerts JS 层）全部实证判死（完整取证链见 [PROGRESS](PBZPhotoModeCpp/PROGRESS.md)）。模组为**纯快捷键操作**：F2 进入/退出、F 冻结、R 重置、滚轮调 FOV、WASD/鼠标左右键/Shift/Ctrl 移动、Q/E 滚转，全部在 config.ini 可改。
+> **图形菜单已移除（v1.8.0）**：《影之刃零》Shipping 定制引擎对本模组是彻底黑盒——引擎内图形菜单路线（IoStore 资产 pak / puerts JS 层）全部实证判死（完整取证链见 [PROGRESS](PBZPhotoModeCpp/PROGRESS.md)）。模组为**纯快捷键操作**：F2 进入/退出、F 冻结、R 重置、滚轮调 FOV、WASD/鼠标左右键/Shift/Ctrl 移动、Q/E 滚转，全部在 config.ini 可改（升降键 `key_vertical_up` / `key_vertical_down` 也支持改成鼠标中键、侧键或键盘键）。
 
 ## 从源码构建
 
@@ -110,7 +131,7 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 │  ├─ src/core/             # 纯逻辑层（配置/输入/状态机，含单元测试）
 │  ├─ src/engine/           # UE4SS 引擎适配层
 │  ├─ src/mod_app.cpp       # CppUserModBase 入口
-│  ├─ tests/                # 521 项核心层断言
+│  ├─ tests/                # 2294 项核心层断言
 │  ├─ tools/                # 构建 / 打包脚本
 │  └─ docs/                 # 构建、安装、核对清单
 ├─ docs/
@@ -121,6 +142,11 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ## 版本记录
 
+- **1.0.67**（2026-11-02）：清理旧日志提示——PostProcess 快照不再误报失败（本版不改后期处理，标记为已处理）；相机修饰器列表兼容 UE5 的 `ModifierList`（保留 `CameraModifiers` 旧名回退），冻结/恢复修饰器正常，不再打印“无数组”警告；核心测试 2294 项全绿
+- **1.0.66**（2026-11-02）：修复 1.0.65 移动视角卡顿——移除会冻结 `PBZ.exe`/`MRTCEngine.dll` QPC 的时间偏移补偿 IAT Hook；Wwise 整引擎 Suspend 改为优先从 PBZ.exe 静态导出解析（1.0.65 只查 AkSoundEngineDLL.dll 导致静默回落）；核心测试 2294 项全绿
+- **1.0.65**（2026-11-02）：修复 1.0.64 冻结崩溃——IAT 导入名解析需 `module_base + AddressOfData`，上一版直接拿 RVA 当指针导致 `strcmp` 访问 0xD9CEABE 附近崩溃（dump 0xC0000005）；补模块边界校验后重编，核心测试 2372 项全绿
+- **1.0.64**（2026-11-02）：借鉴 PBZPause——Wwise 整引擎 `AK::SoundEngine::Suspend(false,false)` / `WakeupFromSuspend(0)` 优先、逐语音兜底；新增 `time_offset_compensation` 用 IAT Hook 冻结 QPC/GetTickCount/GetTickCount64/timeGetTime 并在解冻时累加暂停时长偏移，避免时间跳变；核心层测试 2216 → 2372 项全绿
+- **1.0.63**（2026-11-02）：升降键可配置——新增 `key_vertical_up` / `key_vertical_down`（默认鼠标左/右键），键名表支持 `MOUSE_LEFT/RIGHT/MIDDLE/X1/X2`；输入层 5 个鼠标键统一并入 `GetAsyncKeyState` 轮询，translate/look 两模式与 PBZFM 改键同步；核心层测试 2084 → 2216 项全绿
 - **1.0.46**（2026-11-01）：方向键/十字键左右从平移改为转向——`Intent` 新增 `yaw_axis`，tick 按 `yaw_speed`（新配置，默认 90 度/秒）积分；`key_pan_*`/`pad_pan_*` 改名 `key_yaw_*`/`pad_yaw_*`（旧键名兼容映射），`arrow_pan_mult` 废弃；核心层测试 2069 → 2080 项全绿（新增旧键名兼容、方向键/十字键偏航 intent、tick 偏航积分用例）
 - **1.0.37**（2026-11-01）：输入手感减速——方向键/十字键平移乘 `arrow_pan_mult`（默认 0.5）、俯仰 `pitch_speed` 60→30；按住 Ctrl（手柄 RS 按下）时鼠标/右摇杆视角乘 `slow_look_mult`（默认 0.1）精调；`pad_look_speed` 180→60；核心层 668 → 686 项全绿
 - **1.0.36**（2026-11-01）：静音双保险——加挂 Wwise 集成层 Post 钩子（AkGameplayStatics/AkComponent），ID 名单上限 1024，冻结时 ID 真暂停 + 组件音量归零两层同开，解冻双恢复。

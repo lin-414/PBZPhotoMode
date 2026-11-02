@@ -87,6 +87,18 @@ void test_vk_names() {
     CHECK_INT(vk_from_name("NOT_A_KEY"), 0);
     CHECK_INT(vk_from_name("~"), 0);  // 波浪键没做别名，按文档用 TILDE
     CHECK_INT(vk_from_name("TILDE"), 0xC0);
+    // 鼠标键名（key_vertical_up/down 的默认值与可选键）
+    CHECK_INT(vk_from_name("MOUSE_LEFT"), 0x01);
+    CHECK_INT(vk_from_name("mouse_right"), 0x02);
+    CHECK_INT(vk_from_name("MOUSE_MIDDLE"), 0x04);
+    CHECK_INT(vk_from_name("MOUSE_X1"), 0x05);
+    CHECK_INT(vk_from_name("MOUSE_X2"), 0x06);
+    CHECK_INT(vk_from_name("LMB"), 0x01);
+    CHECK_INT(vk_from_name("RMB"), 0x02);
+    CHECK_INT(vk_from_name("MOUSE_BACK"), 0x05);
+    CHECK_INT(vk_from_name("MOUSE_FORWARD"), 0x06);
+    CHECK_STR(pbzpm::vk_to_name(0x01), "MOUSE_LEFT");  // 规范名优先，别名不参与输出
+    CHECK_STR(pbzpm::vk_to_name(0x02), "MOUSE_RIGHT");
 }
 
 // ---------------------------------------------------------------- 配置解析
@@ -111,7 +123,8 @@ CHECK(empty.cfg.hide_enemy_health_bars);  // 默认隐藏敌人（怪物）血�
 CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.freeze_sequences);  // 默认冻结时同时暂停剧情播放器
-    CHECK(empty.cfg.stop_wwise_on_freeze);  // 默认冻结时静音 Wwise 组件（对话流程已冻结，可关）
+    CHECK(empty.cfg.stop_wwise_on_freeze);  // 默认冻结时处理 Wwise 音频（对话流程已冻结，可关）
+    CHECK(empty.cfg.wwise_engine_suspend);  // 默认优先整引擎 Suspend（PBZPause 方案）
     CHECK(empty.cfg.ultrawide_unlock);  // 默认进入摄影模式即解除 16:9 画幅锁（超宽屏）
     CHECK(empty.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK_NEAR(empty.cfg.vertical_speed, 200.0, 1e-9);
@@ -123,6 +136,8 @@ CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK_STR(empty.cfg.key_pitch_down, "DOWN");
     CHECK_STR(empty.cfg.key_yaw_left, "LEFT");   // 方向键左/右 = 左右转视角（1.0.46 起从平移改来）
     CHECK_STR(empty.cfg.key_yaw_right, "RIGHT");
+    CHECK_STR(empty.cfg.key_vertical_up, "MOUSE_LEFT");    // 升降默认鼠标左/右键（1.0.63 起可配置）
+    CHECK_STR(empty.cfg.key_vertical_down, "MOUSE_RIGHT");
     CHECK_STR(empty.cfg.pad_pitch_up, "UP");    // 十字键上/下 = 俯仰
     CHECK_STR(empty.cfg.pad_pitch_down, "DOWN");
     CHECK_STR(empty.cfg.pad_roll_reset, "LB+RB");  // LB+RB 同按 = 滚转归零（1.0.41 并入）
@@ -143,6 +158,8 @@ key_pitch_up = C
 key_pitch_down = V
 key_yaw_left = INSERT
 key_yaw_right = DELETE
+key_vertical_up = MOUSE_MIDDLE
+key_vertical_down = PAGE_DOWN
 
 [control]
 move_speed = 250.5
@@ -167,6 +184,8 @@ ultrawide_unlock = false
 auto_pause_time = false
 freeze_sequences = false
 stop_wwise_on_freeze = true
+wwise_engine_suspend = false
+time_offset_compensation = false
 
 [misc]
 log_level = debug
@@ -181,6 +200,8 @@ dry_run = on
     CHECK_STR(parsed.cfg.key_pitch_down, "V");
     CHECK_STR(parsed.cfg.key_yaw_left, "INSERT");
     CHECK_STR(parsed.cfg.key_yaw_right, "DELETE");
+    CHECK_STR(parsed.cfg.key_vertical_up, "MOUSE_MIDDLE");
+    CHECK_STR(parsed.cfg.key_vertical_down, "PAGE_DOWN");
     CHECK_NEAR(parsed.cfg.move_speed, 250.5, 1e-9);
     CHECK_NEAR(parsed.cfg.boost_mult, 2.0, 1e-9);
     CHECK(parsed.cfg.invert_y);
@@ -196,6 +217,7 @@ dry_run = on
     CHECK(!parsed.cfg.auto_pause_time);
     CHECK(!parsed.cfg.freeze_sequences);
     CHECK(parsed.cfg.stop_wwise_on_freeze);
+    CHECK(!parsed.cfg.wwise_engine_suspend);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
     CHECK(parsed.cfg.dry_run);
     CHECK_STR(parsed.source, "test.ini");
@@ -260,10 +282,12 @@ void test_config_default_text_roundtrip() {
     CHECK(text.find("key_toggle") != std::string::npos);
     CHECK(text.find("roll_speed") != std::string::npos);
     CHECK(text.find("key_pitch_up") != std::string::npos);
+    CHECK(text.find("key_vertical_up") != std::string::npos);
     CHECK(text.find("pad_pitch_up") != std::string::npos);
     CHECK(text.find("pitch_speed") != std::string::npos);
     CHECK(text.find("slow_look_mult") != std::string::npos);
     CHECK(text.find("yaw_speed") != std::string::npos);
+    CHECK(text.find("wwise_engine_suspend") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
@@ -272,6 +296,7 @@ void test_config_default_text_roundtrip() {
     CHECK(parsed.cfg.auto_pause_time);
     CHECK(parsed.cfg.freeze_sequences);
     CHECK(parsed.cfg.stop_wwise_on_freeze);  // 默认文本同样开启
+    CHECK(parsed.cfg.wwise_engine_suspend);
     CHECK(parsed.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
     CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);
     CHECK_NEAR(parsed.cfg.pitch_speed, 30.0, 1e-9);
@@ -279,6 +304,8 @@ void test_config_default_text_roundtrip() {
     CHECK_NEAR(parsed.cfg.yaw_speed, 90.0, 1e-9);
     CHECK_STR(parsed.cfg.key_pitch_up, "UP");  // 默认文本里俯仰/转向键可被原样解析回来
     CHECK_STR(parsed.cfg.key_yaw_left, "LEFT");
+    CHECK_STR(parsed.cfg.key_vertical_up, "MOUSE_LEFT");
+    CHECK_STR(parsed.cfg.key_vertical_down, "MOUSE_RIGHT");
     CHECK_STR(parsed.cfg.pad_fov_up, "A");
     CHECK_STR(parsed.cfg.pad_yaw_right, "RIGHT");
 }
@@ -342,6 +369,8 @@ void test_input_logic() {
     CHECK_INT(keys.pitch_down, 0x28);
     CHECK_INT(keys.yaw_left, 0x25);
     CHECK_INT(keys.yaw_right, 0x27);
+    CHECK_INT(keys.vertical_up, kMouseLeft);    // 升降默认鼠标左/右键（1.0.63 起可配置）
+    CHECK_INT(keys.vertical_down, kMouseRight);
 
     InputLogic in;
     in.on_key('W', true);
@@ -415,14 +444,41 @@ void test_input_logic() {
     in.reset();
 
     // 左键/右键：默认 translate 模式 -> 上下平移
-    in.on_mouse_button(MouseButton::Left, true);
+    in.on_key(kMouseLeft, true);
     intent = in.build(cfg, keys);
     CHECK_NEAR(intent.move_up, 1.0, 1e-9);
     CHECK(!intent.pitch_up_click);
-    in.on_mouse_button(MouseButton::Left, false);
-    in.on_mouse_button(MouseButton::Right, true);
+    in.on_key(kMouseLeft, false);
+    in.on_key(kMouseRight, true);
     intent = in.build(cfg, keys);
     CHECK_NEAR(intent.move_up, -1.0, 1e-9);
+    in.reset();
+
+    // 升降键可换：鼠标右键上 / 左键下，或改成键盘键
+    Config swapped = cfg;
+    swapped.key_vertical_up = "MOUSE_RIGHT";
+    swapped.key_vertical_down = "MOUSE_LEFT";
+    std::vector<std::string> swap_warnings;
+    const KeyMap swap_keys = build_keymap(swapped, &swap_warnings);
+    CHECK_INT(swap_warnings.size(), 0);
+    in.on_key(kMouseRight, true);
+    intent = in.build(swapped, swap_keys);
+    CHECK_NEAR(intent.move_up, 1.0, 1e-9);
+    in.on_key(kMouseRight, false);
+    in.on_key(kMouseLeft, true);
+    intent = in.build(swapped, swap_keys);
+    CHECK_NEAR(intent.move_up, -1.0, 1e-9);
+    in.reset();
+
+    Config keyboard_vertical = cfg;
+    keyboard_vertical.key_vertical_up = "PAGE_UP";
+    keyboard_vertical.key_vertical_down = "PAGE_DOWN";
+    const KeyMap kb_keys = build_keymap(keyboard_vertical, nullptr);
+    in.on_key(0x21, true);
+    CHECK_NEAR(in.build(keyboard_vertical, kb_keys).move_up, 1.0, 1e-9);
+    in.on_key(0x21, false);
+    in.on_key(0x22, true);
+    CHECK_NEAR(in.build(keyboard_vertical, kb_keys).move_up, -1.0, 1e-9);
     in.reset();
 
     // Q/E：v1.9.0 起改为滚转（E=+1 顺时针 / Q=-1 逆时针），不再参与上下平移
@@ -440,12 +496,12 @@ void test_input_logic() {
 
     // Q/E 滚转与鼠标左右键升降同帧叠加互不干扰
     in.on_key('Q', true);
-    in.on_mouse_button(MouseButton::Left, true);
+    in.on_key(kMouseLeft, true);
     intent = in.build(cfg, keys);
     CHECK_NEAR(intent.roll, -1.0, 1e-9);
     CHECK_NEAR(intent.move_up, 1.0, 1e-9);
     in.on_key('Q', false);
-    in.on_mouse_button(MouseButton::Left, false);
+    in.on_key(kMouseLeft, false);
     in.reset();
 
     // 方向键俯仰（1.0.27 起 Z/X 改方向键）：上 仰视（+1）/ 下 俯视（-1），同按抵消；与滚转互不影响
@@ -484,10 +540,10 @@ void test_input_logic() {
     in.on_key(keys.yaw_right, false);
     in.reset();
 
-    // look 模式：左右键变俯仰，与 Q/E 滚转互不影响
+    // look 模式：升降键变俯仰，与 Q/E 滚转互不影响
     Config look_cfg = cfg;
     look_cfg.mouse_vertical_mode = MouseVerticalMode::Look;
-    in.on_mouse_button(MouseButton::Left, true);
+    in.on_key(kMouseLeft, true);
     intent = in.build(look_cfg, keys);
     CHECK(intent.pitch_up_click);
     CHECK(!intent.pitch_down_click);
@@ -552,8 +608,8 @@ void test_photo_mode_happy_path() {
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
                      "hud_off", "prompt_off", "bars_off", "lockon_off", "subs_off", "aspect_unlock", "save_postfx",
-                     "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "shakes_freeze", "wind_freeze",
-                     "mpc_snapshot", "sequences_pause", "wwise_pause"},
+                     "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "shakes_freeze",
+                     "wind_freeze", "mpc_snapshot", "sequences_pause", "wwise_engine_suspend", "wwise_pause"},
                     "首次进入");
 
     CHECK(mode.active());
@@ -1291,6 +1347,71 @@ void test_photo_mode_cutscene_freeze() {
     }
 }
 
+
+void test_photo_mode_wwise_engine() {
+    section("PhotoMode Wwise 整引擎 Suspend");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 1) Wwise 整引擎 Suspend 成功：不再走逐 PlayingID/组件兜底
+    {
+        FakeEngine fe;
+        fe.wwise_engine_suspend_ok = true;
+        fe.wwise_components = 3;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("wwise_engine_suspend"), 1);
+        CHECK_INT(fe.count("wwise_pause"), 0);
+        CHECK(fe.wwise_engine_suspended);
+
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("wwise_engine_wake"), 1);
+        CHECK_INT(fe.count("wwise_resume"), 0);
+        CHECK(!fe.wwise_engine_suspended);
+        mode.leave("test");
+    }
+
+    // 2) 整引擎不可用/失败：回落逐语音 + 组件音量兜底
+    {
+        FakeEngine fe;
+        fe.wwise_engine_suspend_ok = false;
+        fe.wwise_components = 2;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("wwise_engine_suspend"), 1);
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        CHECK_INT(fe.count("wwise_engine_wake"), 0);
+        mode.leave("test");
+        CHECK_INT(fe.count("wwise_resume"), 1);
+    }
+
+    // 3) wwise_engine_suspend=false：不尝试整引擎，直接逐语音
+    {
+        FakeEngine fe;
+        fe.wwise_engine_suspend_ok = true;
+        Config cfg;
+        cfg.wwise_engine_suspend = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("wwise_engine_suspend"), 0);
+        CHECK_INT(fe.count("wwise_pause"), 1);
+        mode.leave("test");
+    }
+
+    // 4) 冻结状态下直接退出：Wwise 整引擎和逐语音兜底都要成对恢复
+    {
+        FakeEngine fe;
+        fe.wwise_engine_suspend_ok = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.wwise_engine_suspended);
+        mode.leave("exit while frozen");
+        CHECK_INT(fe.count("wwise_engine_wake"), 1);
+        CHECK(!fe.wwise_engine_suspended);
+    }
+}
 
 void test_photo_mode_freeze_treatment() {
     section("PhotoMode 冻结期残余微动治理（相机/shake、风源、MPC 钉住、诊断）");
@@ -2594,14 +2715,25 @@ void test_pbzfm_fields_roundtrip() {
         CHECK_NEAR(pbzfm_read_field(f, cfg, keys), original, 1e-9);
     }
 
-    // 键捕获给出键名表表达不了的键（鼠标侧键 VK 0x06）：拒绝应用、配置不动
+    // 键捕获给出键名表表达不了的键（VK_CANCEL 0x03）：拒绝应用、配置不动
     {
         Config cfg{};
         cfg.key_toggle = "F2";
         for (const PbzfmField& f : fields) {
             if (f.kind == PbzfmFieldKind::Key && std::string(f.key) == "key_toggle") {
-                CHECK(!pbzfm_apply_field(f, 0x06, cfg));
+                CHECK(!pbzfm_apply_field(f, 0x03, cfg));
                 CHECK_STR(cfg.key_toggle, "F2");
+            }
+        }
+    }
+
+    // 鼠标键现在能通过菜单应用（key_vertical_up 默认值就是 MOUSE_LEFT）
+    {
+        Config cfg{};
+        for (const PbzfmField& f : fields) {
+            if (f.kind == PbzfmFieldKind::Key && std::string(f.key) == "key_vertical_up") {
+                CHECK(pbzfm_apply_field(f, 0x05, cfg));  // MOUSE_X1
+                CHECK_STR(cfg.key_vertical_up, "MOUSE_X1");
             }
         }
     }
@@ -2695,6 +2827,7 @@ int main() {
     test_photo_mode_freeze();
     test_photo_mode_auto_pause();
     test_photo_mode_cutscene_freeze();
+    test_photo_mode_wwise_engine();
     test_photo_mode_freeze_treatment();
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
