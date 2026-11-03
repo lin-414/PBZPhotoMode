@@ -136,6 +136,42 @@ void apply_stick_deadzone(double& x, double& y, double deadzone) {
     y *= k;
 }
 
+// ---------------- XInput（Xbox 手柄）映射 ----------------
+
+double thumb_to_axis(short value) {
+    double v = static_cast<double>(value) / 32767.0;
+    if (v > 1.0) v = 1.0;
+    if (v < -1.0) v = -1.0;
+    return v;
+}
+
+PadState xinput_state_to_pad(unsigned short buttons, unsigned char left_trigger, unsigned char right_trigger,
+                             short lx, short ly, short rx, short ry) {
+    PadState p;
+    p.held[static_cast<int>(PadButton::A)] = (buttons & kXInputPadA) != 0;
+    p.held[static_cast<int>(PadButton::B)] = (buttons & kXInputPadB) != 0;
+    p.held[static_cast<int>(PadButton::X)] = (buttons & kXInputPadX) != 0;
+    p.held[static_cast<int>(PadButton::Y)] = (buttons & kXInputPadY) != 0;
+    p.held[static_cast<int>(PadButton::LB)] = (buttons & kXInputPadLeftShoulder) != 0;
+    p.held[static_cast<int>(PadButton::RB)] = (buttons & kXInputPadRightShoulder) != 0;
+    p.held[static_cast<int>(PadButton::LS)] = (buttons & kXInputPadLeftThumb) != 0;
+    p.held[static_cast<int>(PadButton::RS)] = (buttons & kXInputPadRightThumb) != 0;
+    p.held[static_cast<int>(PadButton::Back)] = (buttons & kXInputPadBack) != 0;
+    p.held[static_cast<int>(PadButton::Start)] = (buttons & kXInputPadStart) != 0;
+    p.held[static_cast<int>(PadButton::Guide)] = (buttons & kXInputPadGuide) != 0;
+    p.held[static_cast<int>(PadButton::Up)] = (buttons & kXInputPadDpadUp) != 0;
+    p.held[static_cast<int>(PadButton::Down)] = (buttons & kXInputPadDpadDown) != 0;
+    p.held[static_cast<int>(PadButton::Left)] = (buttons & kXInputPadDpadLeft) != 0;
+    p.held[static_cast<int>(PadButton::Right)] = (buttons & kXInputPadDpadRight) != 0;
+    p.lt = static_cast<double>(left_trigger) / 255.0;
+    p.rt = static_cast<double>(right_trigger) / 255.0;
+    p.lx = thumb_to_axis(lx);
+    p.ly = thumb_to_axis(ly);
+    p.rx = thumb_to_axis(rx);
+    p.ry = thumb_to_axis(ry);
+    return p;
+}
+
 // ---------------- DirectInput（PS 手柄）映射 ----------------
 
 bool dinput_button_to_pad(int index, PadButton& out) {

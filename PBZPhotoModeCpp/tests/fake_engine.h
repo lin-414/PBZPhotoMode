@@ -30,11 +30,8 @@ public:
     bool lockon_visible{true};
     bool subtitles_visible{true};
     int prompt_restore_count{0};
-    bool postfx_saved{false};
     CameraPose last_pose{};
     double last_fov{0.0};
-    int postfx_save_count{0};
-    int postfx_restore_count{0};
 
     // 超宽屏画幅解锁
     bool aspect_unlocked{false};
@@ -42,9 +39,16 @@ public:
     int aspect_unlock_count{0};
     int aspect_restore_count{0};
 
-    // 故障注入
+    // 故障注入（隐藏/开启方向）
     bool fail_spawn{false};
     bool fail_attach{false};
+    // M-1 部分成功语义：ProcessEvent“成功”但回读确认 ViewTarget 没切到摄影相机。
+    // attach_view 仍返回 false，并累计连续失败次数供 view_confirmation_failed() 判定。
+    bool attach_reports_mismatch{false};
+    int attach_verify_fail_streak{0};
+    // 日志阈值（PhotoMode 构造/每次 log 都会同步；测试可检查是否传入）
+    LogLevel configured_log_level{LogLevel::Info};
+    int refresh_cache_calls{0};
     bool fail_apply_pose{false};
     bool fail_apply_fov{false};
     bool fail_ignore_move{false};
@@ -55,10 +59,25 @@ public:
     bool fail_bars{false};
     bool fail_lockon{false};
     bool fail_subtitles{false};
-    bool fail_postfx{false};
     bool fail_pause{false};
     bool fail_time_dilation{false};
     bool fail_aspect_unlock{false};
+
+    // 故障注入（还原方向）：只让 leave()/重试里的恢复调用失败，用于验证“失败项不被吞”
+    bool fail_view_restore{false};
+    bool fail_ignore_move_restore{false};
+    bool fail_block_input_restore{false};
+    bool fail_player_restore{false};
+    bool fail_hud_restore{false};
+    bool fail_prompts_restore{false};
+    bool fail_bars_restore{false};
+    bool fail_lockon_restore{false};
+    bool fail_subtitles_restore{false};
+    bool fail_pause_restore{false};
+    bool fail_time_dilation_restore{false};
+    bool fail_sequences_restore{false};
+    bool fail_shakes_restore{false};
+    bool fail_wind_restore{false};
 
     bool world_valid() override {
         calls.push_back("world_valid");
@@ -79,12 +98,26 @@ public:
     }
     bool attach_view() override {
         calls.push_back("attach_view");
-        if (fail_attach) return false;
+        if (fail_attach) {
+            ++attach_verify_fail_streak;
+            return false;
+        }
+        if (attach_reports_mismatch) {
+            // 部分成功：函数调用成功、内部 view_attached 已置位，但回读确认失败
+            view_attached = true;
+            ++attach_verify_fail_streak;
+            return false;
+        }
+        attach_verify_fail_streak = 0;
         view_attached = true;
         return true;
     }
+    bool view_confirmation_failed() const override { return attach_verify_fail_streak >= 3; }
+    void set_log_level(LogLevel level) override { configured_log_level = level; }
+    void refresh_function_caches() override { ++refresh_cache_calls; }
     bool restore_view() override {
         calls.push_back("restore_view");
+        if (fail_view_restore) return false;
         view_attached = false;
         return true;
     }
@@ -107,31 +140,36 @@ public:
     }
     bool set_ignore_move_input(bool ignore) override {
         calls.push_back(ignore ? "ignore_move_on" : "ignore_move_off");
-        if (fail_ignore_move) return false;
+        if (fail_ignore_move && ignore) return false;
+        if (fail_ignore_move_restore && !ignore) return false;
         ignore_move = ignore;
         return true;
     }
     bool set_game_input_blocked(bool blocked) override {
         calls.push_back(blocked ? "block_input_on" : "block_input_off");
-        if (fail_block_input) return false;
+        if (fail_block_input && blocked) return false;
+        if (fail_block_input_restore && !blocked) return false;
         input_blocked = blocked;
         return true;
     }
     bool set_player_hidden(bool hidden) override {
         calls.push_back(hidden ? "hide_player_on" : "hide_player_off");
         if (fail_hide_player && hidden) return false;
+        if (fail_player_restore && !hidden) return false;
         player_hidden = hidden;
         return true;
     }
     bool set_hud_visible(bool visible) override {
         calls.push_back(visible ? "hud_on" : "hud_off");
         if (fail_hud && !visible) return false;
+        if (fail_hud_restore && visible) return false;
         hud_visible = visible;
         return true;
     }
     bool set_interact_prompts_visible(bool visible) override {
         calls.push_back(visible ? "prompt_on" : "prompt_off");
         if (fail_prompts && !visible) return false;
+        if (fail_prompts_restore && visible) return false;
         prompts_visible = visible;
         if (visible) ++prompt_restore_count;
         return true;
@@ -139,18 +177,21 @@ public:
     bool set_enemy_health_bars_visible(bool visible) override {
         calls.push_back(visible ? "bars_on" : "bars_off");
         if (fail_bars && !visible) return false;
+        if (fail_bars_restore && visible) return false;
         bars_visible = visible;
         return true;
     }
     bool set_lockon_marker_visible(bool visible) override {
         calls.push_back(visible ? "lockon_on" : "lockon_off");
         if (fail_lockon && !visible) return false;
+        if (fail_lockon_restore && visible) return false;
         lockon_visible = visible;
         return true;
     }
     bool set_subtitles_visible(bool visible) override {
         calls.push_back(visible ? "subs_on" : "subs_off");
         if (fail_subtitles && !visible) return false;
+        if (fail_subtitles_restore && visible) return false;
         subtitles_visible = visible;
         return true;
     }
@@ -164,9 +205,16 @@ public:
         dilation = value;
         return true;
     }
+    bool restore_time_dilation(double original) override {
+        calls.push_back("restore_time_dilation");
+        if (fail_time_dilation_restore) return false;
+        dilation = original;
+        return true;
+    }
     bool set_paused(bool value) override {
         calls.push_back(value ? "pause_on" : "pause_off");
-        if (fail_pause) return false;
+        if (fail_pause && value) return false;
+        if (fail_pause_restore && !value) return false;
         paused = value;
         return true;
     }
@@ -184,9 +232,9 @@ public:
         calls.push_back(pause ? "sequences_pause" : "sequences_resume");
         ++sequence_calls;
         SequenceFreezeReport report{};
-        report.ok = !fail_sequences;
+        report.ok = pause ? !fail_sequences : !fail_sequences_restore;
         report.found = sequences_found;
-        report.matched = fail_sequences ? 0 : sequences_playing;
+        report.matched = report.ok ? sequences_playing : 0;
         report.acted = report.matched;
         return report;
     }
@@ -222,12 +270,18 @@ public:
 
     // Wwise 整引擎 Suspend 模拟：默认不可用，让原有测试继续覆盖逐语音兜底路径
     bool wwise_engine_suspend_ok{false};
+    // Wake 单独可失败：验证“唤醒失败保留挂起标志、后续 tick 再重试”
+    bool wwise_engine_wake_ok{true};
     bool wwise_engine_suspended{false};
     int wwise_engine_suspend_calls{0};
     bool suspend_wwise_engine(bool suspend) override {
         calls.push_back(suspend ? "wwise_engine_suspend" : "wwise_engine_wake");
         ++wwise_engine_suspend_calls;
-        if (!wwise_engine_suspend_ok) return false;
+        if (suspend) {
+            if (!wwise_engine_suspend_ok) return false;
+        } else if (!wwise_engine_wake_ok) {
+            return false;  // 唤醒失败：引擎仍保持挂起
+        }
         wwise_engine_suspended = suspend;
         return true;
     }
@@ -246,7 +300,7 @@ public:
     CameraShakeFreezeReport freeze_camera_shakes(bool frozen) override {
         calls.push_back(frozen ? "shakes_freeze" : "shakes_restore");
         CameraShakeFreezeReport report{};
-        report.ok = !fail_camera_shakes;
+        report.ok = frozen ? !fail_camera_shakes : !fail_shakes_restore;
         report.found = modifiers_found;
         report.acted = report.ok ? (frozen ? modifiers_disabled : modifiers_found) : 0;
         return report;
@@ -254,7 +308,7 @@ public:
     WindFreezeReport freeze_wind(bool frozen) override {
         calls.push_back(frozen ? "wind_freeze" : "wind_restore");
         WindFreezeReport report{};
-        report.ok = !fail_wind;
+        report.ok = frozen ? !fail_wind : !fail_wind_restore;
         report.found = wind_sources;
         report.acted = report.ok ? wind_sources : 0;
         return report;
@@ -285,18 +339,6 @@ public:
         if (camera_idle) ++pov_watch_idle_calls;
     }
 
-    bool save_postfx() override {
-        calls.push_back("save_postfx");
-        if (fail_postfx) return false;
-        postfx_saved = true;
-        ++postfx_save_count;
-        return true;
-    }
-    void restore_postfx() override {
-        calls.push_back("restore_postfx");
-        postfx_saved = false;
-        ++postfx_restore_count;
-    }
     bool unlock_aspect_ratio() override {
         calls.push_back("aspect_unlock");
         if (fail_aspect_unlock) return false;
@@ -340,6 +382,14 @@ public:
             if (line.find(needle) != std::string::npos) return true;
         }
         return false;
+    }
+    // 日志出现次数（验证「一次性告警 / 限流」用）
+    int count_logs_contain(const std::string& needle) const {
+        int n = 0;
+        for (const std::string& line : logs) {
+            if (line.find(needle) != std::string::npos) ++n;
+        }
+        return n;
     }
 };
 

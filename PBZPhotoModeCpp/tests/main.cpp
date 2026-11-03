@@ -1,69 +1,37 @@
 // 纯核心层测试：不加载 UE4SS、不启动游戏，直接用 cl/cmake 编译即可跑。
 // 覆盖：配置解析、键名映射、输入状态机、数学约定、摄影模式状态机（含回滚）。
+#include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
+#include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "core/config.h"
+#include "core/hook_registry.h"
+#include "core/i18n_logic.h"
 #include "core/input_logic.h"
 #include "core/math3.h"
 #include "core/photo_mode.h"
+#include "core/retry_policy.h"
 #include "core/vk.h"
+#include "core/world_snapshot.h"
+#include "pbzfm_client_lang.h"
 #include "pbzfm_schema_map.h"
 #include "tests/fake_engine.h"
+#include "tests/test_harness.h"
 
-namespace {
+using namespace pbzpm_test;
 
-int g_checks = 0;
-int g_failures = 0;
-const char* g_section = "";
-
-void report_fail(const char* file, int line, const std::string& what) {
-    ++g_failures;
-    std::printf("  [FAIL] %s:%d  %s\n", file, line, what.c_str());
-}
-
-void check(bool cond, const char* file, int line, const std::string& what) {
-    ++g_checks;
-    if (!cond) report_fail(file, line, what);
-}
-
-void check_eq_int(long long got, long long want, const char* file, int line, const std::string& what) {
-    ++g_checks;
-    if (got != want) {
-        std::printf("  [FAIL] %s:%d  %s（期望 %lld，实际 %lld）\n", file, line, what.c_str(), want, got);
-        ++g_failures;
-    }
-}
-
-void check_near(double got, double want, double eps, const char* file, int line, const std::string& what) {
-    ++g_checks;
-    if (std::fabs(got - want) > eps) {
-        std::printf("  [FAIL] %s:%d  %s（期望 %.6f，实际 %.6f）\n", file, line, what.c_str(), want, got);
-        ++g_failures;
-    }
-}
-
-void check_str(const std::string& got, const std::string& want, const char* file, int line, const std::string& what) {
-    ++g_checks;
-    if (got != want) {
-        std::printf("  [FAIL] %s:%d  %s（期望 \"%s\"，实际 \"%s\"）\n", file, line, what.c_str(), want.c_str(),
-                    got.c_str());
-        ++g_failures;
-    }
-}
-
-#define CHECK(cond) check((cond), __FILE__, __LINE__, #cond)
-#define CHECK_INT(got, want) check_eq_int((got), (want), __FILE__, __LINE__, #got)
-#define CHECK_NEAR(got, want, eps) check_near((got), (want), (eps), __FILE__, __LINE__, #got)
-#define CHECK_STR(got, want) check_str((got), (want), __FILE__, __LINE__, #got)
-
-void section(const char* name) {
-    g_section = name;
-    std::printf("\n== %s ==\n", name);
-}
+// 按子系统拆分的测试 TU（各自定义 run_*，共用 test_harness.h 的 CHECK 宏与计数）
+void run_mod_runtime_tests();
+void run_input_pure_tests();
+void run_pbzfm_validation_tests();
 
 // ---------------------------------------------------------------- 键名映射
 
@@ -119,8 +87,8 @@ void test_config_defaults_and_parse() {
     CHECK(!empty.cfg.hide_player);
     CHECK(empty.cfg.hide_game_hud);  // 默认进入摄影模式即隐藏游戏 HUD
     CHECK(empty.cfg.hide_interact_prompt);  // 默认隐藏交互提示（E 键图标）
-CHECK(empty.cfg.hide_enemy_health_bars);  // 默认隐藏敌人（怪物）血条
-CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
+    CHECK(empty.cfg.hide_enemy_health_bars);  // 默认隐藏敌人（怪物）血条
+    CHECK(empty.cfg.hide_subtitles);  // 默认隐藏对话字幕
     CHECK(empty.cfg.auto_pause_time);  // 默认进入摄影模式即自动暂停时间
     CHECK(empty.cfg.freeze_sequences);  // 默认冻结时同时暂停剧情播放器
     CHECK(empty.cfg.freeze_dialogue_flow);  // 默认冻结对话 Flow（仅在 hide_subtitles=true 时生效）
@@ -198,7 +166,8 @@ log_level = debug
 dry_run = on
 )";
     const ConfigLoadResult parsed = parse_config(ini, "test.ini");
-    CHECK_INT(parsed.warnings.size(), 0);
+    // time_offset_compensation 已弃用：无论值是什么都只告警一次（其余键无告警）
+    CHECK_INT(parsed.warnings.size(), 1);
     CHECK_STR(parsed.cfg.key_toggle, "F9");
     CHECK_STR(parsed.cfg.key_freeze, "G");
     CHECK_STR(parsed.cfg.key_fov_up, "OEM_PLUS");
@@ -265,23 +234,155 @@ this line has no equals
     CHECK(!parsed.cfg.invert_y);
     CHECK_NEAR(parsed.cfg.fov_min, 15.0, 1e-9);      // 越界组合回退默认
     CHECK_NEAR(parsed.cfg.fov_max, 150.0, 1e-9);
-    CHECK_NEAR(parsed.cfg.pitch_limit, 89.0, 1e-9);
-    CHECK_NEAR(parsed.cfg.roll_speed, 60.0, 1e-9);  // 非正值回退默认
-    CHECK_NEAR(parsed.cfg.pitch_speed, 30.0, 1e-9);  // 俯仰速度同规则
-    CHECK_NEAR(parsed.cfg.slow_look_mult, 0.1, 1e-9);   // 越界回退默认
-    CHECK_NEAR(parsed.cfg.yaw_speed, 90.0, 1e-9);   // 非正值回退默认
-    CHECK_NEAR(parsed.cfg.freeze_dilation, 0.0001, 1e-12);
+    CHECK_NEAR(parsed.cfg.pitch_limit, 90.0, 1e-9);  // 超上限夹紧到边界（不再整键回默认）
+    CHECK_NEAR(parsed.cfg.roll_speed, 5.0, 1e-9);   // 非正值夹紧到下限
+    CHECK_NEAR(parsed.cfg.pitch_speed, 5.0, 1e-9);  // 俯仰速度同规则
+    CHECK_NEAR(parsed.cfg.slow_look_mult, 0.01, 1e-9);   // 越界夹紧到下限
+    CHECK_NEAR(parsed.cfg.yaw_speed, 5.0, 1e-9);    // 非正值夹紧到下限
+    CHECK_NEAR(parsed.cfg.freeze_dilation, 0.0001, 1e-12);  // 下限本身
 
     // fov_default 落在范围外要被夹紧并告警
     const ConfigLoadResult clamp = parse_config("fov_min = 20\nfov_max = 60\nfov_default = 90\n");
     CHECK(clamp.warnings.size() >= 1);
     CHECK_NEAR(clamp.cfg.fov_default, 60.0, 1e-9);
 
-    // 缺文件：ok=false 但仍是可用的默认值
+    // 缺文件：ok=false，但区分「文件不存在」（首次运行，正常）与「读不了」
     const ConfigLoadResult missing = load_config_file("definitely_not_here.ini");
     CHECK(!missing.ok);
+    CHECK(missing.file_missing);
+    CHECK(!missing.read_error);
     CHECK(missing.warnings.size() >= 1);
     CHECK_STR(missing.cfg.key_toggle, "F2");
+}
+
+// schema 表驱动：每个数值键的 0 / 负值 / 极大 / 非法文本边界；section 归属；告警去重
+void test_config_schema_and_sections() {
+    section("parse_config schema 边界 / section 归属 / 告警去重");
+    using namespace pbzpm;
+
+    struct NumCase {
+        const char* key;
+        const char* section;
+        double Config::* member;
+        double lo;
+        double hi;
+        const char* extra;  // 同 section 的伴随键，避免 fov 交叉校验干扰单键边界
+    };
+    static const NumCase kNumCases[] = {
+        {"move_speed", "control", &Config::move_speed, 50.0, 2000.0, ""},
+        {"boost_mult", "control", &Config::boost_mult, 1.0, 10.0, ""},
+        {"slow_mult", "control", &Config::slow_mult, 0.05, 1.0, ""},
+        {"slow_look_mult", "control", &Config::slow_look_mult, 0.01, 1.0, ""},
+        {"look_sensitivity", "control", &Config::look_sensitivity, 0.01, 1.0, ""},
+        {"pitch_limit", "control", &Config::pitch_limit, 1.0, 90.0, ""},
+        {"vertical_speed", "control", &Config::vertical_speed, 10.0, 1000.0, ""},
+        {"roll_speed", "control", &Config::roll_speed, 5.0, 360.0, ""},
+        {"pitch_speed", "control", &Config::pitch_speed, 5.0, 180.0, ""},
+        {"yaw_speed", "control", &Config::yaw_speed, 5.0, 270.0, ""},
+        {"pad_look_speed", "gamepad", &Config::pad_look_speed, 10.0, 720.0, ""},
+        {"pad_move_scale", "gamepad", &Config::pad_move_scale, 0.0, 3.0, ""},
+        {"pad_deadzone", "gamepad", &Config::pad_deadzone, 0.0, 0.5, ""},
+        {"fov_default", "camera", &Config::fov_default, 1.0, 179.0, "fov_min = 1\nfov_max = 179\n"},
+        {"fov_min", "camera", &Config::fov_min, 1.0, 178.0, "fov_max = 179\n"},
+        {"fov_max", "camera", &Config::fov_max, 2.0, 179.0, "fov_min = 1\n"},
+        {"fov_step", "camera", &Config::fov_step, 0.5, 10.0, ""},
+        {"freeze_dilation", "effects", &Config::freeze_dilation, 0.0001, 1.0, ""},
+    };
+
+    auto parse_num = [](const NumCase& c, const char* value) {
+        std::string ini = std::string("[") + c.section + "]\n" + c.key + " = " + value + "\n" + c.extra;
+        return parse_config(ini, "case");
+    };
+
+    const Config defaults{};
+    for (const NumCase& c : kNumCases) {
+        // 0：下限 > 0 时夹紧到下限；下限本身为 0 的键（pad_move_scale/pad_deadzone）0 合法
+        const ConfigLoadResult zero = parse_num(c, "0");
+        CHECK_NEAR(zero.cfg.*c.member, c.lo > 0.0 ? c.lo : 0.0, 1e-9);
+        CHECK(zero.warnings.size() >= 1 || c.lo <= 0.0);
+
+        // 负值：一律夹紧到下限
+        const ConfigLoadResult neg = parse_num(c, "-1");
+        CHECK_NEAR(neg.cfg.*c.member, c.lo, 1e-9);
+        CHECK(neg.warnings.size() >= 1);
+
+        // 极大：夹紧到上限
+        const ConfigLoadResult huge = parse_num(c, "1e12");
+        CHECK_NEAR(huge.cfg.*c.member, c.hi, 1e-9);
+        CHECK(huge.warnings.size() >= 1);
+
+        // 非法文本：保留默认并告警
+        const ConfigLoadResult text = parse_num(c, "abc");
+        CHECK_NEAR(text.cfg.*c.member, defaults.*c.member, 1e-9);
+        CHECK(text.warnings.size() >= 1);
+    }
+
+    // 行尾注释：数值键后无空白直接跟 ;/# 也能截断（不再回默认）
+    const ConfigLoadResult trailing = parse_config("[camera]\nfov_default = 50;备注\nfov_step = 1#x\n", "trailing");
+    CHECK_INT((int)trailing.warnings.size(), 0);
+    CHECK_NEAR(trailing.cfg.fov_default, 50.0, 1e-9);
+    CHECK_NEAR(trailing.cfg.fov_step, 1.0, 1e-9);
+
+    // 引号内的 ; / # 按字面值保留
+    const ConfigLoadResult quoted = parse_config("[keys]\nkey_toggle = \"F9;备注\"\n", "quoted");
+    CHECK_INT((int)quoted.warnings.size(), 0);
+    CHECK_STR(quoted.cfg.key_toggle, "F9;备注");
+
+    // 平铺（无 section）兼容旧配置：不误报 section 错位
+    const ConfigLoadResult flat = parse_config("key_toggle = F8\nmove_speed = 600\n", "flat");
+    CHECK_INT((int)flat.warnings.size(), 0);
+    CHECK_STR(flat.cfg.key_toggle, "F8");
+    CHECK_NEAR(flat.cfg.move_speed, 600.0, 1e-9);
+
+    // section 与键期望不符：告警一次，值仍按键解析（不静默串键）
+    const ConfigLoadResult wrong_section = parse_config("[camera]\nmove_speed = 600\n", "wrong");
+    CHECK_INT((int)wrong_section.warnings.size(), 1);
+    CHECK(wrong_section.warnings[0].find("section") != std::string::npos);
+    CHECK_NEAR(wrong_section.cfg.move_speed, 600.0, 1e-9);
+
+    // 同一键跨 section 重复：按「同一键只报一次」去重，以最后一次为准
+    const ConfigLoadResult dup_section =
+        parse_config("[keys]\nkey_freeze = F\n[control]\nkey_freeze = G\n", "dup");
+    CHECK_INT((int)dup_section.warnings.size(), 1);
+    CHECK_STR(dup_section.cfg.key_freeze, "G");
+
+    // 告警去重：同一键多次越界只报一次（最后一次的值生效）
+    const ConfigLoadResult dup_key = parse_config("[control]\nmove_speed = 0\nmove_speed = 99999\n", "dupkey");
+    CHECK_INT((int)dup_key.warnings.size(), 1);
+    CHECK_NEAR(dup_key.cfg.move_speed, 2000.0, 1e-9);
+
+    // 未知 section 每段一次、未知键只报一次；非法枚举保留默认
+    const ConfigLoadResult misc = parse_config(
+        "[control]\nmouse_vertical_mode = diagonal\n[unknown]\nfoo = 1\nfoo = 2\n", "misc");
+    CHECK_INT((int)misc.warnings.size(), 3);
+    CHECK(misc.cfg.mouse_vertical_mode == MouseVerticalMode::Translate);
+
+    // 弃用键：接受但忽略，三个键各告警一次
+    const ConfigLoadResult dep = parse_config(
+        "[misc]\ninterval_ms = 16\nui_scale = 1.25\ntime_offset_compensation = true\n", "dep");
+    CHECK_INT((int)dep.warnings.size(), 3);
+    CHECK(dep.warnings[0].find("interval_ms") != std::string::npos);
+    CHECK(dep.warnings[1].find("ui_scale") != std::string::npos);
+    CHECK(dep.warnings[2].find("time_offset_compensation") != std::string::npos);
+
+    // 非法行 / 空键 / 空文本值：逐行告警
+    const ConfigLoadResult rows = parse_config("this line has no equals\n = 3\n", "rows");
+    CHECK_INT((int)rows.warnings.size(), 2);
+    const ConfigLoadResult empty_text = parse_config("[keys]\nkey_toggle =\n", "empty");
+    CHECK_INT((int)empty_text.warnings.size(), 1);
+    CHECK_STR(empty_text.cfg.key_toggle, "F2");
+
+    // 路径存在但是目录：read_error，不是 file_missing
+    namespace fs = std::filesystem;
+    const fs::path dir = "pbzpm_config_read_error_dir";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directory(dir, ec);
+    const ConfigLoadResult read_err = load_config_file(dir.string());
+    CHECK(!read_err.ok);
+    CHECK(read_err.read_error);
+    CHECK(!read_err.file_missing);
+    fs::remove_all(dir, ec);
 }
 
 void test_config_default_text_roundtrip() {
@@ -363,6 +464,65 @@ void test_math() {
     CHECK_NEAR(moved.x, 100.0, 1e-9);
     const Vec3 moved_right = offset_by_local(Vec3{}, Rot{}, Vec3{0.0, 1.0, 0.0}, 50.0);
     CHECK_NEAR(moved_right.y, 50.0, 1e-9);
+}
+
+// ---------------------------------------------------------------- 引擎端口纯判定（M-1/M-6/M-7）
+
+void test_engine_port_pure_logic() {
+    section("EnginePort 纯判定（日志级别/参数名/ViewTarget/位姿）");
+    using namespace pbzpm;
+
+    // M-6：阈值越高输出越少；Error 在任何阈值下都必须保留
+    CHECK(log_level_enabled(LogLevel::Error, LogLevel::Error));
+    CHECK(!log_level_enabled(LogLevel::Error, LogLevel::Warn));
+    CHECK(!log_level_enabled(LogLevel::Error, LogLevel::Info));
+    CHECK(!log_level_enabled(LogLevel::Error, LogLevel::Debug));
+    CHECK(log_level_enabled(LogLevel::Warn, LogLevel::Error));
+    CHECK(log_level_enabled(LogLevel::Warn, LogLevel::Warn));
+    CHECK(!log_level_enabled(LogLevel::Warn, LogLevel::Info));
+    CHECK(log_level_enabled(LogLevel::Info, LogLevel::Info));
+    CHECK(!log_level_enabled(LogLevel::Info, LogLevel::Debug));
+    CHECK(log_level_enabled(LogLevel::Debug, LogLevel::Debug));
+    for (LogLevel threshold : {LogLevel::Error, LogLevel::Warn, LogLevel::Info, LogLevel::Debug}) {
+        CHECK(log_level_enabled(threshold, LogLevel::Error));
+    }
+
+    // M-7：参数名只按名字命中；全不中返回 -1（禁止按位置退化）
+    const std::vector<std::string> present = {"DeltaX", "ReturnValue", "InString"};
+    auto exists = [&](const char* name) {
+        return std::find(present.begin(), present.end(), name) != present.end();
+    };
+    CHECK_INT(resolve_param_name({"DeltaX", "X"}, exists), 0);
+    CHECK_INT(resolve_param_name({"X", "ReturnValue"}, exists), 1);
+    CHECK_INT(resolve_param_name({"Foo", "Bar"}, exists), -1);
+    CHECK_INT(resolve_param_name({}, exists), -1);              // 空候选集不属于任何位置
+    CHECK_INT(resolve_param_name({nullptr, "ReturnValue"}, exists), 1);
+
+    // M-1：ViewTarget 三态；读不出来不能被当成成功
+    CHECK(classify_view_target(false, false) == ViewTargetState::Unreadable);
+    CHECK(classify_view_target(false, true) == ViewTargetState::Unreadable);
+    CHECK(classify_view_target(true, true) == ViewTargetState::Match);
+    CHECK(classify_view_target(true, false) == ViewTargetState::Mismatch);
+
+    // M-1：相机位姿容差（位置 10 / 角度 2°），角度要按 ±180 归一化
+    CameraPose expected{};
+    CameraPose actual{};
+    CHECK(camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    actual.loc.x = 5.0;
+    CHECK(camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    actual.loc.x = 20.0;
+    CHECK(!camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    actual = expected;
+    actual.rot.yaw = 1.0;
+    CHECK(camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    actual.rot.yaw = 5.0;
+    CHECK(!camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    expected.rot.yaw = 359.0;
+    actual = expected;
+    actual.rot.yaw = 1.0;  // 差 2°，不应误判成 358°
+    CHECK(camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+    actual.rot.roll = 4.0;
+    CHECK(!camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
 }
 
 // ---------------------------------------------------------------- 输入
@@ -648,12 +808,15 @@ void test_photo_mode_happy_path() {
 
     Config cfg;
     PhotoMode mode(fe, cfg);
+    // M-6：构造时把 log_level 同步给引擎侧；进入时清除函数查找缓存（前批收尾）
+    CHECK(fe.configured_log_level == LogLevel::Info);
     CHECK(!mode.active());
     CHECK(mode.enter());
+    CHECK(fe.refresh_cache_calls >= 1);
 
     expect_sequence(fe,
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
-                     "hud_off", "prompt_off", "bars_off", "lockon_off", "subs_off", "aspect_unlock", "save_postfx",
+                     "hud_off", "prompt_off", "bars_off", "lockon_off", "subs_off", "aspect_unlock",
                      "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "shakes_freeze",
                      "wind_freeze", "mpc_snapshot", "sequences_pause", "flow_freeze_on", "wwise_pause"},
                     "首次进入");
@@ -685,7 +848,7 @@ void test_photo_mode_happy_path() {
     mode.leave("test");
     expect_sequence(fe,
                     {"wind_restore", "shakes_restore", "sequences_resume", "pause_off",
-                     "wwise_resume", "flow_freeze_off", "restore_postfx", "restore_aspect",
+                     "wwise_resume", "flow_freeze_off", "restore_aspect",
                      "hud_on", "prompt_on", "bars_on", "lockon_on", "subs_on", "block_input_off", "ignore_move_off",
                      "restore_view", "destroy_camera"},
                     "退出");
@@ -738,7 +901,6 @@ void test_photo_mode_failures_rollback() {
         CHECK_INT(fe.count("destroy_camera"), 1);
         CHECK_INT(fe.count("ignore_move_on"), 0);
         CHECK_INT(fe.count("hide_player_on"), 0);
-        CHECK_INT(fe.count("save_postfx"), 0);
         // 失败后仍可重试成功（fail_attach 关掉）
         fe.fail_attach = false;
         fe.reset_calls();
@@ -1358,14 +1520,22 @@ void test_photo_mode_cutscene_freeze() {
         }
         CHECK_INT(fe.count("pause_on"), 3);
         CHECK(fe.logs_contain("已停止自动重试"));
+        // 放弃后如实标记冻结失效：对外 frozen() 变 false，freeze_lost() 供 UI/日志区分
+        CHECK(!mode.frozen());
+        CHECK(mode.freeze_lost());
+        CHECK_INT(fe.count_logs_contain("冻结已失效"), 1);  // 一次性 Error，不刷屏
 
         fe.reset_calls();
         fe.paused = false;
         advance(mode, 8);
         CHECK_INT(fe.count("pause_on"), 0);  // 放弃后不再每秒硬写
+        CHECK_INT(fe.count_logs_contain("冻结已失效"), 1);  // 持续失效期不重复告警
 
         fe.paused = true;  // 过场结束、状态恢复正常：重新武装
         advance(mode, 4);
+        CHECK(mode.frozen());
+        CHECK(!mode.freeze_lost());
+        CHECK_INT(fe.count_logs_contain("冻结状态已恢复"), 1);  // 恢复也只打一次
         fe.paused = false;
         fe.reset_calls();
         advance(mode, 4);
@@ -1619,7 +1789,9 @@ void test_photo_mode_freeze_treatment() {
     {
         FakeEngine fe;
         fe.mpc_params = 5;
-        PhotoMode mode(fe, Config{});
+        Config cfg;
+        cfg.freeze_diag = true;  // POV 微动监测随诊断开关
+        PhotoMode mode(fe, cfg);
         CHECK(mode.enter());
         CHECK(mode.frozen());
         mode.tick(Intent{}, 0.016);
@@ -1691,25 +1863,29 @@ void test_photo_mode_freeze_treatment() {
         mode.leave("test");
     }
 
-    // 冻结诊断：冻结期每秒一条；freeze_diag=false 时静默
+    // 冻结诊断：默认关闭；显式开启后状态翻转立即输出，持续期每 10 秒最多一条
     {
         auto advance = [](PhotoMode& mode, int ticks) {
             Intent none;
             for (int i = 0; i < ticks; ++i) mode.tick(none, 0.25);
         };
         FakeEngine fe;
-        PhotoMode mode(fe, Config{});
+        Config cfg;
+        cfg.freeze_diag = true;
+        PhotoMode mode(fe, cfg);
         CHECK(mode.enter());  // 冻结中
-        advance(mode, 4);     // 累计 1 秒
+        advance(mode, 4);     // 累计 1 秒：首次采样（状态翻转）立即输出
         CHECK_INT(fe.count("freeze_diag"), 1);
         CHECK(fe.logs_contain("冻结诊断"));
-        advance(mode, 4);     // 再 1 秒再来一条
+        advance(mode, 4);     // 第 2 秒状态未变：限流，不再输出
+        CHECK_INT(fe.count("freeze_diag"), 1);
+        advance(mode, 36);  // 累计到第 11 秒：持续期每 10 秒最多一条
         CHECK_INT(fe.count("freeze_diag"), 2);
 
         FakeEngine fe2;
-        Config cfg;
-        cfg.freeze_diag = false;
-        PhotoMode mode2(fe2, cfg);
+        Config cfg_off;
+        cfg_off.freeze_diag = false;
+        PhotoMode mode2(fe2, cfg_off);
         CHECK(mode2.enter());
         advance(mode2, 5);
         CHECK_INT(fe2.count("freeze_diag"), 0);
@@ -1721,7 +1897,7 @@ void test_photo_mode_reassert_and_partial() {
     using namespace pbzpm;
     using pbzpm::test::FakeEngine;
 
-    // 每 1 秒重设 ViewTarget；attach 失败则退出
+    // 每 1 秒重设 ViewTarget；M-1：连续 3 次回读确认失败才退出，单次失败只告警
     {
         FakeEngine fe;
         PhotoMode mode(fe, Config{});
@@ -1734,9 +1910,34 @@ void test_photo_mode_reassert_and_partial() {
         mode.tick(Intent{}, 0.05);  // 越过 1s
         CHECK_INT(fe.count("attach_view"), 1);
 
-        fe.fail_attach = true;
+        // 部分成功：ProcessEvent 成功但回读确认失败。第一次只告警，不能退出
+        fe.attach_reports_mismatch = true;
         for (int i = 0; i < 61; ++i) mode.tick(Intent{}, 0.016);
         mode.tick(Intent{}, 0.05);
+        CHECK(mode.active());
+        CHECK(fe.logs_contain("ViewTarget/相机位姿校验未通过"));
+        CHECK_INT(fe.attach_verify_fail_streak, 1);
+
+        // 第二、三次确认失败 → 达到阈值，明确错误并 leave
+        for (int round = 0; round < 2; ++round) {
+            for (int i = 0; i < 61; ++i) mode.tick(Intent{}, 0.016);
+            mode.tick(Intent{}, 0.05);
+        }
+        CHECK(!mode.active());
+        CHECK(fe.logs_contain("相机接管已失效"));
+        CHECK_INT(fe.attach_verify_fail_streak, 3);
+    }
+
+    // fail_attach（函数调用本身失败）同样累计，连续 3 次后退出
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        fe.fail_attach = true;
+        for (int round = 0; round < 3; ++round) {
+            for (int i = 0; i < 61; ++i) mode.tick(Intent{}, 0.016);
+            mode.tick(Intent{}, 0.05);
+        }
         CHECK(!mode.active());
     }
 
@@ -1753,18 +1954,6 @@ void test_photo_mode_reassert_and_partial() {
         fe.reset_calls();
         mode.leave();
         CHECK_INT(fe.count("ignore_move_off"), 0);
-    }
-
-    // 后处理快照失败：退出时不调用 restore
-    {
-        FakeEngine fe;
-        fe.fail_postfx = true;
-        PhotoMode mode(fe, Config{});
-        CHECK(mode.enter());
-        CHECK(fe.logs_contain("PostProcess 快照失败"));
-        fe.reset_calls();
-        mode.leave();
-        CHECK_INT(fe.count("restore_postfx"), 0);
     }
 
     // hide_game_hud = true 时才动 HUD，并在退出时恢复
@@ -2064,9 +2253,6 @@ void test_photo_mode_ultrawide() {
         CHECK_INT(fe.count("restore_aspect"), 1);
     }
 }
-
-
-}  // namespace
 
 
 void test_photo_mode_input_blocking() {
@@ -2980,6 +3166,548 @@ void test_pbzfm_config_writeback() {
     std::remove(path.c_str());
 }
 
+// 配置原子写：写 <path>.tmp 后 rename 覆盖目标，任何时刻读到的都是完整文件
+void test_config_atomic_write() {
+    section("save_config_file 原子写（临时文件 + rename）");
+    using namespace pbzpm;
+    namespace fs = std::filesystem;
+
+    const fs::path path = "pbzpm_atomic_write_test.ini";
+    const fs::path tmp = path.string() + ".tmp";
+    std::error_code ec;
+    fs::remove(path, ec);
+    fs::remove(tmp, ec);
+
+    Config first{};
+    first.key_toggle = "F6";
+    first.move_speed = 512.0;
+    std::string err;
+    CHECK(save_config_file(path.string(), first, &err));
+    CHECK(!fs::exists(tmp));  // 临时文件已 rename，无残留
+    const ConfigLoadResult read1 = load_config_file(path.string());
+    CHECK(read1.ok);
+    CHECK(!read1.file_missing);
+    CHECK(!read1.read_error);
+    CHECK_INT((int)read1.warnings.size(), 0);
+    CHECK_STR(read1.cfg.key_toggle, "F6");
+    CHECK_NEAR(read1.cfg.move_speed, 512.0, 1e-9);
+
+    // 覆盖已存在目标：rename 原子替换，整体内容更新，不残留半写
+    Config second = first;
+    second.key_toggle = "F7";
+    second.move_speed = 640.0;
+    CHECK(save_config_file(path.string(), second, &err));
+    CHECK(!fs::exists(tmp));
+    const ConfigLoadResult read2 = load_config_file(path.string());
+    CHECK_INT((int)read2.warnings.size(), 0);
+    CHECK_STR(read2.cfg.key_toggle, "F7");
+    CHECK_NEAR(read2.cfg.move_speed, 640.0, 1e-9);
+
+    // 空路径：明确失败并给出原因
+    CHECK(!save_config_file("", second, &err));
+    CHECK(!err.empty());
+
+    // 父目录不存在：失败且不残留 .tmp / 目标文件
+    const fs::path missing_dir = "pbzpm_no_such_dir_for_save";
+    fs::remove_all(missing_dir, ec);
+    const fs::path missing_path = missing_dir / "config.ini";
+    CHECK(!save_config_file(missing_path.string(), second, &err));
+    CHECK(!fs::exists(missing_path));
+    CHECK(!fs::exists(missing_path.string() + ".tmp"));
+
+    fs::remove(path, ec);
+    fs::remove(tmp, ec);
+}
+
+
+// ---------------------------------------------------------------- PBZFM 词典快照（H-4）
+
+// 不依赖 UE4SS/ImGui 的纯判定：展示顺序与「当前语言 → en-US → 键名」查译链
+void test_i18n_pure_logic() {
+    section("PBZFM 词典纯逻辑（展示顺序 / 查译链）");
+    using namespace pbzpm;
+    CHECK(language_display_less("en-US", "zh-CN"));
+    CHECK(language_display_less("zh-CN", "ja-JP"));
+    CHECK(language_display_less("ja-JP", "ko-KR"));
+    CHECK(language_display_less("ko-KR", "aa-AA"));  // 已知语言排在未知语言之前
+    CHECK(language_display_less("aa-AA", "ab-AA"));  // 未知语言按 id 字典序
+    CHECK(!language_display_less("zh-CN", "en-US"));
+
+    const std::map<std::string, std::string> cur{{"a", "A"}, {"b", "B"}};
+    const std::map<std::string, std::string> base{{"b", "BE"}, {"c", "CE"}};
+    CHECK_STR(resolve_translation(cur, &base, "a"), "A");
+    CHECK_STR(resolve_translation(cur, &base, "b"), "B");
+    CHECK_STR(resolve_translation(cur, &base, "c"), "CE");  // 当前词典缺键 → 基准兜底
+    CHECK_STR(resolve_translation(cur, &base, "d"), "d");   // 两边都缺 → 原样返回键名
+    CHECK_STR(resolve_translation(cur, nullptr, "c"), "c");
+}
+
+// 词典快照：T 返回值脱离快照后仍有效；重扫替换快照时并发读取不失效。
+void test_i18n_snapshot_concurrency() {
+    section("PBZFM 词典快照（返回值生命周期 / 并发重扫）");
+    using namespace pbzpm;
+    namespace fs = std::filesystem;
+
+    // 相对路径：测试可能在项目根或构建目录运行，两处都可写；全程用 error_code 避免抛异常
+    const fs::path root = "pbzpm_i18n_test";
+    std::error_code ec;
+    fs::remove_all(root, ec);
+    const fs::path dir = root / "languages";
+    // create_directories 在目录已存在时返回 false，不能直接当失败断言
+    fs::create_directories(dir, ec);
+    CHECK(!ec && fs::is_directory(dir));
+
+    auto write_lang = [](const fs::path& path, const std::string& text) {
+        std::ofstream out(path, std::ios::binary | std::ios::trunc);
+        if (!out) return false;
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        return out.good();
+    };
+    CHECK(write_lang(dir / "en-US.json", R"({"__display":"English","#greet":"Hello","#only_en":"Base only"})"));
+    CHECK(write_lang(dir / "zh-CN.json", R"({"__display":"简体中文","#greet":"你好"})"));
+
+    PbzmI18n lang;
+    lang.RescanLanguages(root.string(), true);
+    CHECK_INT(lang.LanguageCount(), 2);
+    CHECK_STR(lang.CurrentId(), "en-US");
+    lang.SetLanguageById("zh-CN");
+    CHECK_STR(lang.CurrentId(), "zh-CN");
+    CHECK_STR(lang.T("#greet"), "你好");
+    CHECK_STR(lang.T("#only_en"), "Base only");  // 当前语言缺键 → en-US 基准兜底
+
+    // T 返回拷贝：拿到后立刻重扫替换词典，旧返回值仍然有效
+    const std::string held = lang.T("#greet");
+    CHECK(write_lang(dir / "zh-CN.json", R"({"__display":"简体中文","#greet":"您好"})"));
+    CHECK(write_lang(dir / "en-US.json", R"({"__display":"English","#greet":"Hello again"})"));
+    lang.RescanLanguages(root.string(), true);
+    CHECK_STR(held, "你好");
+    CHECK_STR(lang.T("#greet"), "您好");
+
+    // 一个线程反复重扫并替换词典，另一个线程持续读取：读到的永远是完整字符串
+    std::atomic<int> bad{0};
+    std::thread writer([&] {
+        for (int i = 0; i < 300; ++i) {
+            write_lang(dir / "zh-CN.json",
+                       i % 2 == 0 ? R"({"__display":"简体中文","#greet":"你好"})"
+                                  : R"({"__display":"简体中文","#greet":"您好"})");
+            lang.RescanLanguages(root.string(), true);
+        }
+    });
+    std::thread reader([&] {
+        for (int i = 0; i < 5000; ++i) {
+            const std::string v = lang.T("#greet");
+            if (v != "你好" && v != "您好" && v != "Hello again" && v != "Hello") ++bad;
+            const std::vector<PbzmI18n::LanguageInfo> list = lang.Languages();
+            if (list.size() < 2 || list[0].id != "en-US") ++bad;
+            const std::string cur = lang.CurrentId();
+            if (cur != "zh-CN" && cur != "en-US") ++bad;
+        }
+    });
+    writer.join();
+    reader.join();
+    CHECK_INT(bad.load(), 0);
+
+    fs::remove_all(root, ec);
+}
+
+// ---------------------------------------------------------------- 世界令牌与快照（H-2）
+
+void test_world_snapshot() {
+    section("WorldIdentity / 时间与暂停快照（H-2）");
+    using namespace pbzpm;
+
+    int world_a = 0;
+    int world_b = 0;
+    int settings_a = 0;
+    int settings_b = 0;
+    const void* wa = &world_a;
+    const void* wb = &world_b;
+    const void* sa = &settings_a;
+    const void* sb = &settings_b;
+
+    // 空指针（关卡切换窗口期）不换代，否则同一世界的原始值会被误丢
+    WorldIdentity identity;
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(!identity.observe(nullptr, nullptr));
+    CHECK(!identity.observe(nullptr, nullptr));
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(!identity.observe(wa, nullptr));
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(!identity.observe(wa, sa));  // 首次拿到世界：建立基线，不算换代
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(!identity.observe(wa, sa));
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(!identity.observe(nullptr, nullptr));  // 卸载窗口期
+    CHECK_INT((int)identity.generation(), 0);
+    CHECK(identity.observe(wb, nullptr));  // UWorld 变化 → 换代
+    CHECK_INT((int)identity.generation(), 1);
+    CHECK(identity.observe(wb, sb));  // WorldSettings 变化 → 换代
+    CHECK_INT((int)identity.generation(), 2);
+    identity.invalidate();
+    CHECK_INT((int)identity.generation(), 3);
+
+    // 时间字段位图：读失败就不写
+    TimeSettingsSnapshot time;
+    CHECK(!time.belongs_to(7));
+    time.adopt(7);
+    CHECK(time.belongs_to(7));
+    CHECK(!time.was_read(TimeField::Dilation));
+    CHECK(!time.any_written());
+    // 只读到 TimeDilation → 只允许写 TimeDilation
+    time.mark_read(TimeField::Dilation);
+    time.dilation = 1.0;
+    CHECK_INT(plan_time_freeze_fields(time, 0.0), (int)time_field_bit(TimeField::Dilation));
+    CHECK_INT(plan_time_freeze_fields(time, 100.0), (int)time_field_bit(TimeField::Dilation));
+    // 读到 Allow/Min/Max 后，越界才附带解锁与放宽上下限
+    time.mark_read(TimeField::Allow);
+    time.mark_read(TimeField::Min);
+    time.mark_read(TimeField::Max);
+    const int with_all = (int)(time_field_bit(TimeField::Dilation) | time_field_bit(TimeField::Allow) |
+                               time_field_bit(TimeField::Min));
+    CHECK_INT(plan_time_freeze_fields(time, 0.0), with_all);  // 0 < min → 需要放宽 Min
+    const int with_max = (int)(time_field_bit(TimeField::Dilation) | time_field_bit(TimeField::Allow) |
+                               time_field_bit(TimeField::Max));
+    CHECK_INT(plan_time_freeze_fields(time, 100.0), with_max);  // 100 > max → 需要放宽 Max
+    // 未读到 Allow 时即使越界也不解锁
+    TimeSettingsSnapshot no_allow;
+    no_allow.mark_read(TimeField::Dilation);
+    no_allow.mark_read(TimeField::Min);
+    CHECK_INT(plan_time_freeze_fields(no_allow, 0.0),
+              (int)(time_field_bit(TimeField::Dilation) | time_field_bit(TimeField::Min)));
+    // 完全没读到 → 放弃冻结
+    TimeSettingsSnapshot empty;
+    CHECK_INT(plan_time_freeze_fields(empty, 0.0), 0);
+    // 写入记账独立于读取记账
+    time.mark_written(TimeField::Dilation);
+    time.mark_written(TimeField::Allow);
+    CHECK(time.was_written(TimeField::Dilation));
+    CHECK(time.was_written(TimeField::Allow));
+    CHECK(!time.was_written(TimeField::Min));
+    CHECK(time.any_written());
+    time.reset();
+    CHECK(time.read_mask == 0 && time.written_mask == 0);
+    CHECK(!time.any_written());
+    CHECK(!time.belongs_to(7));
+
+    // 暂停快照：两项独立记账，读不到就完全不写
+    PauseSnapshot pause;
+    CHECK(!pause.any_written());
+    CHECK(!pause.full_tick_read && !pause.game_mode_read);
+    pause.adopt(11);
+    CHECK(pause.belongs_to(11));
+    pause.full_tick_read = true;
+    pause.full_tick_written = true;
+    CHECK(pause.any_written());
+    pause.reset();
+    CHECK(!pause.any_written());
+    CHECK(!pause.belongs_to(11));
+    CHECK(!pause.game_mode_written);
+}
+
+// ---------------------------------------------------------------- 退出恢复失败重试（H-1）
+
+void test_photo_mode_recovery_retry() {
+    section("PhotoMode 退出恢复失败重试");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 失败项保留标志 + Error 日志；1 秒退避后重试，恢复成功后清干净
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.paused);
+        CHECK(mode.frozen());
+
+        fe.fail_pause_restore = true;
+        mode.leave("测试恢复失败");
+        CHECK(!mode.active());
+        CHECK(mode.recovery_pending());  // 状态如实反映「未完成恢复」
+        CHECK(mode.frozen());            // 未恢复就不清冻结标志
+        CHECK(fe.paused);
+        CHECK(fe.logs_contain("仍有 1 项未能还原"));
+        CHECK(fe.logs_contain("游戏暂停未解除"));
+
+        // 退避 1 秒内不重试（不能每帧重压）
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("pause_off"), 1);  // 只有 leave 时那一次
+        mode.tick(Intent{}, 0.25);            // 累积 1.0 秒 → 第一次重试，仍失败
+        CHECK_INT(fe.count("pause_off"), 2);
+        CHECK(mode.recovery_pending());
+        CHECK(mode.frozen());
+
+        // 第二次重试要等 2 秒；这次让引擎恢复正常
+        fe.fail_pause_restore = false;
+        for (int i = 0; i < 12 && mode.recovery_pending(); ++i) mode.tick(Intent{}, 0.25);
+        CHECK(!mode.recovery_pending());
+        CHECK(!mode.frozen());
+        CHECK(!fe.paused);
+        CHECK(fe.logs_contain("后台重试成功"));
+        // 恢复完成后再次 leave 是幂等的
+        const int pause_off_calls = fe.count("pause_off");
+        mode.leave("测试");
+        CHECK_INT(fe.count("pause_off"), pause_off_calls);
+    }
+
+    // 重试次数到上限后停止：不再反复重压，但仍如实保留未还原状态
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        fe.fail_pause_restore = true;
+        mode.leave("测试");
+        CHECK(mode.recovery_pending());
+        for (int i = 0; i < 200 && mode.recovery_pending(); ++i) mode.tick(Intent{}, 0.25);
+        CHECK(!mode.recovery_pending());
+        CHECK(mode.frozen());  // 没恢复成功就不谎报已恢复
+        CHECK(fe.paused);
+        CHECK(fe.logs_contain("停止重试"));
+
+        // 仍有残留：再次进入应先补还原，失败则拒绝进入
+        CHECK(!mode.enter());
+        CHECK(fe.logs_contain("本次进入已取消"));
+    }
+
+    // Wwise 整引擎唤醒失败：保留挂起标志，后续 tick 重试成功后清除
+    {
+        FakeEngine fe;
+        fe.wwise_engine_suspend_ok = true;
+        fe.wwise_engine_wake_ok = false;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(fe.wwise_engine_suspended);  // 自动冻结时无逐语音 ID → 整引擎挂起
+        CHECK(fe.logs_contain("整引擎 Suspend"));
+
+        mode.leave("测试唤醒失败");
+        CHECK(mode.recovery_pending());
+        CHECK(fe.wwise_engine_suspended);  // 唤醒失败不虚假清除
+        CHECK(fe.logs_contain("Wwise 音频引擎仍处于挂起"));
+
+        fe.wwise_engine_wake_ok = true;
+        for (int i = 0; i < 8 && mode.recovery_pending(); ++i) mode.tick(Intent{}, 0.25);
+        CHECK(!mode.recovery_pending());
+        CHECK(!fe.wwise_engine_suspended);
+        CHECK(fe.logs_contain("后台重试成功"));
+    }
+
+    // 多失败项逐项累积：HUD 只失败一项时，其他项照常还原，不因一项失败而重做全部
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        fe.fail_hud_restore = true;
+        mode.leave("测试 HUD 恢复失败");
+        CHECK(mode.recovery_pending());
+        CHECK(fe.logs_contain("HUD 仍处于隐藏"));
+        CHECK(fe.hud_visible == false);  // 引擎侧确实仍是隐藏
+        CHECK(fe.input_blocked == false); // 其他项已正常还原
+        CHECK(fe.view_attached == false);
+
+        fe.fail_hud_restore = false;
+        for (int i = 0; i < 8 && mode.recovery_pending(); ++i) mode.tick(Intent{}, 0.25);
+        CHECK(!mode.recovery_pending());
+        CHECK(fe.hud_visible);
+    }
+}
+
+// ---------------------------------------------------------------- 重试退避（M-11）
+
+// 引擎输入钩子重试的纯逻辑：指数退避序列、封顶、溢出保护、到点判定。
+// 真实计时（steady_clock）与 UE4SS 钩子安装只能实机验证，这里只覆盖可纯化的判定。
+void test_retry_backoff() {
+    section("重试退避（M-11）");
+    using namespace pbzpm;
+
+    RetryBackoff backoff{};
+    // 默认节奏：0.5 / 1 / 2 / 4 / 8 封顶，之后一直 8 秒
+    CHECK_NEAR(backoff.delay_seconds(1), 0.5, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(2), 1.0, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(3), 2.0, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(4), 4.0, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(5), 8.0, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(6), 8.0, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(30), 8.0, 1e-9);
+    // 极大失败次数不能溢出、也不能让循环次数线性增长
+    CHECK_NEAR(backoff.delay_seconds(1000000), 8.0, 1e-9);
+    // 0 / 负数按第 1 次处理（防御性边界）
+    CHECK_NEAR(backoff.delay_seconds(0), 0.5, 1e-9);
+    CHECK_NEAR(backoff.delay_seconds(-5), 0.5, 1e-9);
+
+    // 单调不减
+    bool monotonic = true;
+    double previous = 0.0;
+    for (int failures = 0; failures <= 20; ++failures) {
+        const double delay = backoff.delay_seconds(failures);
+        if (delay < previous) monotonic = false;
+        previous = delay;
+    }
+    CHECK(monotonic);
+
+    // 到点判定：相等即到点（浮点边界不卡住），未到点不重试
+    CHECK(retry_due(1.0, 0.5));
+    CHECK(retry_due(0.5, 0.5));
+    CHECK(!retry_due(0.499999, 0.5));
+    CHECK(retry_due(10.0, 8.0));
+
+    // 自定义参数（base=1.0 / 封顶 4.0）
+    RetryBackoff custom{1.0, 4.0};
+    CHECK_NEAR(custom.delay_seconds(1), 1.0, 1e-9);
+    CHECK_NEAR(custom.delay_seconds(2), 2.0, 1e-9);
+    CHECK_NEAR(custom.delay_seconds(3), 4.0, 1e-9);
+    CHECK_NEAR(custom.delay_seconds(9), 4.0, 1e-9);
+
+    // 模拟 tick 线程的真实时间序列：0.5→1→2→4→8，第 5 次失败后固定 8 秒一次
+    double now = 0.0;
+    double next_retry_at = 0.0;
+    int failures = 0;
+    CHECK(retry_due(now, next_retry_at));  // 首次立即尝试
+    const double first_time = 0.0;
+    CHECK(retry_due(first_time, next_retry_at));
+    for (int attempt = 1; attempt <= 6; ++attempt) {
+        ++failures;
+        next_retry_at = now + backoff.delay_seconds(failures);
+        // 未到点：本帧必须跳过（不能每帧都重试）
+        CHECK(!retry_due(next_retry_at - 0.001, next_retry_at));
+        now = next_retry_at;  // 到点
+        CHECK(retry_due(now, next_retry_at));
+        if (attempt == 6) CHECK_NEAR(now, 0.5 + 1 + 2 + 4 + 8 + 8, 1e-9);
+    }
+}
+
+// ---------------------------------------------------------------- 钩子记账（H-5）
+
+// 纯记账结构：幂等判定、成功/失败/部分成功、待注销快照、注销结果回写。
+// 真实 RegisterHook/UnregisterHook 只能实机验证，这里只覆盖判定逻辑本身。
+void test_hook_registry() {
+    section("HookRegistry 记账与幂等");
+    using namespace pbzpm;
+
+    int dummy_function = 0;
+    void* function = &dummy_function;
+
+    {
+        HookRegistry registry;
+        CHECK(!registry.installed("PBZSoundFXSubsystem.PBZPostEventOnActor"));
+        CHECK_INT(registry.installed_count(), 0);
+        CHECK_INT(registry.failed_count(), 0);
+        CHECK_INT(registry.unregister_failed_count(), 0);
+        CHECK_INT((int)registry.records().size(), 0);
+        CHECK_INT((int)registry.take_pending_unregister().size(), 0);
+    }
+
+    // 成功安装：两个 id 有效 → Installed
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("PBZSoundFXSubsystem.PBZPostEventOnActor", HookKind::Script, function, 3, 4));
+        CHECK(registry.installed("PBZSoundFXSubsystem.PBZPostEventOnActor"));
+        CHECK_INT(registry.installed_count(), 1);
+        const std::vector<HookRecord> all = registry.records();
+        CHECK_INT((int)all.size(), 1);
+        CHECK_INT(all[0].pre_id, 3);
+        CHECK_INT(all[0].post_id, 4);
+        CHECK(all[0].function == function);
+        CHECK_INT(all[0].attempts, 1);
+    }
+
+    // 幂等：已 Installed 的 target 再次安装返回 false，且旧 id 不被覆盖（否则旧钩子失去注销线索）
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("AkComponent.PostAkEvent", HookKind::Script, function, 11, 12));
+        CHECK(!registry.record_install("AkComponent.PostAkEvent", HookKind::Script, function, 21, 22));
+        CHECK(registry.installed("AkComponent.PostAkEvent"));
+        CHECK_INT(registry.installed_count(), 1);
+        const std::vector<HookRecord> all = registry.records();
+        CHECK_INT((int)all.size(), 1);
+        CHECK_INT(all[0].pre_id, 11);
+        CHECK_INT(all[0].post_id, 12);
+        CHECK_INT(all[0].attempts, 1);  // 未覆盖也未累加 attempts
+    }
+
+    // 部分成功：脚本钩子只拿到一个 id 也算装上；两个都无效才算失败
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("A", HookKind::Script, function, 5, -1));
+        CHECK(registry.installed("A"));
+        CHECK(!registry.record_install("B", HookKind::Script, function, -1, -1));
+        CHECK(!registry.installed("B"));
+        CHECK_INT(registry.failed_count(), 1);
+        CHECK_INT(registry.installed_count(), 1);
+        const std::vector<HookRecord> all = registry.records();
+        CHECK_INT((int)all.size(), 2);
+        CHECK(all[1].state == HookState::Failed);
+        CHECK_INT(all[1].pre_id, -1);
+        CHECK_INT(all[1].post_id, -1);
+    }
+
+    // 失败记录可重试：Failed → record_install 成功后转 Installed，attempts 累加
+    {
+        HookRegistry registry;
+        registry.record_failure("PlayAudio_C.ForceFinishAudio", HookKind::Script);
+        CHECK(!registry.installed("PlayAudio_C.ForceFinishAudio"));
+        CHECK_INT(registry.failed_count(), 1);
+        CHECK_INT(registry.records()[0].attempts, 1);
+        CHECK(registry.record_install("PlayAudio_C.ForceFinishAudio", HookKind::Script, function, 7, 8));
+        CHECK(registry.installed("PlayAudio_C.ForceFinishAudio"));
+        CHECK_INT(registry.failed_count(), 0);
+        CHECK_INT(registry.installed_count(), 1);
+        CHECK_INT(registry.records()[0].attempts, 2);
+    }
+
+    // 全局回调：单 id，记录在 pre_id；post_id 恒为 -1
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("UE4SS.EngineTickPre", HookKind::Global, nullptr, 42, -1));
+        CHECK(registry.installed("UE4SS.EngineTickPre"));
+        const std::vector<HookRecord> all = registry.records();
+        CHECK_INT(all[0].pre_id, 42);
+        CHECK_INT(all[0].post_id, -1);
+        CHECK(all[0].kind == HookKind::Global);
+        CHECK(all[0].function == nullptr);
+    }
+
+    // 待注销快照只含 Installed / UnregisterFailed；注销成功与失败的回报各自如实更新
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("A", HookKind::Script, function, 1, 2));
+        CHECK(registry.record_install("B", HookKind::Global, nullptr, 9, -1));
+        registry.record_failure("C", HookKind::Script);
+
+        std::vector<HookRecord> pending = registry.take_pending_unregister();
+        CHECK_INT((int)pending.size(), 2);
+
+        registry.record_unregistered("A");
+        CHECK(!registry.installed("A"));
+        CHECK_INT(registry.installed_count(), 1);
+        registry.record_unregister_failure("B");
+        CHECK_INT(registry.unregister_failed_count(), 1);
+        CHECK(!registry.installed("B"));
+
+        // 注销失败的条目重新出现在待注销列表里，允许下次重试；成功的与失败安装不再出现
+        pending = registry.take_pending_unregister();
+        CHECK_INT((int)pending.size(), 1);
+        CHECK_STR(pending[0].target, "B");
+
+        // 重试成功后清除失败计数
+        registry.record_unregistered("B");
+        CHECK_INT(registry.unregister_failed_count(), 0);
+        CHECK_INT((int)registry.take_pending_unregister().size(), 0);
+    }
+
+    // 注销后重新安装（热重载场景）可以复用同一 target，attempts 累加
+    {
+        HookRegistry registry;
+        CHECK(registry.record_install("D", HookKind::Script, function, 10, 11));
+        registry.record_unregistered("D");
+        CHECK(registry.record_install("D", HookKind::Script, function, 20, 21));
+        CHECK(registry.installed("D"));
+        const std::vector<HookRecord> all = registry.records();
+        CHECK_INT(all[0].pre_id, 20);
+        CHECK_INT(all[0].post_id, 21);
+        CHECK_INT(all[0].attempts, 2);
+    }
+}
 
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
@@ -2987,8 +3715,10 @@ int main() {
     test_vk_names();
     test_config_defaults_and_parse();
     test_config_warnings_and_clamps();
+    test_config_schema_and_sections();
     test_config_default_text_roundtrip();
     test_math();
+    test_engine_port_pure_logic();
     test_input_logic();
     test_photo_mode_happy_path();
     test_photo_mode_failures_rollback();
@@ -3007,6 +3737,8 @@ int main() {
     test_photo_mode_enemy_health_bars();
     test_photo_mode_lockon_marker();
     test_photo_mode_subtitles();
+    test_world_snapshot();
+    test_photo_mode_recovery_retry();
     test_gamepad_names();
     test_gamepad_parse_combo();
     test_dinput_map();
@@ -3016,8 +3748,18 @@ int main() {
     test_photo_mode_slow_look();
     test_pbzfm_fields_roundtrip();
     test_pbzfm_config_writeback();
+    test_config_atomic_write();
+    test_i18n_pure_logic();
+    test_i18n_snapshot_concurrency();
+    test_retry_backoff();
+    test_hook_registry();
+    run_mod_runtime_tests();
+    run_input_pure_tests();
+    run_pbzfm_validation_tests();
 
     std::printf("\n----------------------------------------\n");
+    // 机器可读行：tools\update_test_count.ps1 只解析这一行（不依赖中文编码）
+    std::printf("TESTS checks=%d failures=%d\n", g_checks, g_failures);
     std::printf("检查 %d 项，失败 %d 项\n", g_checks, g_failures);
     if (g_failures == 0) {
         std::printf("全部通过\n");

@@ -52,6 +52,33 @@ std::string pad_combo_name(const std::vector<PadButton>& combo);
 // 摇杆径向死区：分量先夹紧到 [-1,1]；幅度 <= deadzone 归零，其余线性缩放回 0..1。
 void apply_stick_deadzone(double& x, double& y, double deadzone);
 
+// ---------------- XInput（Xbox 手柄）映射 ----------------
+// wButtons 位掩码。数值与 Windows SDK 的 XINPUT_GAMEPAD_* 完全一致，
+// 但放在 core 侧：win_input 只需把原始值传进来，测试也不必包含 xinput.h。
+inline constexpr unsigned short kXInputPadDpadUp = 0x0001;
+inline constexpr unsigned short kXInputPadDpadDown = 0x0002;
+inline constexpr unsigned short kXInputPadDpadLeft = 0x0004;
+inline constexpr unsigned short kXInputPadDpadRight = 0x0008;
+inline constexpr unsigned short kXInputPadStart = 0x0010;
+inline constexpr unsigned short kXInputPadBack = 0x0020;
+inline constexpr unsigned short kXInputPadLeftThumb = 0x0040;
+inline constexpr unsigned short kXInputPadRightThumb = 0x0080;
+inline constexpr unsigned short kXInputPadLeftShoulder = 0x0100;
+inline constexpr unsigned short kXInputPadRightShoulder = 0x0200;
+inline constexpr unsigned short kXInputPadGuide = 0x0400;
+inline constexpr unsigned short kXInputPadA = 0x1000;
+inline constexpr unsigned short kXInputPadB = 0x2000;
+inline constexpr unsigned short kXInputPadX = 0x4000;
+inline constexpr unsigned short kXInputPadY = 0x8000;
+
+// ── XInput 短轴：SHORT → -1..1（32767 为满量程，-32768 会被夹到 -1）
+double thumb_to_axis(short value);
+
+// XInput 原始状态 → PadState 的纯翻译：按钮位掩码、扳机字节（0..255 → 0..1）、
+// 四根摇杆。与 win_input 的 xinput_to_pad 语义一致，便于脱离 Win32 单测。
+PadState xinput_state_to_pad(unsigned short buttons, unsigned char left_trigger, unsigned char right_trigger,
+                             short lx, short ly, short rx, short ry);
+
 // ---------------- DirectInput（PS 手柄）映射 ----------------
 // DualSense / DualShock4 不是 XInput 设备，Windows 把它们枚举成 DirectInput 手柄，
 // 按钮位和轴布局与 Xbox 不同，这里做 DIJOYSTATE2 → PadState 的纯翻译。
