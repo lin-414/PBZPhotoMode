@@ -6,6 +6,8 @@
 > 按 `F2` 进入摄影模式：`Alt + 鼠标` 自由转视角，`WASD` 平移，
 > 滚轮调 FOV；进入时自动暂停时间，`F` 可随时冻结/恢复。纯快捷键操作，游戏内无菜单界面。
 
+> **实现边界**：当前注入方式是 `UObjectGlobals::RegisterHook` 的 UFunction 级钩子 + Engine Tick 回调 + `GetProcAddress` 导出解析；1.0.66 起已移除 IAT Hook（`PatchModuleImports`），不再冻结 QPC/GetTickCount。
+
 ## 功能
 
 - **自由相机**：`F2` 进入 / 退出
@@ -26,7 +28,8 @@
 **1.0.75-cpp** —— 已编译：
 
 - **Q/E 滚转键可配置**：新增 `[keys] key_roll_left` / `key_roll_right`（默认 `Q` / `E`，左=逆时针、右=顺时针）——此前 Q/E 硬编码在 `input_logic.cpp`，`config.ini` 只能改 `roll_speed`，改不了滚转键；现在 `config.ini` 与 PBZFM 菜单「快捷键（键盘）」页都能改，旧配置不写新键名时行为不变
-- 核心层测试 **2529 项全绿**
+- **高危/中度问题收口（本批未升版本号）**：H-1～H-5 与 M-4/M-5/M-10 落地——退出恢复失败改为有限重试且不再吞错、时间/暂停原始值按世界令牌失效、反射遍历与 `ProcessEvent` 加 SEH 隔离、跨世界缓存统一失效、PBZFM 线程状态归类；配置越界值改为 clamp 到边界（M-5）。核心层测试 2529 → **2933 项全绿**
+- 核心层测试全绿（当前断言总数见 [docs/test_count.txt](PBZPhotoModeCpp/docs/test_count.txt)，由 `tools/update_test_count.bat` 自动写入）
 
 **1.0.74-cpp** —— 已编译：
 
@@ -72,7 +75,7 @@
 
 - **修复移动视角频繁卡顿**：彻底移除 1.0.65 的时间偏移补偿 IAT Hook。它把 `PBZ.exe` / `MRTCEngine.dll` 的 QPC 一起冻结，而摄影模式不能像 PBZPause 那样挂起渲染线程，渲染帧计时停摆就会被感知为卡顿；旧配置项 `time_offset_compensation` 自动忽略并告警。
 - **Wwise 整引擎 Suspend 真正生效**：当前 PBZ 把 Wwise 静态链接进 `PBZ.exe`，1.0.65 只查 `AkSoundEngineDLL.dll` 导致静默回落；现在优先从主程序导出解析 `Suspend` / `WakeupFromSuspend` / `IsInitialized`，日志会写明接口来源，失败才回落逐语音。
-- 核心层测试 **2294 项全绿**。
+- 核心层测试 **2294 项全绿**。（1.0.65 的 2372 项降到 2294 项，是移除了时间偏移补偿（IAT Hook）的专用用例，不是测试回退）
 
 **1.0.65-cpp** —— 已编译：
 
@@ -151,8 +154,10 @@
 
 ```bat
 cd PBZPhotoModeCpp
-tools\build_tests.bat          :: 521 项断言全绿
+tools\build_tests.bat          :: 核心层测试全绿（当前断言总数见 docs/test_count.txt）
 ```
+
+> 这里的「项」是运行时断言次数：`tests/` 下的 `CHECK*` 宏经表驱动/循环放大后的实际次数写在 `docs/test_count.txt`（单一来源），不是独立测试用例数。
 
 构建 DLL 需要一份 [RE-UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) 源码（含 Epic 授权的 `UEPseudo` 子模块）：
 
@@ -171,7 +176,7 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 │  ├─ src/core/             # 纯逻辑层（配置/输入/状态机，含单元测试）
 │  ├─ src/engine/           # UE4SS 引擎适配层
 │  ├─ src/mod_app.cpp       # CppUserModBase 入口
-│  ├─ tests/                # 2529 项核心层断言
+│  ├─ tests/                # 核心层运行时断言（项数见 docs/test_count.txt）
 │  ├─ tools/                # 构建 / 打包脚本
 │  └─ docs/                 # 构建、安装、核对清单
 ├─ docs/
@@ -182,12 +187,14 @@ tools\build_dll.bat D:\path\to\RE-UE4SS
 
 ## 版本记录
 
+- **1.0.75 第二阶段**（2026-11-03）：补结构性测试缺口——mod_app 的引擎侧编排抽到 `core/ModRuntime`（依赖注入，可用 FakeEngine 驱动完整进退路径），win_input 的 XInput/摇杆映射抽到 `core/gamepad`，PBZFM 字段校验补失败路径；遗留常量并入 `core/tuning.h`（数值不变）；断言总数改由 `tools/update_test_count.bat` 写入 `docs/test_count.txt`（单一来源）
+- **1.0.75 收口批次**（2026-11-03）：H-1～H-5 与 M-4/M-5/M-10 落地——退出恢复失败改为有限重试且不再吞错、时间/暂停原始值按世界令牌失效、反射遍历与 `ProcessEvent` 加 SEH 隔离、跨世界缓存统一失效、PBZFM 线程状态归类；配置越界值改为 clamp 到边界（M-5）；PostFX 快照死接口整体移除（本 Mod 不修改后期处理，`save_postfx`/`restore_postfx` 从进入/退出流程与 `FakeEngine` 一并删除）；核心测试 2529 → 2933 项全绿
 - **1.0.75**（2026-11-02）：Q/E 滚转键可配置——新增 `[keys] key_roll_left` / `key_roll_right`（默认 Q/E），修复此前 Q/E 硬编码、`config.ini` 只能改 `roll_speed` 不能改键的问题；PBZFM 菜单与四语言词典同步；核心测试 2400 → 2529 项全绿
 - **1.0.74**（2026-11-02）：新增「过场对话 Flow 冻结/诊断（保留相机，不挂线程）」——`freeze_dialogue_flow`（默认 true，仅 `hide_subtitles=true` 生效）冻结时把 `WBP_FlowDialog_C` 改为 `Collapsed` 停止 Slate Tick，解冻恢复 `Hidden`（仍隐藏但继续 Tick）；新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子；核心测试 2306 → 2400 项全绿
 - **1.0.73**（2026-11-02）：修复「1.0.72 过场/对话中进入摄影模式后语句仍不续播」——整引擎 `Suspend(true,false)` 的 render-anyway 会让音频时间轴继续推进，逐 PlayingID 真暂停也保不住当前句；现在有逐语音 ID 时跳过整引擎 Suspend（只走 `PBZPausePlayingID`/`PBZResumePlayingID` 真暂停），整引擎仅在无 ID 时作静音兜底；新增 `GetPlayingIDPositionMs` 位置校验日志；核心测试 2301 → 2306 项全绿
 - **1.0.72**（2026-11-02）：修复「过场动画进入/退出摄影模式后语句断句不续播」——Wwise 整引擎 `AK::SoundEngine::Suspend(false,false)` 硬停音频线程会丢语音流状态，改为 `Suspend(true,false)` render-anyway 静音（音频继续处理但不输出），并恢复逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 为第一层；进入时保存并还原原 `ViewTarget`（过场相机），不再固定回玩家 Pawn；对话控件 `WBP_FlowDialog_C` 等改用 `Hidden` 保留 Tick，对话中不关闭 `bEnableSubtitles`；核心测试 2294 → 2301 项全绿
-- **1.0.67**（2026-11-02）：清理旧日志提示——PostProcess 快照不再误报失败（本版不改后期处理，标记为已处理）；相机修饰器列表兼容 UE5 的 `ModifierList`（保留 `CameraModifiers` 旧名回退），冻结/恢复修饰器正常，不再打印“无数组”警告；核心测试 2294 项全绿
-- **1.0.66**（2026-11-02）：修复 1.0.65 移动视角卡顿——移除会冻结 `PBZ.exe`/`MRTCEngine.dll` QPC 的时间偏移补偿 IAT Hook；Wwise 整引擎 Suspend 改为优先从 PBZ.exe 静态导出解析（1.0.65 只查 AkSoundEngineDLL.dll 导致静默回落）；核心测试 2294 项全绿
+- **1.0.67**（2026-11-02）：清理旧日志提示——PostProcess 快照不再误报失败（本版不改后期处理，标记为已处理；后续版本已把该死接口整体移除）；相机修饰器列表兼容 UE5 的 `ModifierList`（保留 `CameraModifiers` 旧名回退），冻结/恢复修饰器正常，不再打印“无数组”警告；核心测试 2294 项全绿
+- **1.0.66**（2026-11-02）：修复 1.0.65 移动视角卡顿——移除会冻结 `PBZ.exe`/`MRTCEngine.dll` QPC 的时间偏移补偿 IAT Hook；Wwise 整引擎 Suspend 改为优先从 PBZ.exe 静态导出解析（1.0.65 只查 AkSoundEngineDLL.dll 导致静默回落）；核心测试 2294 项全绿（1.0.65 的 2372 → 2294 是移除时间偏移补偿用例，不是测试回退）
 - **1.0.65**（2026-11-02）：修复 1.0.64 冻结崩溃——IAT 导入名解析需 `module_base + AddressOfData`，上一版直接拿 RVA 当指针导致 `strcmp` 访问 0xD9CEABE 附近崩溃（dump 0xC0000005）；补模块边界校验后重编，核心测试 2372 项全绿
 - **1.0.64**（2026-11-02）：借鉴 PBZPause——Wwise 整引擎 `AK::SoundEngine::Suspend(false,false)` / `WakeupFromSuspend(0)` 优先、逐语音兜底；新增 `time_offset_compensation` 用 IAT Hook 冻结 QPC/GetTickCount/GetTickCount64/timeGetTime 并在解冻时累加暂停时长偏移，避免时间跳变；核心层测试 2216 → 2372 项全绿
 - **1.0.63**（2026-11-02）：升降键可配置——新增 `key_vertical_up` / `key_vertical_down`（默认鼠标左/右键），键名表支持 `MOUSE_LEFT/RIGHT/MIDDLE/X1/X2`；输入层 5 个鼠标键统一并入 `GetAsyncKeyState` 轮询，translate/look 两模式与 PBZFM 改键同步；核心层测试 2084 → 2216 项全绿

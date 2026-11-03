@@ -62,7 +62,7 @@ UE4SS 的 C++ mod 目录结构（注意 `dlls` 子目录，且**不需要写 mod
 └─ enabled.txt
 ```
 
-打包：把上面的目录结构打成 zip（`dist/PBZPhotoModeCpp_v1.0.0-cpp.zip`）。
+打包：把上面的目录结构打成 zip（`dist/PBZPhotoModeCpp_1.0.75-cpp.zip`，版本号与 `src/core/version.h` 的 `PBZPM_VERSION` 保持一致）。
 
 ## 4. 编译期踩过的坑（再遇到别重复排查）
 
