@@ -819,20 +819,18 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     }
 
     // 每 1 秒重新确认一次 ViewTarget：防止游戏里某些流程（过场、重生）把视角抢回去。
-    // M-1：ProcessEvent 成功不代表真的接管成功。attach_view 已回读 ViewTarget 与相机位姿，
-    // 连续多次不一致才 leave——单次失败可能只是切图/过场的瞬时抖动，重试通常会自愈。
+    // M-1：ProcessEvent 成功不代表真的接管成功，但“回读暂未生效”（同帧 Target=null/
+    // 属性不可读）也不能算失效——只有回读确凿证明视角被抢或相机位姿被搬走，
+    // 连续多次才 leave。重试本身由 attach_view 幂等发出。
     reassert_accum_ += dt;
     if (reassert_accum_ >= 1.0) {
         reassert_accum_ = 0.0;
-        if (!camera_.attach_view()) {
-            if (camera_.view_confirmation_failed()) {
-                log(LogLevel::Error,
-                    "相机接管已失效：ViewTarget 未指向摄影相机或相机位姿被改写，连续多次校验失败，"
-                    "退出摄影模式（不再假装仍在摄影模式）");
-                leave("ViewTarget/相机位姿连续校验失败");
-            } else {
-                log(LogLevel::Warn, "ViewTarget/相机位姿校验未通过，等待下一次重试");
-            }
+        camera_.attach_view();
+        if (camera_.view_confirmation_failed()) {
+            log(LogLevel::Error,
+                "相机接管已失效：ViewTarget 未指向摄影相机或相机位姿被改写，连续多次校验失败，"
+                "退出摄影模式（不再假装仍在摄影模式）");
+            leave("ViewTarget/相机位姿连续校验失败");
         }
     }
 

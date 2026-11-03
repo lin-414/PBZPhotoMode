@@ -42,6 +42,16 @@ inline ViewTargetState classify_view_target(bool readable, bool is_camera_actor)
     return is_camera_actor ? ViewTargetState::Match : ViewTargetState::Mismatch;
 }
 
+// M-1 收口：回读“没看到摄影相机”不等于接管失效。
+// 真机 1.0.75 实测：SetViewTargetWithBlend 调用成功的同一帧里 ViewTarget.Target 读出 null，
+// 要等相机管理器本帧 UpdateViewTarget 之后才有值。只有“读到明确的其他 Actor”或
+// “摄影相机位姿被搬走”才算确凿失效；null / 属性不可读只能降级为告警并继续重试，
+// 绝不能因此阻断进入摄影模式（1.0.75 的回归就是把它当成了硬性前置检查）。
+inline bool view_loss_is_conclusive(bool readable, bool observed_is_other_actor, bool pose_mismatch) {
+    if (pose_mismatch) return true;
+    return readable && observed_is_other_actor;
+}
+
 struct CameraPose {
     Vec3 loc{};
     Rot rot{};

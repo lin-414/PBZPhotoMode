@@ -319,6 +319,8 @@ private:
     bool set_view_target_fn_missing_{false};
     bool set_view_target_cached(RC::Unreal::UObject* pc, RC::Unreal::UObject* target);
     bool view_verified_{false};
+    // M-1 收口：回读“暂未确认”（同帧 Target=null/不可读）只告警一次，不累计失效
+    bool view_unconfirmed_logged_{false};
     bool pose_apply_failure_logged_{false};
     // 被隐藏的 UMG HUD 根控件（控件指针 + 原始 ESlateVisibility 值），退出时原样恢复
     std::vector<std::pair<RC::Unreal::UObject*, int>> hud_widgets_;

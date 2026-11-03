@@ -104,6 +104,13 @@ tools\build_tests.bat
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
 - **P2**：PostProcess 快照还原、滤镜、连拍、录像
 
+## 1.0.75-hotfix1 这次改了什么（修复“完全无法进入摄影模式”）
+
+- 现象：1.0.75 实机按 F2 后每次进入都在 `SetViewTargetWithBlend` 之后立刻回滚，日志 `相机接管校验第 1 次失败：ViewTarget 当前目标=null，不是摄影相机` + `设置 ViewTarget 失败`。
+- 根因：M-1 新增的 ViewTarget 回读确认被当成进入的硬性前置检查。真机上 `SetViewTargetWithBlend` 成功的同一帧里 `ViewTarget.Target` 读出 `null`，要等相机管理器本帧 `UpdateViewTarget` 之后才有值——属于“回读尚未生效”，不是接管失败。
+- 修复：`attach_view()` 恢复为“调用成功即返回 true”，回读结果降级为告警；只有读到明确的其他 Actor（视角被抢）或摄影相机位姿被搬走才算确凿失效，且仍需连续 3 次才 `leave`。回读 `null`/不可读不累计失效、不阻断进入。
+- 单测新增“回读暂未确认不阻断进入/不触发退出”的回归断言；核心层测试 3431 → **3440 项全绿**。
+
 ## 1.0.75 这次改了什么（Q/E 滚转键可在 config.ini 配置）
 
 - 问题：用户反馈 Q/E 旋转视角（滚转）快捷键在 `config.ini` 里改不了——检查发现 1.0.74 及以前 Q/E 硬编码在 `input_logic.cpp` 的 `build()` 里（`kQ`/`kE` 常量），`[keys]` 段只有 `key_roll_reset`（滚转归零），没有滚转左右键配置项。

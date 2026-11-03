@@ -504,6 +504,13 @@ void test_engine_port_pure_logic() {
     CHECK(classify_view_target(true, true) == ViewTargetState::Match);
     CHECK(classify_view_target(true, false) == ViewTargetState::Mismatch);
 
+    // M-1 收口：回读 null / 不可读不是“确凿失效”，不能据此阻断进入或退出；
+    // 只有读到明确的其他 Actor，或摄影相机位姿被搬走，才算接管真的失效。
+    CHECK(!view_loss_is_conclusive(false, false, false));  // 读不出，Target 也未知
+    CHECK(!view_loss_is_conclusive(true, false, false));   // 读到了但 Target=null（同帧未生效）
+    CHECK(view_loss_is_conclusive(true, true, false));     // 读到明确的其他 Actor
+    CHECK(view_loss_is_conclusive(true, false, true));     // 目标是摄影相机但位姿被搬走
+
     // M-1：相机位姿容差（位置 10 / 角度 2°），角度要按 ±180 归一化
     CameraPose expected{};
     CameraPose actual{};
@@ -1910,13 +1917,13 @@ void test_photo_mode_reassert_and_partial() {
         mode.tick(Intent{}, 0.05);  // 越过 1s
         CHECK_INT(fe.count("attach_view"), 1);
 
-        // 部分成功：ProcessEvent 成功但回读确认失败。第一次只告警，不能退出
+        // 部分成功：请求已发出，但回读确凿显示视角被抢。第一次不能退出
         fe.attach_reports_mismatch = true;
         for (int i = 0; i < 61; ++i) mode.tick(Intent{}, 0.016);
         mode.tick(Intent{}, 0.05);
         CHECK(mode.active());
-        CHECK(fe.logs_contain("ViewTarget/相机位姿校验未通过"));
         CHECK_INT(fe.attach_verify_fail_streak, 1);
+        CHECK(!fe.logs_contain("相机接管已失效"));
 
         // 第二、三次确认失败 → 达到阈值，明确错误并 leave
         for (int round = 0; round < 2; ++round) {
@@ -1926,6 +1933,24 @@ void test_photo_mode_reassert_and_partial() {
         CHECK(!mode.active());
         CHECK(fe.logs_contain("相机接管已失效"));
         CHECK_INT(fe.attach_verify_fail_streak, 3);
+    }
+
+    // 1.0.75 hotfix1 回归点：同帧回读 Target=null / 属性不可读（真机实测）只降级告警，
+    // 既不阻断进入、也不累计失效、不触发 leave
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());  // attach_view 返回 true，enter 不能因“回读暂未确认”失败
+        fe.reset_calls();
+        fe.attach_reports_unconfirmed = true;
+        for (int round = 0; round < 5; ++round) {
+            for (int i = 0; i < 61; ++i) mode.tick(Intent{}, 0.016);
+            mode.tick(Intent{}, 0.05);
+        }
+        CHECK(mode.active());
+        CHECK_INT(fe.attach_verify_fail_streak, 0);
+        CHECK_INT(fe.count("attach_view"), 5);
+        CHECK(!fe.logs_contain("相机接管已失效"));
     }
 
     // fail_attach（函数调用本身失败）同样累计，连续 3 次后退出

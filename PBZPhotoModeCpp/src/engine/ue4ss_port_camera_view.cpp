@@ -386,7 +386,7 @@ bool Ue4ssPort::attach_view() {
     if (!is_ok(pc) || !is_ok(camera_actor_)) return false;
 
     const bool called = set_view_target_cached(pc, camera_actor_);
-    if (called) view_attached_by_port_ = true;  // 已发出接管请求；真正是否生效由下面回读决定
+    if (called) view_attached_by_port_ = true;  // 已发出接管请求；真正是否生效由回读决定
 
     UObject* observed = nullptr;
     bool readable = false;
@@ -395,33 +395,48 @@ bool Ue4ssPort::attach_view() {
     const bool pose_ok = camera_pose_matches_last_apply();
     if (called && state == ViewTargetState::Match && pose_ok) {
         view_verify_fail_streak_ = 0;
+        view_unconfirmed_logged_ = false;
         if (!view_verified_) {
             view_verified_ = true;
             log(LogLevel::Info, "相机接管确认：ViewTarget 已是摄影相机");
         }
         return true;
     }
-
-    // M-1：ProcessEvent 返回成功不等于 ViewTarget 真的切过去了。如实返回 false，
-    // 并记录连续失败次数供 core 决定何时放弃（避免每秒刷屏，也避免一次抖动就退出）。
-    ++view_verify_fail_streak_;
     view_verified_ = false;
-    if (view_verify_fail_streak_ == 1 || view_verify_fail_streak_ >= kViewVerificationFailLimit) {
-        std::string detail;
-        if (!called) {
-            detail = "SetViewTargetWithBlend 调用失败";
-        } else if (state == ViewTargetState::Unreadable) {
-            detail = "ViewTarget 回读不可用（PlayerController 与相机管理器都读不出 Target）";
-        } else if (state == ViewTargetState::Mismatch) {
-            detail = std::string("ViewTarget 当前目标=") +
-                     (is_ok(observed) ? narrow(observed->GetFullName()) : "null") + "，不是摄影相机";
-        } else {
-            detail = "摄影相机位姿已被改写（偏离最后写入的位置/朝向）";
+
+    // 调用本身失败：这是真正的接管失败，按连续失败计数（core 侧到阈值后退出）。
+    if (!called) {
+        ++view_verify_fail_streak_;
+        log(view_verify_fail_streak_ >= kViewVerificationFailLimit ? LogLevel::Error : LogLevel::Warn,
+            "相机接管校验第 " + std::to_string(view_verify_fail_streak_) +
+                " 次失败：SetViewTargetWithBlend 调用失败");
+        return false;
+    }
+
+    // M-1：ProcessEvent 成功不等于本帧就能回读成功。真机实测同帧 ViewTarget.Target 是 null，
+    // 要等相机管理器本帧 UpdateViewTarget 后才有值——这属于“回读尚未生效”，不是接管失败。
+    // 只有读到明确的其他 Actor（视角被抢）或摄影相机位姿被搬走才算确凿失效；
+    // 其余情况只告警一次、继续每秒重试，绝不阻断 enter()。
+    const bool observed_other = is_ok(observed) && observed != camera_actor_;
+    const bool conclusive = view_loss_is_conclusive(readable, observed_other, !pose_ok);
+    if (!conclusive) {
+        if (!view_unconfirmed_logged_) {
+            view_unconfirmed_logged_ = true;
+            log(LogLevel::Warn, "ViewTarget 回读暂未确认（同帧未生效或属性不可读），继续每秒重试接管");
         }
+        return true;
+    }
+
+    ++view_verify_fail_streak_;
+    if (view_verify_fail_streak_ == 1 || view_verify_fail_streak_ >= kViewVerificationFailLimit) {
+        const std::string detail =
+            observed_other
+                ? std::string("ViewTarget 当前目标=") + narrow(observed->GetFullName()) + "，不是摄影相机"
+                : "摄影相机位姿已被改写（偏离最后写入的位置/朝向）";
         log(view_verify_fail_streak_ >= kViewVerificationFailLimit ? LogLevel::Error : LogLevel::Warn,
             "相机接管校验第 " + std::to_string(view_verify_fail_streak_) + " 次失败：" + detail);
     }
-    return false;
+    return true;
 }
 
 bool Ue4ssPort::view_confirmation_failed() const {

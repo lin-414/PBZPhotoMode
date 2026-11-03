@@ -42,9 +42,12 @@ public:
     // 故障注入（隐藏/开启方向）
     bool fail_spawn{false};
     bool fail_attach{false};
-    // M-1 部分成功语义：ProcessEvent“成功”但回读确认 ViewTarget 没切到摄影相机。
-    // attach_view 仍返回 false，并累计连续失败次数供 view_confirmation_failed() 判定。
+    // M-1 部分成功语义：ProcessEvent“成功”但回读确凿显示别的目标/位姿被搬走。
+    // 按 1.0.75 hotfix1 的语义，attach_view 仍返回 true（接管请求已发出），
+    // 只累计连续失败次数供 view_confirmation_failed() 判定。
     bool attach_reports_mismatch{false};
+    // 回读“暂未确认”（同帧 Target=null / 属性不可读）：同样返回 true，但不累计失效。
+    bool attach_reports_unconfirmed{false};
     int attach_verify_fail_streak{0};
     // 日志阈值（PhotoMode 构造/每次 log 都会同步；测试可检查是否传入）
     LogLevel configured_log_level{LogLevel::Info};
@@ -103,10 +106,15 @@ public:
             return false;
         }
         if (attach_reports_mismatch) {
-            // 部分成功：函数调用成功、内部 view_attached 已置位，但回读确认失败
+            // 部分成功：函数调用成功、内部 view_attached 已置位，回读确凿显示视角被抢
             view_attached = true;
             ++attach_verify_fail_streak;
-            return false;
+            return true;
+        }
+        if (attach_reports_unconfirmed) {
+            // 回读暂未确认（同帧 null/不可读）：请求已发出，不算失效
+            view_attached = true;
+            return true;
         }
         attach_verify_fail_streak = 0;
         view_attached = true;
