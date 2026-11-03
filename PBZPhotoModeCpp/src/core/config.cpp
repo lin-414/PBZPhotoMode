@@ -5,9 +5,14 @@
 #include <algorithm>
 #include <cctype>
 #include <charconv>
+#include <cmath>
+#include <filesystem>
 #include <fstream>
+#include <set>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
+#include <vector>
 
 namespace pbzpm {
 namespace {
@@ -25,10 +30,18 @@ std::string lower(std::string s) {
     return s;
 }
 
+// 注释截断：引号外的第一个 ';' / '#' 即注释起点（不再要求前面有空白），
+// 因此 `fov = 50;备注` 也能正确解析；引号内的 ';' / '#' 按字面值保留。
 std::string strip_comment(std::string_view line) {
+    bool in_double = false;
+    bool in_single = false;
     for (size_t i = 0; i < line.size(); ++i) {
         const char c = line[i];
-        if ((c == ';' || c == '#') && (i == 0 || std::isspace(static_cast<unsigned char>(line[i - 1])))) {
+        if (c == '"' && !in_single) {
+            in_double = !in_double;
+        } else if (c == '\'' && !in_double) {
+            in_single = !in_single;
+        } else if ((c == ';' || c == '#') && !in_double && !in_single) {
             return trim(line.substr(0, i));
         }
     }
@@ -63,36 +76,252 @@ bool parse_double(const std::string& raw, double& out) {
     const char* end = s.data() + s.size();
     const auto res = std::from_chars(begin, end, value);
     if (res.ec != std::errc{} || res.ptr != end) return false;
+    if (!std::isfinite(value)) return false;
     out = value;
     return true;
 }
 
-bool parse_int(const std::string& raw, int& out) {
-    const std::string s = trim(raw);
-    if (s.empty()) return false;
-    int value{};
-    const char* begin = s.data();
-    const char* end = s.data() + s.size();
-    const auto res = std::from_chars(begin, end, value);
-    if (res.ec != std::errc{} || res.ptr != end) return false;
-    out = value;
-    return true;
+std::string num_to_text(double value) {
+    std::ostringstream out;
+    out << value;
+    return out.str();
 }
 
-void set_double(double& field, const std::string& raw, std::string& error, const char* label) {
-    if (!parse_double(raw, field)) error = std::string("值不是合法数字：") + label + " = " + raw;
+// ---------------------------------------------------------------- schema 表
+// 每个 key 的类型、值域、默认值来源（Config 成员初始化）、弃用状态与消费点集中在这里。
+// 解析器不再手写 if/else 链：新增键只需加一行，范围校验/告警去重天然覆盖。
+enum class FieldKind { Text, Bool, Number, Enum, Deprecated };
+
+struct ConfigFieldSpec {
+    const char* key;  // 规范键名（小写）
+    const char* section;  // 期望所在 section；"" = 任意位置（顶层也接受）
+    FieldKind kind;
+    std::string Config::* text{nullptr};
+    bool Config::* boolean{nullptr};
+    double Config::* number{nullptr};
+    bool (*apply_enum)(Config&, const std::string&){nullptr};
+    double min{0.0};
+    double max{0.0};
+    const char* consumed_at{nullptr};  // 消费点（文档用途）
+    const char* note{nullptr};         // 弃用/兼容说明
+};
+
+ConfigFieldSpec Text(const char* key, const char* section, std::string Config::* member, const char* consumed_at,
+                     const char* note = nullptr) {
+    ConfigFieldSpec spec;
+    spec.key = key;
+    spec.section = section;
+    spec.kind = FieldKind::Text;
+    spec.text = member;
+    spec.consumed_at = consumed_at;
+    spec.note = note;
+    return spec;
 }
 
-void set_bool(bool& field, const std::string& raw, std::string& error, const char* label) {
-    if (!parse_bool(raw, field)) error = std::string("值不是合法布尔：") + label + " = " + raw;
+ConfigFieldSpec Bool(const char* key, const char* section, bool Config::* member, const char* consumed_at) {
+    ConfigFieldSpec spec;
+    spec.key = key;
+    spec.section = section;
+    spec.kind = FieldKind::Bool;
+    spec.boolean = member;
+    spec.consumed_at = consumed_at;
+    return spec;
 }
 
-void set_string(std::string& field, const std::string& raw, std::string& error, const char* label) {
-    if (raw.empty()) {
-        error = std::string("值为空：") + label;
-        return;
+ConfigFieldSpec Number(const char* key, const char* section, double Config::* member, double min, double max,
+                       const char* consumed_at) {
+    ConfigFieldSpec spec;
+    spec.key = key;
+    spec.section = section;
+    spec.kind = FieldKind::Number;
+    spec.number = member;
+    spec.min = min;
+    spec.max = max;
+    spec.consumed_at = consumed_at;
+    return spec;
+}
+
+ConfigFieldSpec Enum(const char* key, const char* section, bool (*apply)(Config&, const std::string&),
+                     const char* consumed_at) {
+    ConfigFieldSpec spec;
+    spec.key = key;
+    spec.section = section;
+    spec.kind = FieldKind::Enum;
+    spec.apply_enum = apply;
+    spec.consumed_at = consumed_at;
+    return spec;
+}
+
+ConfigFieldSpec Deprecated(const char* key, const char* note) {
+    ConfigFieldSpec spec;
+    spec.key = key;
+    spec.section = "";  // 旧文件里位置不定，任意 section 都接受
+    spec.kind = FieldKind::Deprecated;
+    spec.note = note;
+    return spec;
+}
+
+bool apply_mouse_vertical_mode(Config& cfg, const std::string& value) {
+    const std::string v = lower(value);
+    if (v == "translate" || v == "move") {
+        cfg.mouse_vertical_mode = MouseVerticalMode::Translate;
+        return true;
     }
-    field = raw;
+    if (v == "look" || v == "pitch") {
+        cfg.mouse_vertical_mode = MouseVerticalMode::Look;
+        return true;
+    }
+    return false;
+}
+
+bool apply_freeze_mode(Config& cfg, const std::string& value) {
+    const std::string v = lower(value);
+    if (v == "dilation" || v == "slow") {
+        cfg.freeze_mode = FreezeMode::Dilation;
+        return true;
+    }
+    if (v == "pause") {
+        cfg.freeze_mode = FreezeMode::Pause;
+        return true;
+    }
+    return false;
+}
+
+bool apply_log_level(Config& cfg, const std::string& value) {
+    const std::string v = lower(value);
+    if (v == "error") {
+        cfg.log_level = LogLevel::Error;
+        return true;
+    }
+    if (v == "warn" || v == "warning") {
+        cfg.log_level = LogLevel::Warn;
+        return true;
+    }
+    if (v == "info") {
+        cfg.log_level = LogLevel::Info;
+        return true;
+    }
+    if (v == "debug") {
+        cfg.log_level = LogLevel::Debug;
+        return true;
+    }
+    return false;
+}
+
+bool apply_menu_language(Config& cfg, const std::string& value) {
+    if (value.empty()) return false;
+    cfg.menu_language = value;
+    return true;
+}
+
+const std::vector<ConfigFieldSpec>& schema() {
+    static const std::vector<ConfigFieldSpec> table = {
+        // ---- [keys] ----
+        Text("key_toggle", "keys", &Config::key_toggle, "mod_app::on_hotkey"),
+        Text("key_freeze", "keys", &Config::key_freeze, "photo_mode::tick"),
+        Text("key_reset", "keys", &Config::key_reset, "photo_mode::tick"),
+        Text("key_roll_reset", "keys", &Config::key_roll_reset, "photo_mode::tick"),
+        Text("key_fov_up", "keys", &Config::key_fov_up, "photo_mode::tick"),
+        Text("key_fov_down", "keys", &Config::key_fov_down, "photo_mode::tick"),
+        Text("key_pitch_up", "keys", &Config::key_pitch_up, "input_logic"),
+        Text("key_pitch_down", "keys", &Config::key_pitch_down, "input_logic"),
+        Text("key_yaw_left", "keys", &Config::key_yaw_left, "input_logic"),
+        Text("key_yaw_right", "keys", &Config::key_yaw_right, "input_logic"),
+        Text("key_roll_left", "keys", &Config::key_roll_left, "input_logic"),
+        Text("key_roll_right", "keys", &Config::key_roll_right, "input_logic"),
+        Text("key_vertical_up", "keys", &Config::key_vertical_up, "input_logic"),
+        Text("key_vertical_down", "keys", &Config::key_vertical_down, "input_logic"),
+        // 兼容别名（同一字段，不再静默丢弃）
+        Text("mouse_vertical_up", "keys", &Config::key_vertical_up, "input_logic", "key_vertical_up 的别名"),
+        Text("mouse_vertical_down", "keys", &Config::key_vertical_down, "input_logic", "key_vertical_down 的别名"),
+        Text("key_pan_left", "keys", &Config::key_yaw_left, "input_logic", "1.0.46 起改名为 key_yaw_left"),
+        Text("key_pan_right", "keys", &Config::key_yaw_right, "input_logic", "1.0.46 起改名为 key_yaw_right"),
+
+        // ---- [control] ----
+        Number("move_speed", "control", &Config::move_speed, 50.0, 2000.0, "photo_mode::tick"),
+        Number("boost_mult", "control", &Config::boost_mult, 1.0, 10.0, "input_logic"),
+        Number("slow_mult", "control", &Config::slow_mult, 0.05, 1.0, "input_logic"),
+        Number("slow_look_mult", "control", &Config::slow_look_mult, 0.01, 1.0, "input_logic"),
+        Number("look_sensitivity", "control", &Config::look_sensitivity, 0.01, 1.0, "input_logic"),
+        Number("pitch_limit", "control", &Config::pitch_limit, 1.0, 90.0, "math3::clamp_pitch"),
+        Bool("invert_y", "control", &Config::invert_y, "input_logic"),
+        Bool("free_look_requires_alt", "control", &Config::free_look_requires_alt, "input_logic"),
+        Bool("block_game_input", "control", &Config::block_game_input, "photo_mode::enter"),
+        Enum("mouse_vertical_mode", "control", &apply_mouse_vertical_mode, "input_logic"),
+        Number("vertical_speed", "control", &Config::vertical_speed, 10.0, 1000.0, "photo_mode::tick"),
+        Number("roll_speed", "control", &Config::roll_speed, 5.0, 360.0, "photo_mode::tick"),
+        Number("pitch_speed", "control", &Config::pitch_speed, 5.0, 180.0, "photo_mode::tick"),
+        Number("yaw_speed", "control", &Config::yaw_speed, 5.0, 270.0, "photo_mode::tick"),
+
+        // ---- [gamepad] ----
+        Bool("pad_enabled", "gamepad", &Config::pad_enabled, "gamepad::poll"),
+        Text("pad_toggle", "gamepad", &Config::pad_toggle, "gamepad::poll"),
+        Text("pad_freeze", "gamepad", &Config::pad_freeze, "gamepad::poll"),
+        Text("pad_reset", "gamepad", &Config::pad_reset, "gamepad::poll"),
+        Text("pad_roll_reset", "gamepad", &Config::pad_roll_reset, "gamepad::poll"),
+        Text("pad_fov_up", "gamepad", &Config::pad_fov_up, "gamepad::poll"),
+        Text("pad_fov_down", "gamepad", &Config::pad_fov_down, "gamepad::poll"),
+        Text("pad_pitch_up", "gamepad", &Config::pad_pitch_up, "input_logic"),
+        Text("pad_pitch_down", "gamepad", &Config::pad_pitch_down, "input_logic"),
+        Text("pad_yaw_left", "gamepad", &Config::pad_yaw_left, "input_logic"),
+        Text("pad_yaw_right", "gamepad", &Config::pad_yaw_right, "input_logic"),
+        Text("pad_pan_left", "gamepad", &Config::pad_yaw_left, "input_logic", "1.0.46 起改名为 pad_yaw_left"),
+        Text("pad_pan_right", "gamepad", &Config::pad_yaw_right, "input_logic", "1.0.46 起改名为 pad_yaw_right"),
+        Number("pad_look_speed", "gamepad", &Config::pad_look_speed, 10.0, 720.0, "input_logic"),
+        Number("pad_move_scale", "gamepad", &Config::pad_move_scale, 0.0, 3.0, "input_logic"),
+        Number("pad_deadzone", "gamepad", &Config::pad_deadzone, 0.0, 0.5, "gamepad::poll"),
+
+        // ---- [camera] ----
+        Number("fov_default", "camera", &Config::fov_default, 1.0, 179.0, "photo_mode::enter"),
+        Number("fov_min", "camera", &Config::fov_min, 1.0, 178.0, "photo_mode::set_fov"),
+        Number("fov_max", "camera", &Config::fov_max, 2.0, 179.0, "photo_mode::set_fov"),
+        Number("fov_step", "camera", &Config::fov_step, 0.5, 10.0, "photo_mode::tick"),
+        Bool("ultrawide_unlock", "camera", &Config::ultrawide_unlock, "photo_mode::enter"),
+
+        // ---- [effects] ----
+        Bool("hide_player", "effects", &Config::hide_player, "photo_mode"),
+        Bool("hide_game_hud", "effects", &Config::hide_game_hud, "photo_mode"),
+        Bool("hide_interact_prompt", "effects", &Config::hide_interact_prompt, "photo_mode"),
+        Bool("hide_enemy_health_bars", "effects", &Config::hide_enemy_health_bars, "photo_mode"),
+        Bool("hide_lockon_marker", "effects", &Config::hide_lockon_marker, "photo_mode"),
+        Bool("hide_subtitles", "effects", &Config::hide_subtitles, "photo_mode"),
+        Bool("repair_ui_settings_once", "effects", &Config::repair_ui_settings_once, "mod_app::enter"),
+        Bool("auto_pause_time", "effects", &Config::auto_pause_time, "photo_mode::enter"),
+        Enum("freeze_mode", "effects", &apply_freeze_mode, "photo_mode::toggle_freeze"),
+        Number("freeze_dilation", "effects", &Config::freeze_dilation, 0.0001, 1.0, "photo_mode::toggle_freeze"),
+        Bool("freeze_sequences", "effects", &Config::freeze_sequences, "photo_mode::toggle_freeze"),
+        Bool("freeze_dialogue_flow", "effects", &Config::freeze_dialogue_flow, "photo_mode::toggle_freeze"),
+        Bool("stop_wwise_on_freeze", "effects", &Config::stop_wwise_on_freeze, "photo_mode::toggle_freeze"),
+        Bool("wwise_engine_suspend", "effects", &Config::wwise_engine_suspend, "photo_mode::toggle_freeze"),
+        Bool("stop_camera_shakes_on_freeze", "effects", &Config::stop_camera_shakes_on_freeze,
+             "photo_mode::toggle_freeze"),
+        Bool("freeze_wind", "effects", &Config::freeze_wind, "photo_mode::toggle_freeze"),
+        Bool("freeze_mpc", "effects", &Config::freeze_mpc, "photo_mode::toggle_freeze"),
+        Bool("freeze_diag", "effects", &Config::freeze_diag, "photo_mode::tick"),
+        Bool("restore_fov_on_exit", "effects", &Config::restore_fov_on_exit, "photo_mode::leave"),
+        Bool("restore_view_on_exit", "effects", &Config::restore_view_on_exit, "photo_mode::leave"),
+
+        // ---- [ui] ----
+        Bool("imgui_tab", "ui", &Config::imgui_tab, "imgui_tab.cpp"),
+        Enum("menu_language", "ui", &apply_menu_language, "pbzfm_client_lang"),
+
+        // ---- [misc] ----
+        Enum("log_level", "misc", &apply_log_level, "ue4ss_port::log"),
+        Bool("dry_run", "misc", &Config::dry_run, "engine_port"),
+
+        // ---- 弃用：接受但忽略，每个键只告警一次 ----
+        Deprecated("interval_ms", "已移除并忽略（旧版 ImGui 面板轮询间隔）"),
+        Deprecated("ui_scale", "已移除并忽略（旧版 ImGui 面板缩放）"),
+        Deprecated("time_offset_compensation", "已在 1.0.66 移除并忽略（冻结渲染线程计时会导致移动视角卡顿）"),
+    };
+    return table;
+}
+
+const ConfigFieldSpec* find_spec(const std::string& key) {
+    for (const auto& spec : schema()) {
+        if (key == spec.key) return &spec;
+    }
+    return nullptr;
 }
 
 }  // namespace
@@ -115,121 +344,80 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
     ConfigLoadResult result;
     result.source = source ? source : "config.ini";
 
-    // 键名 -> 赋值函数。未知键一律 warning，绝不静默吞掉。
-    const auto assign = [&result](Config& cfg, const std::string& key, const std::string& value) {
-        std::string error;
-        if (key == "key_toggle") set_string(cfg.key_toggle, value, error, key.c_str());
-        else if (key == "key_freeze") set_string(cfg.key_freeze, value, error, key.c_str());
-        else if (key == "key_reset") set_string(cfg.key_reset, value, error, key.c_str());
-        else if (key == "key_roll_reset") set_string(cfg.key_roll_reset, value, error, key.c_str());
-        else if (key == "key_fov_up") set_string(cfg.key_fov_up, value, error, key.c_str());
-        else if (key == "key_fov_down") set_string(cfg.key_fov_down, value, error, key.c_str());
-        else if (key == "key_pitch_up") set_string(cfg.key_pitch_up, value, error, key.c_str());
-        else if (key == "key_pitch_down") set_string(cfg.key_pitch_down, value, error, key.c_str());
-        else if (key == "key_yaw_left") set_string(cfg.key_yaw_left, value, error, key.c_str());
-        else if (key == "key_yaw_right") set_string(cfg.key_yaw_right, value, error, key.c_str());
-        else if (key == "key_roll_left") set_string(cfg.key_roll_left, value, error, key.c_str());
-        else if (key == "key_roll_right") set_string(cfg.key_roll_right, value, error, key.c_str());
-        else if (key == "key_vertical_up") set_string(cfg.key_vertical_up, value, error, key.c_str());
-        else if (key == "key_vertical_down") set_string(cfg.key_vertical_down, value, error, key.c_str());
-        // 兼容用户直觉写法（文档主推 key_vertical_*）
-        else if (key == "mouse_vertical_up") set_string(cfg.key_vertical_up, value, error, key.c_str());
-        else if (key == "mouse_vertical_down") set_string(cfg.key_vertical_down, value, error, key.c_str());
-        // 旧键名兼容（≤1.0.45 左右是平移，1.0.46 起改为转向）：老 config.ini 的自定义键位继续生效
-        else if (key == "key_pan_left") set_string(cfg.key_yaw_left, value, error, key.c_str());
-        else if (key == "key_pan_right") set_string(cfg.key_yaw_right, value, error, key.c_str());
-        else if (key == "pad_enabled") set_bool(cfg.pad_enabled, value, error, key.c_str());
-        else if (key == "pad_toggle") set_string(cfg.pad_toggle, value, error, key.c_str());
-        else if (key == "pad_freeze") set_string(cfg.pad_freeze, value, error, key.c_str());
-        else if (key == "pad_reset") set_string(cfg.pad_reset, value, error, key.c_str());
-        else if (key == "pad_roll_reset") set_string(cfg.pad_roll_reset, value, error, key.c_str());
-        else if (key == "pad_fov_up") set_string(cfg.pad_fov_up, value, error, key.c_str());
-        else if (key == "pad_fov_down") set_string(cfg.pad_fov_down, value, error, key.c_str());
-        else if (key == "pad_pitch_up") set_string(cfg.pad_pitch_up, value, error, key.c_str());
-        else if (key == "pad_pitch_down") set_string(cfg.pad_pitch_down, value, error, key.c_str());
-        else if (key == "pad_yaw_left") set_string(cfg.pad_yaw_left, value, error, key.c_str());
-        else if (key == "pad_yaw_right") set_string(cfg.pad_yaw_right, value, error, key.c_str());
-        else if (key == "pad_pan_left") set_string(cfg.pad_yaw_left, value, error, key.c_str());   // 旧键名兼容
-        else if (key == "pad_pan_right") set_string(cfg.pad_yaw_right, value, error, key.c_str());
-        else if (key == "pad_look_speed") set_double(cfg.pad_look_speed, value, error, key.c_str());
-        else if (key == "pad_move_scale") set_double(cfg.pad_move_scale, value, error, key.c_str());
-        else if (key == "pad_deadzone") set_double(cfg.pad_deadzone, value, error, key.c_str());
-        else if (key == "move_speed") set_double(cfg.move_speed, value, error, key.c_str());
-        else if (key == "boost_mult") set_double(cfg.boost_mult, value, error, key.c_str());
-        else if (key == "slow_mult") set_double(cfg.slow_mult, value, error, key.c_str());
-        else if (key == "slow_look_mult") set_double(cfg.slow_look_mult, value, error, key.c_str());
-        else if (key == "look_sensitivity") set_double(cfg.look_sensitivity, value, error, key.c_str());
-        else if (key == "pitch_limit") set_double(cfg.pitch_limit, value, error, key.c_str());
-        else if (key == "vertical_speed") set_double(cfg.vertical_speed, value, error, key.c_str());
-        else if (key == "roll_speed") set_double(cfg.roll_speed, value, error, key.c_str());
-        else if (key == "pitch_speed") set_double(cfg.pitch_speed, value, error, key.c_str());
-        else if (key == "yaw_speed") set_double(cfg.yaw_speed, value, error, key.c_str());
-        else if (key == "invert_y") set_bool(cfg.invert_y, value, error, key.c_str());
-        else if (key == "free_look_requires_alt") set_bool(cfg.free_look_requires_alt, value, error, key.c_str());
-        else if (key == "block_game_input") set_bool(cfg.block_game_input, value, error, key.c_str());
-        else if (key == "mouse_vertical_mode") {
-            const std::string v = lower(value);
-            if (v == "translate" || v == "move") cfg.mouse_vertical_mode = MouseVerticalMode::Translate;
-            else if (v == "look" || v == "pitch") cfg.mouse_vertical_mode = MouseVerticalMode::Look;
-            else error = "mouse_vertical_mode 只能是 translate 或 look：" + value;
-        } else if (key == "fov_default") set_double(cfg.fov_default, value, error, key.c_str());
-        else if (key == "fov_min") set_double(cfg.fov_min, value, error, key.c_str());
-        else if (key == "fov_max") set_double(cfg.fov_max, value, error, key.c_str());
-        else if (key == "fov_step") set_double(cfg.fov_step, value, error, key.c_str());
-        else if (key == "ultrawide_unlock") set_bool(cfg.ultrawide_unlock, value, error, key.c_str());
-        else if (key == "hide_player") set_bool(cfg.hide_player, value, error, key.c_str());
-        else if (key == "hide_game_hud") set_bool(cfg.hide_game_hud, value, error, key.c_str());
-        else if (key == "hide_interact_prompt") set_bool(cfg.hide_interact_prompt, value, error, key.c_str());
-        else if (key == "hide_enemy_health_bars") set_bool(cfg.hide_enemy_health_bars, value, error, key.c_str());
-        else if (key == "hide_lockon_marker") set_bool(cfg.hide_lockon_marker, value, error, key.c_str());
-        else if (key == "hide_subtitles") set_bool(cfg.hide_subtitles, value, error, key.c_str());
-        else if (key == "repair_ui_settings_once") set_bool(cfg.repair_ui_settings_once, value, error, key.c_str());
-        else if (key == "auto_pause_time") set_bool(cfg.auto_pause_time, value, error, key.c_str());
-        else if (key == "freeze_dilation") set_double(cfg.freeze_dilation, value, error, key.c_str());
-        else if (key == "freeze_sequences") set_bool(cfg.freeze_sequences, value, error, key.c_str());
-        else if (key == "freeze_dialogue_flow") set_bool(cfg.freeze_dialogue_flow, value, error, key.c_str());
-        else if (key == "stop_wwise_on_freeze") set_bool(cfg.stop_wwise_on_freeze, value, error, key.c_str());
-        else if (key == "wwise_engine_suspend") set_bool(cfg.wwise_engine_suspend, value, error, key.c_str());
-        else if (key == "time_offset_compensation") {
-            bool requested = false;
-            set_bool(requested, value, error, key.c_str());
-            if (requested) {
-                result.warnings.push_back(
-                    "time_offset_compensation 已在 1.0.66 移除并忽略（冻结渲染线程计时会导致移动视角卡顿）");
-            }
-        }
-        else if (key == "stop_camera_shakes_on_freeze") set_bool(cfg.stop_camera_shakes_on_freeze, value, error, key.c_str());
-        else if (key == "freeze_wind") set_bool(cfg.freeze_wind, value, error, key.c_str());
-        else if (key == "freeze_mpc") set_bool(cfg.freeze_mpc, value, error, key.c_str());
-        else if (key == "freeze_diag") set_bool(cfg.freeze_diag, value, error, key.c_str());
-        else if (key == "restore_fov_on_exit") set_bool(cfg.restore_fov_on_exit, value, error, key.c_str());
-        else if (key == "restore_view_on_exit") set_bool(cfg.restore_view_on_exit, value, error, key.c_str());
-        else if (key == "freeze_mode") {
-            const std::string v = lower(value);
-            if (v == "dilation" || v == "slow") cfg.freeze_mode = FreezeMode::Dilation;
-            else if (v == "pause") cfg.freeze_mode = FreezeMode::Pause;
-            else error = "freeze_mode 只能是 dilation 或 pause：" + value;
-        } else if (key == "imgui_tab") set_bool(cfg.imgui_tab, value, error, key.c_str());
-        else if (key == "menu_language") {
-            if (value.empty()) error = "menu_language 不能为空（auto 或词典 id）";
-            else cfg.menu_language = value;
-        }
-        else if (key == "log_level") {
-            const std::string v = lower(value);
-            if (v == "error") cfg.log_level = LogLevel::Error;
-            else if (v == "warn" || v == "warning") cfg.log_level = LogLevel::Warn;
-            else if (v == "info") cfg.log_level = LogLevel::Info;
-            else if (v == "debug") cfg.log_level = LogLevel::Debug;
-            else error = "log_level 只能是 error/warn/info/debug：" + value;
-        } else if (key == "dry_run") set_bool(cfg.dry_run, value, error, key.c_str());
-        else if (key == "interval_ms" || key == "ui_scale") {
-            int ignored{};
-            if (!parse_int(value, ignored)) error = "值不是合法整数：" + key + " = " + value;
-        } else {
-            result.warnings.push_back("未知配置项已忽略：" + key);
+    std::set<std::string> warned;  // 同一键 / 同一 section / 同一行只告警一次，避免刷屏
+    auto warn_once = [&result, &warned](const std::string& tag, const std::string& message) {
+        if (warned.insert(tag).second) result.warnings.push_back(message);
+    };
+
+    // section 白名单：未知 section 报一次，但其中的键仍按已知键名解析（容错，不静默）
+    static const std::set<std::string> kKnownSections = {"keys", "control", "gamepad", "camera",
+                                                         "effects", "ui", "misc"};
+    std::unordered_map<std::string, std::string> seen_keys;  // 键名 -> 首次出现的 section
+
+    // 按 schema 统一赋值：类型错误保留默认，数值超范围 clamp 到边界，弃用键只告警一次。
+    const auto assign = [&result, &warn_once, &seen_keys](const std::string& key, const std::string& value,
+                                                          const std::string& section) {
+        const ConfigFieldSpec* spec = find_spec(key);
+        if (spec == nullptr) {
+            warn_once(key, "未知配置项已忽略：" + key);
             return;
         }
-        if (!error.empty()) result.warnings.push_back(error);
+
+        if (!section.empty() && spec->section[0] != '\0' && section != spec->section) {
+            warn_once(key, "配置项 " + key + " 位于 [" + section + "]，按 [" + std::string(spec->section) +
+                               "] 的键解析（section 可能写错）");
+        }
+
+        const auto found = seen_keys.find(key);
+        if (found == seen_keys.end()) {
+            seen_keys.emplace(key, section);
+        } else if (!section.empty() && !found->second.empty() && section != found->second) {
+            warn_once(key, "配置项 " + key + " 同时出现在 [" + found->second + "] 与 [" + section +
+                               "]，以最后一次为准");
+            found->second = section;
+        }
+
+        switch (spec->kind) {
+            case FieldKind::Deprecated:
+                warn_once(key, "配置项 " + key + " 已弃用：" + std::string(spec->note ? spec->note : "已忽略"));
+                return;
+            case FieldKind::Text:
+                if (value.empty()) {
+                    warn_once(key, "值为空：" + key + "（保留默认）");
+                    return;
+                }
+                result.cfg.*spec->text = value;
+                return;
+            case FieldKind::Bool: {
+                bool v{};
+                if (!parse_bool(value, v)) {
+                    warn_once(key, "值不是合法布尔：" + key + " = " + value + "（保留默认）");
+                    return;
+                }
+                result.cfg.*spec->boolean = v;
+                return;
+            }
+            case FieldKind::Enum:
+                if (spec->apply_enum == nullptr || !spec->apply_enum(result.cfg, value)) {
+                    warn_once(key, "取值非法：" + key + " = " + value + "（保留默认）");
+                }
+                return;
+            case FieldKind::Number: {
+                double v{};
+                if (!parse_double(value, v)) {
+                    warn_once(key, "值不是合法数字：" + key + " = " + value + "（保留默认）");
+                    return;
+                }
+                if (v < spec->min || v > spec->max) {
+                    const double clamped = std::clamp(v, spec->min, spec->max);
+                    warn_once(key, "值超出范围：" + key + " = " + value + "，已夹紧到 " + num_to_text(clamped) +
+                                       "（允许 [" + num_to_text(spec->min) + ", " + num_to_text(spec->max) + "]）");
+                    v = clamped;
+                }
+                result.cfg.*spec->number = v;
+                return;
+            }
+        }
     };
 
     std::string section;
@@ -250,89 +438,75 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
         if (cleaned.empty()) continue;
         if (cleaned.front() == '[' && cleaned.back() == ']') {
             section = lower(trim(std::string_view(cleaned).substr(1, cleaned.size() - 2)));
+            if (!section.empty() && kKnownSections.count(section) == 0) {
+                warn_once("section:" + section, "未知 section [" + section + "]，其键仍按已知键名解析");
+            }
             continue;
         }
         const size_t eq = cleaned.find('=');
         if (eq == std::string::npos) {
-            result.warnings.push_back("第 " + std::to_string(line_no) + " 行不是 key=value，已忽略");
+            warn_once("line:" + std::to_string(line_no),
+                      "第 " + std::to_string(line_no) + " 行不是 key=value，已忽略");
             continue;
         }
         const std::string key = lower(trim(std::string_view(cleaned).substr(0, eq)));
         const std::string value = unquote(trim(std::string_view(cleaned).substr(eq + 1)));
         if (key.empty()) {
-            result.warnings.push_back("第 " + std::to_string(line_no) + " 行键名为空，已忽略");
+            warn_once("line:" + std::to_string(line_no),
+                      "第 " + std::to_string(line_no) + " 行键名为空，已忽略");
             continue;
         }
-        (void)section;  // 节名只用于可读性，允许平铺写法
-        assign(result.cfg, key, value);
+        assign(key, value, section);
     }
 
-    // 范围保护：写错数值不至于把相机搞坏
-    if (result.cfg.fov_min < 1.0) result.cfg.fov_min = 1.0;
-    if (result.cfg.fov_max > 179.0) result.cfg.fov_max = 179.0;
+    // 交叉校验：单独 clamp 管不到的键间约束
     if (result.cfg.fov_max <= result.cfg.fov_min) {
-        result.warnings.push_back("fov_max 必须大于 fov_min，已回退默认 15/150");
+        warn_once("fov_max", "fov_max 必须大于 fov_min，已回退默认 15/150");
         result.cfg.fov_min = 15.0;
         result.cfg.fov_max = 150.0;
     }
     if (result.cfg.fov_default < result.cfg.fov_min || result.cfg.fov_default > result.cfg.fov_max) {
-        result.warnings.push_back("fov_default 超出 [fov_min, fov_max]，已夹紧");
+        warn_once("fov_default", "fov_default 超出 [fov_min, fov_max]，已夹紧");
         result.cfg.fov_default = std::clamp(result.cfg.fov_default, result.cfg.fov_min, result.cfg.fov_max);
-    }
-    if (result.cfg.pitch_limit <= 0.0 || result.cfg.pitch_limit > 90.0) {
-        result.warnings.push_back("pitch_limit 应在 (0, 90]，已回退 89");
-        result.cfg.pitch_limit = 89.0;
-    }
-    if (result.cfg.move_speed <= 0.0) {
-        result.warnings.push_back("move_speed 必须为正，已回退 400");
-        result.cfg.move_speed = 400.0;
-    }
-    if (result.cfg.roll_speed <= 0.0) {
-        result.warnings.push_back("roll_speed 必须为正，已回退 60");
-        result.cfg.roll_speed = 60.0;
-    }
-    if (result.cfg.pitch_speed <= 0.0) {
-        result.warnings.push_back("pitch_speed 必须为正，已回退 30");
-        result.cfg.pitch_speed = 30.0;
-    }
-    if (result.cfg.slow_look_mult <= 0.0 || result.cfg.slow_look_mult > 1.0) {
-        result.warnings.push_back("slow_look_mult 应在 (0, 1]，已回退 0.1");
-        result.cfg.slow_look_mult = 0.1;
-    }
-    if (result.cfg.yaw_speed <= 0.0) {
-        result.warnings.push_back("yaw_speed 必须为正，已回退 90");
-        result.cfg.yaw_speed = 90.0;
-    }
-    if (result.cfg.freeze_dilation <= 0.0 || result.cfg.freeze_dilation > 1.0) {
-        result.warnings.push_back("freeze_dilation 应在 (0, 1]，已回退 0.0001");
-        result.cfg.freeze_dilation = 0.0001;
-    }
-    if (result.cfg.pad_look_speed < 10.0 || result.cfg.pad_look_speed > 720.0) {
-        result.warnings.push_back("pad_look_speed 应在 [10, 720]，已回退 60");
-        result.cfg.pad_look_speed = 60.0;
-    }
-    if (result.cfg.pad_move_scale < 0.0 || result.cfg.pad_move_scale > 3.0) {
-        result.warnings.push_back("pad_move_scale 应在 [0, 3]，已回退 1");
-        result.cfg.pad_move_scale = 1.0;
-    }
-    if (result.cfg.pad_deadzone < 0.0 || result.cfg.pad_deadzone > 0.5) {
-        result.warnings.push_back("pad_deadzone 应在 [0, 0.5]，已回退 0.15");
-        result.cfg.pad_deadzone = 0.15;
     }
     return result;
 }
 
 ConfigLoadResult load_config_file(const std::string& path) {
+    std::error_code exists_ec;
+    const bool exists = std::filesystem::exists(path, exists_ec);
+    if (exists_ec || !exists) {
+        ConfigLoadResult result;
+        result.ok = false;
+        // 文件层失败要能区分：不存在（首次运行，正常）vs 存在但读不了（权限/占用/路径是目录）
+        result.file_missing = !exists_ec;
+        result.read_error = exists_ec != std::error_code{};
+        result.source = exists_ec ? ("读取失败（使用内置默认值）：" + path)
+                                  : ("缺省默认值（文件不存在：" + path + "）");
+        result.warnings.push_back(exists_ec ? "无法访问配置文件路径，使用内置默认值：" + path
+                                            : "未找到配置文件，使用内置默认值：" + path);
+        return result;
+    }
+
     std::ifstream file(path, std::ios::binary);
     if (!file) {
         ConfigLoadResult result;
         result.ok = false;
-        result.source = "缺省默认值（未找到 " + path + "）";
-        result.warnings.push_back("未找到配置文件，使用内置默认值：" + path);
+        result.read_error = true;
+        result.source = "读取失败（使用内置默认值）：" + path;
+        result.warnings.push_back("配置文件存在但无法读取，使用内置默认值：" + path);
         return result;
     }
     std::ostringstream buffer;
     buffer << file.rdbuf();
+    if (file.bad()) {
+        ConfigLoadResult result;
+        result.ok = false;
+        result.read_error = true;
+        result.source = "读取失败（使用内置默认值）：" + path;
+        result.warnings.push_back("配置文件读取中断，使用内置默认值：" + path);
+        return result;
+    }
     return parse_config(buffer.str(), path.c_str());
 }
 
@@ -470,8 +644,8 @@ std::string config_ini_text(const Config& c) {
         << "; 冻结时钉住材质参数集合（MPC）当前值，冻结期每帧写回快照，压制实时驱动参数\n"
         << "; 继续推布料/植被摆动；解冻释放\n"
         << "freeze_mpc = " << (c.freeze_mpc ? "true" : "false") << "\n"
-        << "; 冻结期每秒输出一条冻结诊断（风源/MPC 参数变化/相机修饰器状态），\n"
-        << "; 定位布料与阴影闪烁还剩哪个变化源没压住\n"
+        << "; 冻结诊断（默认关闭）：风源/MPC 参数变化/相机修饰器状态/视角微动；\n"
+        << "; 开启后状态翻转时输出，持续期每 10 秒最多一条（诊断需反射扫描，频繁输出会拖帧）\n"
         << "freeze_diag = " << (c.freeze_diag ? "true" : "false") << "\n"
         << "restore_fov_on_exit = " << (c.restore_fov_on_exit ? "true" : "false") << "\n"
         << "restore_view_on_exit = " << (c.restore_view_on_exit ? "true" : "false") << "\n\n"
@@ -492,16 +666,37 @@ std::string default_config_text() {
 }
 
 bool save_config_file(const std::string& path, const Config& cfg, std::string* error) {
-    std::ofstream out(path, std::ios::binary | std::ios::trunc);
-    if (!out) {
-        if (error) *error = "无法打开文件写入：" + path;
+    if (path.empty()) {
+        if (error) *error = "配置文件路径为空";
         return false;
     }
+    // 原子写：先写 <path>.tmp，成功后再 rename 覆盖目标。引擎 tick / 菜单两个线程读盘时
+    // 要么读到旧文件、要么读到完整的新文件，不会读到半写的中间态。
+    const std::string tmp = path + ".tmp";
     const std::string text = config_ini_text(cfg);
-    out.write(text.data(), static_cast<std::streamsize>(text.size()));
-    out.close();
-    if (!out) {
-        if (error) *error = "写入失败：" + path;
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (error) *error = "无法创建临时文件：" + tmp;
+            return false;
+        }
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.flush();
+        if (!out) {
+            out.close();
+            std::error_code remove_ec;
+            std::filesystem::remove(tmp, remove_ec);
+            if (error) *error = "写入临时文件失败：" + tmp;
+            return false;
+        }
+    }
+
+    std::error_code rename_ec;
+    std::filesystem::rename(tmp, path, rename_ec);
+    if (rename_ec) {
+        std::error_code remove_ec;
+        std::filesystem::remove(tmp, remove_ec);
+        if (error) *error = "原子替换失败：" + path + "（" + rename_ec.message() + "）";
         return false;
     }
     return true;

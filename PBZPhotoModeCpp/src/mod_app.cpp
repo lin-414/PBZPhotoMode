@@ -11,6 +11,7 @@
 #include <Unreal/Hooks.hpp>
 #include <Unreal/UEngine.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <cstring>
@@ -18,6 +19,8 @@
 #include <mutex>
 #include <string>
 
+#include "core/tuning.h"
+#include "core/retry_policy.h"
 #include "core/version.h"
 #include "engine/ue4ss_port.h"
 #include "ui_tab.h"
@@ -25,12 +28,18 @@
 
 namespace pbzpm {
 
-// 引擎 GetInputMouseDelta 给的是「像素 ÷ 游戏鼠标灵敏度」，量级只有 0.1~0.2；
-// 乘这个系数放回像素量级，再交给 core 的 look_sensitivity（度/单位）换算成角度。
-constexpr double kEngineMouseScale = 40.0;
-// 语音钩子重试上限（每 2 秒一次，300 次 = 10 分钟）：每次重试做两遍全对象数组扫描，
-// 挂不上就说明环境有问题，无限重试等于周期性卡顿
-constexpr int kMaxVoiceHookRetries = 300;
+// 输入/时间步长常量统一放在 core/tuning.h（与 core/photo_mode.cpp 共用一份）。
+using tuning::kEngineMouseScale;
+
+// 语音钩子重试上限已并入 core/tuning.h（数值与注释原样保留）。
+using tuning::kMaxVoiceHookRetries;
+// 引擎输入钩子重试：真实时间指数退避（0.5s → 1s → 2s → 4s → 8s 封顶），此后固定 8 秒一次，
+// 一直重试（环境修好后无需重启游戏即可自愈）。旧实现按调用次数 +1.0 秒累加、累计超过 30 次就永久
+// 放弃，且注释写的是「下一帧再试」，与实现不符——已一并改掉。
+constexpr RetryBackoff kAxisHookBackoff{0.5, 8.0};
+// 引擎鼠标增量接口连续不可用多久后告警：port 内的 *_missing_ 是「一次 miss 永久缓存」，
+// 本模块（mod_app）无法清除，只能明确告诉用户需要重启游戏才能恢复。
+constexpr double kEngineDeltaMissingWarnSeconds = 3.0;
 namespace {
 
 // 单调时钟：冻结时间时引擎 delta 会变成 0，但相机还要能动，所以 dt 用真实时间算
@@ -40,8 +49,9 @@ auto monotonic_seconds() -> double {
     return std::chrono::duration<double>(clock::now() - start).count();
 }
 
-// UE4SS 的引擎 Tick 回调是普通函数指针，用全局实例桥回对象
-PhotoModeMod* g_mod = nullptr;
+// UE4SS 的引擎 Tick 回调是普通函数指针，用全局实例桥回对象。
+// 原子指针：卸载路径先注销回调再把这里置空，晚到的派发只会看到 nullptr（H-5）。
+std::atomic<PhotoModeMod*> g_mod{nullptr};
 
 // STR() 是 L##x 拼接，参数必须已经是字符串字面量；PBZPM_VERSION 是宏，需要两级展开
 #define PBZPM_WIDEN_IMPL(x) L##x
@@ -54,11 +64,24 @@ PhotoModeMod::PhotoModeMod() {
     ModVersion = PBZPM_WIDEN(PBZPM_VERSION);
     ModDescription = STR("Photo mode: free camera / FOV / auto-pause time / ImGui tab");
     ModAuthors = STR("PBZPhotoMode");
-    g_mod = this;
+    g_mod.store(this, std::memory_order_release);
 }
 
 PhotoModeMod::~PhotoModeMod() {
-    if (pbzfm_) pbzfm_->stop();  // 先停框架客户端线程，再拆输入/引擎侧
+    // 卸载顺序（H-5，顺序不能改）：
+    //   1) 先注销 UE4SS 钩子与 Engine Tick 回调：此后引擎不再派发新回调，避免回调进入正在
+    //      拆卸的成员；注销失败会在这里打 Error 并说明残留后果。
+    //   2) 再把 g_mod 置空：注销后偶有已入队的派发，也只看到 nullptr，不会解引用已析构对象。
+    //   3) 停 PBZFM 线程：框架线程会调 host_->log()/current_config()，必须在 port_ 销毁前停。
+    //   4) 卸载输入层：低级鼠标钩子是 Windows 全局回调，必须先于 DLL 卸载撤掉。
+    //   5) 最后 mode_->leave()：恢复引擎状态（视角/时间缩放/隐藏项）仍需要 port_ 存活。
+    //   6) 析构结束由成员析构顺序销毁 port_/mode_（delete 由 uninstall_mod 负责）。
+    if (port_) {
+        port_->unregister_all_hooks();
+    }
+    g_mod.store(nullptr, std::memory_order_release);
+
+    if (pbzfm_) pbzfm_->stop();
     if (input_source_ != nullptr) {
         input_source_->uninstall();
     }
@@ -66,7 +89,6 @@ PhotoModeMod::~PhotoModeMod() {
         std::lock_guard<std::mutex> lock(mutex_);
         mode_->leave("mod unload");
     }
-    if (g_mod == this) g_mod = nullptr;
 }
 
 auto PhotoModeMod::mod_directory() -> std::string {
@@ -95,15 +117,49 @@ void PhotoModeMod::reload_config() {
 }
 
 void PhotoModeMod::bind_engine_tick() {
-    if (tick_hook_installed_) return;
-    RC::Unreal::Hook::RegisterEngineTickPreCallback([](RC::Unreal::UEngine*, float delta_seconds) {
-        if (g_mod != nullptr) g_mod->on_engine_tick(static_cast<double>(delta_seconds));
-    });
+    if (tick_hook_installed_) return;  // 同一实例只挂一次（幂等）
+
+    // 用带 FCallbackOptions 的重载：它返回 GlobalCallbackId，卸载时才能用
+    // Hook::UnregisterCallback 真正注销；旧 void 重载注册后没有任何注销手段。
+    // 代价是回调签名多一个 TCallbackIterationData<void>& 参数。
+    RC::Unreal::Hook::FCallbackOptions pre_options{};
+    pre_options.OwnerModName = STR("PBZPhotoModeCpp");
+    pre_options.HookName = STR("EngineTickPre");
+    const RC::Unreal::Hook::GlobalCallbackId pre_id = RC::Unreal::Hook::RegisterEngineTickPreCallback(
+        [](RC::Unreal::Hook::TCallbackIterationData<void>&, RC::Unreal::UEngine*, float delta_seconds, bool) {
+            PhotoModeMod* mod = g_mod.load(std::memory_order_acquire);
+            if (mod != nullptr) mod->on_engine_tick(static_cast<double>(delta_seconds));
+        },
+        pre_options);
+    if (pre_id == RC::Unreal::Hook::ERROR_ID) {
+        if (port_) {
+            port_->track_global_failure("UE4SS.EngineTickPre");
+            port_->log(LogLevel::Error, "Engine Tick Pre 回调注册失败（UE4SS 未安装对应 detour）");
+        }
+    } else if (port_) {
+        port_->track_global_callback("UE4SS.EngineTickPre", pre_id);
+    }
+
     // post 回调在所有 actor/PC 的 Tick 之后跑：在这里重新夺一次视角，
     // 就能压过游戏自己每帧设置 ViewTarget 的行为
-    RC::Unreal::Hook::RegisterEngineTickPostCallback([](RC::Unreal::UEngine*, float) {
-        if (g_mod != nullptr) g_mod->on_engine_tick_post();
-    });
+    RC::Unreal::Hook::FCallbackOptions post_options{};
+    post_options.OwnerModName = STR("PBZPhotoModeCpp");
+    post_options.HookName = STR("EngineTickPost");
+    const RC::Unreal::Hook::GlobalCallbackId post_id = RC::Unreal::Hook::RegisterEngineTickPostCallback(
+        [](RC::Unreal::Hook::TCallbackIterationData<void>&, RC::Unreal::UEngine*, float, bool) {
+            PhotoModeMod* mod = g_mod.load(std::memory_order_acquire);
+            if (mod != nullptr) mod->on_engine_tick_post();
+        },
+        post_options);
+    if (post_id == RC::Unreal::Hook::ERROR_ID) {
+        if (port_) {
+            port_->track_global_failure("UE4SS.EngineTickPost");
+            port_->log(LogLevel::Error, "Engine Tick Post 回调注册失败（UE4SS 未安装对应 detour）");
+        }
+    } else if (port_) {
+        port_->track_global_callback("UE4SS.EngineTickPost", post_id);
+    }
+
     tick_hook_installed_ = true;
 }
 
@@ -116,6 +172,7 @@ void PhotoModeMod::on_unreal_init() {
     reload_config();
     port_ = std::make_unique<Ue4ssPort>(std::filesystem::path(mod_directory()));
     mode_ = std::make_unique<PhotoMode>(*port_, cfg_);
+    runtime_ = std::make_unique<ModRuntime>(*port_, *mode_, cfg_, keys_);
 
     input_source_ = &Win32InputSource::instance();
     // 排障开关：mod 目录里放一个 no_wheel_hook.txt 就不装低级鼠标钩子
@@ -178,12 +235,13 @@ void PhotoModeMod::render_tab_impl() {
 
     pbzfm_->lang().RescanLanguages(mod_dir(), false);  // 内部 2 秒节流，热加载
     PbzmI18n& lang = pbzfm_->lang();
-    ImGui::TextUnformatted(mode_->active() ? lang.T("#console_state_on") : lang.T("#console_state_off"));
+    const std::string state_text = mode_->active() ? lang.T("#console_state_on") : lang.T("#console_state_off");
+    ImGui::TextUnformatted(state_text.c_str());
     if (cfg_.pad_enabled) {
-        ImGui::Text(lang.T("#console_hotkey_pad_fmt"), vk_to_name(keys_.toggle).c_str(),
+        ImGui::Text(lang.T("#console_hotkey_pad_fmt").c_str(), vk_to_name(keys_.toggle).c_str(),
                     pad_combo_name(keys_.pad_toggle).c_str(), vk_to_name(keys_.freeze).c_str());
     } else {
-        ImGui::Text(lang.T("#console_hotkey_fmt"), vk_to_name(keys_.toggle).c_str(),
+        ImGui::Text(lang.T("#console_hotkey_fmt").c_str(), vk_to_name(keys_.toggle).c_str(),
                     vk_to_name(keys_.freeze).c_str());
     }
     ImGui::Separator();
@@ -208,12 +266,13 @@ void PhotoModeMod::render_tab_impl() {
 }
 
 void PhotoModeMod::handle_toggle() {
-    if (!mode_) return;
-    if (mode_->active()) {
-        mode_->leave("hotkey");
-    } else if (!mode_->enter()) {
-        port_->log(LogLevel::Error, "进入摄影模式失败：" + mode_->last_error());
-    } else {
+    if (!runtime_) return;
+    const ToggleOutcome outcome = runtime_->toggle();
+    if (outcome == ToggleOutcome::Entered) {
+        // 每次进入摄影模式都当作一个新的探测窗口：清掉引擎输入钩子的退避计数，
+        // 让它在下一帧就重新尝试一次（不必等满 8 秒的封顶间隔）
+        axis_hook_failures_ = 0;
+        axis_hook_next_retry_at_ = 0.0;
         // 进模式时把 PC/Pawn/HUD/相机/ViewTarget 全打一遍，真机排障靠这个
         port_->dump_engine_state();
         if (input_source_ != nullptr) {
@@ -223,6 +282,7 @@ void PhotoModeMod::handle_toggle() {
                                            " 事件计数=" + std::to_string(input_source_->mouse_event_count()));
         }
     }
+    // 进入失败时 ModRuntime 已打 Error 日志（含 PhotoMode::last_error()）
     input_.reset();
 }
 
@@ -267,21 +327,9 @@ void PhotoModeMod::pbzfm_apply_pending() {
     }
 
     if (has_config) {
-        // 三个有实时通道的开关记下旧值，改动了就地生效；其余字段走 set_config
+        // 三个有实时通道的开关由 ModRuntime 按差异就地生效；其余字段走 set_config
         // （下一轮冻结/下次进入/每秒重试路径按新配置执行）
-        const bool old_block = cfg_.block_game_input;
-        const bool old_player = cfg_.hide_player;
-        const bool old_hud = cfg_.hide_game_hud;
-        cfg_ = incoming;
-        keys_ = build_keymap(cfg_, nullptr);
-        if (mode_) {
-            mode_->set_config(cfg_);
-            if (mode_->active()) {
-                if (cfg_.hide_player != old_player) mode_->set_hide_player_live(cfg_.hide_player);
-                if (cfg_.block_game_input != old_block) mode_->set_block_game_input_live(cfg_.block_game_input);
-                if (cfg_.hide_game_hud != old_hud) mode_->set_hide_game_hud_live(cfg_.hide_game_hud);
-            }
-        }
+        if (runtime_) runtime_->apply_config(incoming);
         port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
     }
 
@@ -335,11 +383,15 @@ void PhotoModeMod::pbzfm_apply_pending() {
     }
 }
 
-// ViewTarget 没确认切过去时每秒重试一次：切不过去的话，后面所有相机操作都看不见效果
-// 引擎输入钩子：PC 只有进游戏后才有，所以进模式后试一次，失败就每秒再试
+// 引擎输入钩子：PlayerController 只有进游戏后才有，所以进摄影模式后开始尝试。
+// 重试节奏（真实时间，不是按调用次数累加）：第 1 次失败后等 0.5s，之后 1s / 2s / 4s / 8s 封顶，
+// 此后固定每 8 秒一次，一直重试——环境修好后无需重启游戏即可自愈（旧实现累计 30 次就永久放弃）。
+// 成功一次后 axis_hook_done_ 置位，之后每帧只做一次布尔判断，成功路径没有任何额外开销。
 void PhotoModeMod::ensure_axis_hook() {
-    if (axis_hook_tried_ || !port_ || !mode_ || !mode_->active()) return;
-    axis_hook_tried_ = true;
+    if (axis_hook_done_ || !port_ || !mode_ || !mode_->active()) return;
+    const double now = monotonic_seconds();
+    if (!retry_due(now, axis_hook_next_retry_at_)) return;  // 退避未到点，本帧直接跳过（不碰引擎）
+
     PhotoModeMod* self = this;
     const bool ok = port_->hook_input_axis([self](const std::string& key_name, double amount) {
         std::lock_guard<std::mutex> lock(self->axis_mutex_);
@@ -352,12 +404,11 @@ void PhotoModeMod::ensure_axis_hook() {
         }
     });
     if (!ok) {
-        // 下一帧再试，直到成功
-        axis_hook_tried_ = false;
-        axis_hook_retry_timer_ += 1.0;
-        if (axis_hook_retry_timer_ > 30.0) axis_hook_tried_ = true;
+        ++axis_hook_failures_;
+        axis_hook_next_retry_at_ = now + kAxisHookBackoff.delay_seconds(axis_hook_failures_);
         return;
     }
+    axis_hook_done_ = true;
     port_->log(LogLevel::Info, "引擎输入钩子已启用（鼠标增量来自引擎，不再依赖系统钩子）");
 }
 
@@ -374,17 +425,15 @@ void PhotoModeMod::retry_view_attach(double dt) {
 }
 
 void PhotoModeMod::handle_intent(const Intent& intent, double dt) {
-    if (!mode_) return;
+    if (!runtime_) return;
 
     if (intent.toggle_mode) {
         handle_toggle();
         return;
     }
-    if (!mode_->active()) {
-        return;
-    }
     // 注意：toggle_freeze 由 PhotoMode::tick 统一处理，这里不能再调一次（会双翻转）
-    mode_->tick(intent, dt);
+    // inactive 但 recovery_pending 时也要进 tick：退出后的恢复失败要按退避节奏重试
+    runtime_->dispatch(intent, dt);
 }
 
 // 每秒打一行输入诊断：真机出问题时，这一行就能判断是“输入没到”还是“到了但没生效”。
@@ -415,8 +464,39 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     double dt = monotonic_seconds() - last_tick_time_;
     last_tick_time_ = monotonic_seconds();
     if (dt < 0.0) dt = 0.0;
-    if (dt > 0.25) dt = 0.25;  // 卡帧保护，避免相机瞬移
+    if (dt > tuning::kMaxFrameDt) dt = tuning::kMaxFrameDt;  // 卡帧保护，避免相机瞬移
     (void)delta_seconds;
+
+    // ---- 共享状态与配置快照（M-9）----
+    // 线程归属：
+    //   cfg_ / keys_ 的写者 = 本线程的 pbzfm_apply_pending()（持 mutex_）+ 渲染线程
+    //     render_tab_impl() → reload_config()（持 mutex_）；读者 = 本函数、
+    //     PBZFM 框架线程的 current_config()（持 mutex_）。
+    //     所以本函数在入口持锁一次性拷出 cfg_snap / keys_snap，之后整帧只读这份副本，
+    //     锁外阶段不再直接读 cfg_ / keys_（锁外读 std::string / std::vector 会与写者构成数据竞争）。
+    //   mode_ / port_：只在入口快照里持锁读一次 active，其余访问一律留在下面的持锁段。
+    //   input_ / input_source_ / 各计时成员：只有引擎 Tick 线程访问（渲染线程不碰）。
+    //   axis_dx_ / axis_dy_ / axis_wheel_：引擎 InputAxis 回调线程写（axis_mutex_ 保护），
+    //     本线程在持锁段内取走。
+    //   playing_ids_：ue4ss_port.cpp 内由语音钩子回调线程写、tick 线程读，目前没有加锁，
+    //     属于待处理的竞态点（本轮按约定不改 ue4ss_port，只在此标注）。
+    // 取舍：每帧持锁拷一份 Config / KeyMap（约 30 个短字符串基本走 SSO，只有少量堆分配），
+    // 换到锁外阶段完全不碰共享配置。反方案（把语音钩子安装 / UI 修复 / 输入轮询挪进锁内）
+    // 会让这些走引擎反射的步骤拖长渲染线程等锁的时间，所以不用。
+    // 副作用：本帧开头 PBZFM 菜单刚改的配置从下一帧生效（差 1 帧，肉眼不可见）；
+    // 三个实时开关（hide_player / block_game_input / hide_game_hud）仍由 pbzfm_apply_pending
+    // 当帧直接下发到 mode_，不受影响。
+    Config cfg_snap;
+    KeyMap keys_snap;
+    bool mode_active_snap = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        cfg_snap = cfg_;
+        keys_snap = keys_;
+        mode_active_snap = mode_->active();
+    }
+    const Config& cfg = cfg_snap;
+    const KeyMap& keys = keys_snap;
 
     // 对话语音钩子：游戏加载后尽早挂到 PBZSoundFXSubsystem 的 Post 函数上，
     // 才能截获之后所有 PlayingID（冻结时的真暂停靠这份名单）
@@ -433,9 +513,9 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     // 首次运行本版时把两个开关强制打开。设置对象/玩家 Pawn 可能比引擎 Tick 晚就绪：
     // 每 3 秒试一次、上限 20 次（约 1 分钟，覆盖读档时间）。
     if (!ui_repair_done_) {
-        if (!cfg_.repair_ui_settings_once) {
+        if (!cfg.repair_ui_settings_once) {
             ui_repair_done_ = true;  // 配置关闭：不再尝试
-        } else if (ui_repair_attempts_ < 20 && !mode_->active()) {
+        } else if (ui_repair_attempts_ < 20 && !mode_active_snap) {
             // 摄影模式内不要做这项修复：模式内正把字幕/提示开关压成关闭，此时强开会和退出还原打架。
             ui_repair_accum_ += dt;
             if (ui_repair_accum_ >= 3.0) {
@@ -452,7 +532,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     }
 
     if (input_source_ != nullptr) {
-        input_source_->poll(input_, cfg_.pad_enabled);
+        input_source_->poll(input_, cfg.pad_enabled);
         // DInput 后端的一次性诊断（接入成功/初始化失败时各产出一条）
         std::string pad_diag;
         if (input_source_->take_pad_dinput_diag(pad_diag)) {
@@ -463,13 +543,13 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     std::lock_guard<std::mutex> lock(mutex_);
 
     // 手柄插拔日志：只在状态变化时打一行，方便确认手柄模式是否可用
-    if (input_source_ != nullptr && cfg_.pad_enabled) {
+    if (input_source_ != nullptr && cfg.pad_enabled) {
         const bool connected = input_source_->pad_connected();
         if (connected != pad_logged_connected_) {
             pad_logged_connected_ = connected;
             if (connected) {
                 port_->log(LogLevel::Info, std::string("手柄已连接（") + input_source_->pad_backend() +
-                                               "）：手柄 " + pad_combo_name(keys_.pad_toggle) + " 进入摄影模式");
+                                               "）：手柄 " + pad_combo_name(keys.pad_toggle) + " 进入摄影模式");
             } else {
                 port_->log(LogLevel::Info, "手柄已断开");
             }
@@ -498,7 +578,22 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     if (mode_ != nullptr && mode_->active()) {
         if (port_->read_mouse_delta(engine_dx_, engine_dy_)) {
             engine_delta_ok_ = true;
+            engine_delta_missing_accum_ = 0.0;
+        } else {
+            // 持续失败：ue4ss_port 对 GetInputMouseDelta 的函数查找是「一次 miss 永久缓存」
+            //（M-11）。本模块没有清除入口（flags 是 port 的私有成员，本轮不改 ue4ss_port），
+            // 只能按需求打一条明确告警；3 秒足以排除刚进模式时对象尚未就绪的短暂失败。
+            engine_delta_missing_accum_ += dt;
+            if (!engine_delta_missing_warned_ && engine_delta_missing_accum_ >= kEngineDeltaMissingWarnSeconds) {
+                engine_delta_missing_warned_ = true;
+                port_->log(LogLevel::Warn,
+                           "引擎鼠标增量接口 PlayerController::GetInputMouseDelta 持续不可用："
+                           "该函数的查找结果已被缓存为「缺失」，运行中无法重新探测，"
+                           "需要重启游戏才能恢复鼠标；系统级鼠标输入不受影响");
+            }
         }
+    } else {
+        engine_delta_missing_accum_ = 0.0;  // 不在摄影模式不累计；再次进模式后重新计时
     }
 
     // 引擎侧钩子的增量先并进来（同一帧内多条轴事件会被累加）
@@ -539,7 +634,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     }
     if (input_source_ != nullptr) input_source_->set_mouse_muted(axis_move_active_ || engine_delta_ok_);
 
-    const Intent intent = input_.build(cfg_, keys_, dt);
+    const Intent intent = input_.build(cfg, keys, dt);
     handle_intent(intent, dt);
     retry_view_attach(dt);
     ensure_axis_hook();

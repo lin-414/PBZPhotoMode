@@ -157,10 +157,14 @@ const DIDATAFORMAT kJoy2Format = {
 };
 
 std::string narrow(const std::wstring& w) {
-    // 设备名 / VID_PID 都是 ASCII，逐字符截断收窄足够
-    std::string out;
-    out.reserve(w.size());
-    for (wchar_t c : w) out.push_back(static_cast<char>(c));
+    // 设备名 / VID_PID 多为 ASCII，但路径可能含中文或非 BMP 字符：
+    // 统一走 CP_UTF8 转换，避免逐 wchar_t 截断产生乱码（只影响日志文本）。
+    if (w.empty()) return {};
+    const int needed = ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), nullptr, 0,
+                                             nullptr, nullptr);
+    if (needed <= 0) return {};
+    std::string out(static_cast<size_t>(needed), '\0');
+    ::WideCharToMultiByte(CP_UTF8, 0, w.c_str(), static_cast<int>(w.size()), out.data(), needed, nullptr, nullptr);
     return out;
 }
 
@@ -227,38 +231,11 @@ PadState dinput_to_pad(const DIJOYSTATE2& js) {
     return p;
 }
 
-double thumb_to_axis(SHORT value) {
-    double v = static_cast<double>(value) / 32767.0;
-    if (v > 1.0) v = 1.0;
-    if (v < -1.0) v = -1.0;
-    return v;
-}
-
+// 纯翻译在 core/gamepad（可脱离 Win32 单测）：这里只做 XInput 结构体到核心参数的搬运。
 PadState xinput_to_pad(const XINPUT_STATE& st) {
-    PadState p;
-    const WORD b = st.Gamepad.wButtons;
-    p.held[static_cast<int>(PadButton::A)] = (b & XINPUT_GAMEPAD_A) != 0;
-    p.held[static_cast<int>(PadButton::B)] = (b & XINPUT_GAMEPAD_B) != 0;
-    p.held[static_cast<int>(PadButton::X)] = (b & XINPUT_GAMEPAD_X) != 0;
-    p.held[static_cast<int>(PadButton::Y)] = (b & XINPUT_GAMEPAD_Y) != 0;
-    p.held[static_cast<int>(PadButton::LB)] = (b & XINPUT_GAMEPAD_LEFT_SHOULDER) != 0;
-    p.held[static_cast<int>(PadButton::RB)] = (b & XINPUT_GAMEPAD_RIGHT_SHOULDER) != 0;
-    p.held[static_cast<int>(PadButton::LS)] = (b & XINPUT_GAMEPAD_LEFT_THUMB) != 0;
-    p.held[static_cast<int>(PadButton::RS)] = (b & XINPUT_GAMEPAD_RIGHT_THUMB) != 0;
-    p.held[static_cast<int>(PadButton::Back)] = (b & XINPUT_GAMEPAD_BACK) != 0;
-    p.held[static_cast<int>(PadButton::Start)] = (b & XINPUT_GAMEPAD_START) != 0;
-    p.held[static_cast<int>(PadButton::Guide)] = (b & XINPUT_GAMEPAD_GUIDE) != 0;
-    p.held[static_cast<int>(PadButton::Up)] = (b & XINPUT_GAMEPAD_DPAD_UP) != 0;
-    p.held[static_cast<int>(PadButton::Down)] = (b & XINPUT_GAMEPAD_DPAD_DOWN) != 0;
-    p.held[static_cast<int>(PadButton::Left)] = (b & XINPUT_GAMEPAD_DPAD_LEFT) != 0;
-    p.held[static_cast<int>(PadButton::Right)] = (b & XINPUT_GAMEPAD_DPAD_RIGHT) != 0;
-    p.lt = static_cast<double>(st.Gamepad.bLeftTrigger) / 255.0;
-    p.rt = static_cast<double>(st.Gamepad.bRightTrigger) / 255.0;
-    p.lx = thumb_to_axis(st.Gamepad.sThumbLX);
-    p.ly = thumb_to_axis(st.Gamepad.sThumbLY);
-    p.rx = thumb_to_axis(st.Gamepad.sThumbRX);
-    p.ry = thumb_to_axis(st.Gamepad.sThumbRY);
-    return p;
+    return xinput_state_to_pad(st.Gamepad.wButtons, st.Gamepad.bLeftTrigger, st.Gamepad.bRightTrigger,
+                               st.Gamepad.sThumbLX, st.Gamepad.sThumbLY, st.Gamepad.sThumbRX,
+                               st.Gamepad.sThumbRY);
 }
 
 // 需要轮询的键：功能键 + 摄影模式里用到的所有键。
@@ -407,7 +384,7 @@ bool Win32InputSource::pad_api_ready() const {
 
 std::string Win32InputSource::pad_api_module() const {
     if (g_xinput_module_path.empty()) return "(未加载)";
-    return std::string(g_xinput_module_path.begin(), g_xinput_module_path.end());
+    return narrow(g_xinput_module_path);
 }
 
 bool Win32InputSource::pad_connected() const {

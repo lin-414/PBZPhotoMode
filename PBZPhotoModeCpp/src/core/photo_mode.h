@@ -1,6 +1,7 @@
 #pragma once
 
 #include <string>
+#include <vector>
 
 #include "core/config.h"
 #include "core/engine_port.h"
@@ -8,8 +9,9 @@
 
 namespace pbzpm {
 
-// 摄影模式状态机。所有与游戏引擎的交互都经过 EnginePort，
-// 因此 enter/leave/tick 的顺序、回滚、幂等性都能在没有游戏的情况下测出来。
+// 摄影模式状态机。所有与游戏引擎的交互都经过按职责拆分的子接口
+//（EnginePort 只是构造时传入的聚合接口），因此 enter/leave/tick 的顺序、回滚、
+// 幂等性都能在没有游戏的情况下测出来。
 class PhotoMode {
 public:
     PhotoMode(EnginePort& engine, Config cfg);
@@ -20,7 +22,13 @@ public:
     void tick(const Intent& intent, double dt);
 
     bool active() const { return active_; }
-    bool frozen() const { return frozen_; }
+    // 「已冻结」= 冻结生效且没有被游戏侧改写夺走。freeze_lost_ 为 true 时内部 frozen_ 仍保留
+    // （退出时仍要还原），但 UI 必须显示「冻结已失效」，不能再假装画面是停住的。
+    bool frozen() const { return frozen_ && !freeze_lost_; }
+    // 冻结自检连续重压失败、已停止自动重试：冻结实际失效，等待用户按 F 重新冻结或退出
+    bool freeze_lost() const { return freeze_lost_; }
+    // 退出时仍有未还原项：调用方（mod_app）需要在 inactive 状态下继续驱动 tick 重试
+    bool recovery_pending() const { return recovery_pending_; }
 
     const CameraPose& pose() const { return pose_; }
     double fov() const { return fov_; }
@@ -44,8 +52,23 @@ public:
 private:
     bool apply_pose_if_dirty();
     void log(LogLevel level, const std::string& message);
+    // 退出/重试共用的还原实现：逐项调用、成功才清标志，失败项写进 failed_items
+    bool attempt_restore_all(std::vector<std::string>* failed_items);
+    // 是否还有任何需要还原的状态（幂等判断；包含 recovery_pending_）
+    bool has_pending_restore() const;
+    // inactive 状态下的恢复重试（有限次数 + 退避）
+    void tick_recovery(double dt);
 
-    EnginePort& engine_;
+    // 只持有实际用到的子接口：构造时从 EnginePort 聚合接口一次性接线，
+    // 让状态机看不到与摄影模式无关的引擎细节。
+    CameraViewPort& camera_;
+    InputPort& input_;
+    HudPort& hud_;
+    TimePausePort& time_pause_;
+    AudioPort& audio_;
+    FreezeMotionPort& freeze_motion_;
+    WorldPort& world_;
+    LogPort& log_;
     Config cfg_;
 
     CameraPose pose_{};
@@ -57,6 +80,8 @@ private:
 
     bool active_{false};
     bool frozen_{false};
+    // 冻结被游戏侧改写夺走且重压放弃：frozen_ 保留用于退出还原，但对外 frozen() 返回 false
+    bool freeze_lost_{false};
 
     // 进入时成功执行了哪些步骤 —— leave 严格按这些标记回滚，不多做也不少做
     bool spawned_{false};
@@ -70,7 +95,6 @@ private:
     bool lockon_hidden_{false};
     bool subtitles_hidden_{false};
     bool aspect_unlocked_{false};
-    bool postfx_saved_{false};
 
     double prev_dilation_{1.0};
     // 冻结时实际使用的模式：配置在冻结中途被热重载改掉时，解冻仍按进入时的模式还原
@@ -93,6 +117,11 @@ private:
     double freeze_check_accum_{0.0};
     int freeze_reassert_count_{0};
     bool freeze_reassert_gave_up_{false};
+    // 冻结诊断日志节流：状态翻转立即输出，持续期每 kFreezeDiagIntervalSec 秒最多一条
+    double freeze_diag_seconds_{0.0};
+    bool freeze_diag_has_last_{false};
+    bool freeze_diag_last_paused_{false};
+    bool freeze_diag_last_lost_{false};
     double reassert_accum_{0.0};
     double hud_retry_accum_{0.0};
     double prompt_retry_accum_{0.0};
@@ -107,6 +136,10 @@ private:
     int lockon_retry_count_{0};
     bool pose_dirty_{false};
     bool pov_fallback_used_{false};
+    // 退出后的恢复重试：失败项已保留在各自标志里，这里只记节奏
+    bool recovery_pending_{false};
+    int recovery_attempts_{0};
+    double recovery_accum_{0.0};
     std::string last_error_{};
 };
 

@@ -15,9 +15,14 @@
 #include "core/version.h"
 #include "pbzfm_schema_map.h"
 
-// 自绘页直接画进框架的 ImGui 上下文：两边必须链接同一版 ImGui（struct 布局一致），
-// 1.92.1 / 19210 由两仓的 third_party/imgui 同步固定，升版本时两边一起动
-static_assert(IMGUI_VERSION_NUM == 19210, "PBZFM 自绘页要求客户端与框架同版 ImGui (1.92.1)");
+// 自绘页直接画进框架的 ImGui 上下文：两边必须链接 ABI 兼容的 ImGui（struct 布局一致）。
+// 编译期只保留与具体版本号无关的基本约束（用到的 API/特性必须存在）；与框架是否同版
+// 改为 ensure_imgui() 里的运行时检测（上下文指纹 + GetVersion() 字符串），UE4SS 升级
+// 框架时不再因为 static_assert 写死版本号而编译失败。
+static_assert(IMGUI_VERSION_NUM >= 18900, "PBZFM 自绘页需要 ImGui 1.89+ 的 PushFont/字体图集 API");
+#if !defined(IMGUI_HAS_TEXTURES)
+#error "PBZFM 自绘页需要带动态字体图集的 ImGui（1.92+，IMGUI_HAS_TEXTURES）"
+#endif
 
 namespace pbzpm {
 namespace {
@@ -115,6 +120,13 @@ void PbzfmClient::start(Host* host) {
     if (!host || worker_.joinable()) return;
     host_ = host;
     g_client_self = this;
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        save_path_ = (std::filesystem::path(host->mod_dir()) / "config.ini").string();
+        save_quit_ = false;
+    }
+    saver_ = std::thread([this] { saver_main(); });
+    saver_running_.store(true, std::memory_order_release);
     worker_ = std::thread([this] { worker_main(); });
 }
 
@@ -124,6 +136,15 @@ void PbzfmClient::stop() {
     // 不撤销注册：框架没有反注册 API。回调入口都查 alive_，DLL 卸载前先停线程，
     // 之后即便框架再调进来也是空转（与 UE4SS 控制台 tab 回调同等的存在期约束）
     alive_.store(false, std::memory_order_release);
+
+    // 停后台写盘线程：置退出标记并唤醒，线程在退出前会把最后一次脏数据 flush 掉
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        save_quit_ = true;
+    }
+    save_cv_.notify_all();
+    if (saver_.joinable()) saver_.join();
+    saver_running_.store(false, std::memory_order_release);
 }
 
 void PbzfmClient::sync_from_config(const Config& cfg) {
@@ -167,6 +188,8 @@ void PbzfmClient::register_all() {
     group_keys_.clear();
     node_names_["language"] = lang_.T("#node_language");
     node_names_["status"] = lang_.T("#node_status");
+    // 0.4.x 回退分支的整页名；此前该键从未赋值 → 向框架注册空名 tab
+    node_names_["settings"] = lang_.T("#node_settings");
     {
         const char* last_group = nullptr;
         for (const PbzfmField& f : pbzfm_fields()) {
@@ -191,8 +214,11 @@ void PbzfmClient::register_all() {
                                 &PbzfmClient::RenderLanguageThunk, this);
     } else {
         // 0.4.x 及更早：根节点 + 页内页签（整页 = 语言切换 + 分组分隔线）
-        api_.AddSectionItem(node_names_["settings"].c_str(), &PbzfmClient::RenderSettingsThunk, this);
-        api_.AddSectionItem(node_names_["status"].c_str(), &PbzfmClient::RenderDiagThunk, this);
+        // 兜底：词典缺 #node_settings 或译文为空时，注册名不能为空（空名 tab 会变成不可点/无标题）
+        const std::string settings_name = node_names_["settings"].empty() ? "Settings" : node_names_["settings"];
+        const std::string status_name = node_names_["status"].empty() ? "Status" : node_names_["status"];
+        api_.AddSectionItem(settings_name.c_str(), &PbzfmClient::RenderSettingsThunk, this);
+        api_.AddSectionItem(status_name.c_str(), &PbzfmClient::RenderDiagThunk, this);
     }
 
     // v2 菜单事件（旧框架此指针为 NULL）：关菜单当帧取消改键捕获
@@ -227,11 +253,24 @@ bool PbzfmClient::ensure_imgui() {
     // 我们的 imgui 静态副本各自持有 current-context 指针；切过去之后本线程的
     // ImGui 调用才落在框架的上下文上（框架与 UE4SS 控制台各用各的副本，互不干扰）
     ImGui::SetCurrentContext(ctx);
+    if (ImGui::GetCurrentContext() != ctx || ImGui::GetIO().Fonts == nullptr) {
+        host_->log(LogLevel::Warn, "PBZFM ImGui 上下文不可用（SetCurrentContext 未生效），跳过自绘页");
+        return false;
+    }
+    // 运行时版本检测：客户端与框架的 ImGui 必须是同一版本（struct 布局一致）。
+    // 用 GetVersion() 字符串比较，框架升级时只需重编本 mod，不再被编译期版本号焊死。
+    const char* version = ImGui::GetVersion();
+    if (version == nullptr || std::strcmp(version, IMGUI_VERSION) != 0) {
+        host_->log(LogLevel::Warn, std::string("PBZFM ImGui 版本不一致（框架 ") + (version ? version : "未知") +
+                                       "，客户端 " IMGUI_VERSION "），跳过自绘页以免结构错位");
+        return false;
+    }
     const char* backend = ImGui::GetIO().BackendPlatformName;
     if (backend == nullptr || std::strcmp(backend, kBackendFingerprint) != 0) {
         host_->log(LogLevel::Warn, "PBZFM ImGui 上下文指纹不匹配（版本不一致？），跳过自绘页");
         return false;
     }
+    host_->log(LogLevel::Info, std::string("PBZFM 自绘页 ImGui 版本匹配：") + version);
 
     // 框架启动只按它自己的语言加载一个字体（中文环境 = 雅黑，没有谚文字形），分类树里
     // 我们注册的韩语节点名（词典译文）会整串渲染成 '?'。往框架默认字体合并 Malgun
@@ -291,11 +330,9 @@ void PbzfmClient::refresh_language() {
     int idx = lang_.FindLanguage(want.c_str());
     if (idx < 0) {
         // PBZFM.ini 的 [framework] language（与自绘页同目录树；至多每秒重读一次）
-        static std::string s_pbzfm_lang;
-        static double s_next_check = 0.0;
         const double now = SteadySeconds();
-        if (now >= s_next_check) {
-            s_next_check = now + 1.0;
+        if (now >= pbzfm_ini_next_check_) {
+            pbzfm_ini_next_check_ = now + 1.0;
             std::ifstream ini(std::filesystem::path(host_->mod_dir()).parent_path() / "PBZFM" / "PBZFM.ini",
                               std::ios::binary);
             if (ini) {
@@ -310,14 +347,16 @@ void PbzfmClient::refresh_language() {
                     const size_t b = value.find_first_not_of(" \t");
                     if (b == std::string::npos) break;
                     const size_t e = value.find_last_not_of(" \t\r\n");
-                    s_pbzfm_lang = value.substr(b, e - b + 1);
+                    pbzfm_ini_lang_ = value.substr(b, e - b + 1);
                     break;
                 }
             }
         }
-        idx = lang_.FindLanguage(s_pbzfm_lang.c_str());
+        // 按 id 选择：重扫可能重排语言表，用旧下标会选错
+        lang_.SetLanguageById(pbzfm_ini_lang_);
+    } else {
+        lang_.SetLanguageById(want);
     }
-    lang_.SetLanguage(idx >= 0 ? idx : 0);
     rename_tree_for_language();
 }
 
@@ -353,18 +392,59 @@ void PbzfmClient::rename_tree_for_language() {
     api_.SetSection(kSectionName);  // 文档建议：改名后重设调用线程 current
 }
 
+void PbzfmClient::request_save(const Config& draft) {
+    {
+        std::lock_guard<std::mutex> lock(save_mutex_);
+        save_cfg_ = draft;
+        save_dirty_ = true;
+    }
+    save_cv_.notify_one();
+}
+
+// 后台写盘线程：同一时刻最多一个写者；写盘期间新到的改动把 save_dirty_ 再置位，
+// 醒来后写最后一次快照（last-write-wins）。退出时 save_quit_ 置位，循环会先把
+// 剩余脏数据写完再结束，因此 stop() 返回后磁盘上一定是最新提交的配置。
+void PbzfmClient::saver_main() {
+    std::unique_lock<std::mutex> lock(save_mutex_);
+    for (;;) {
+        save_cv_.wait(lock, [this] { return save_quit_ || save_dirty_; });
+        if (save_dirty_) {
+            const Config cfg = save_cfg_;
+            const std::string path = save_path_;
+            save_dirty_ = false;
+            lock.unlock();
+            std::string err;
+            if (save_config_file(path, cfg, &err)) {
+                host_->log(LogLevel::Info, "PBZFM 菜单：config.ini 已原子写回");
+            } else {
+                host_->log(LogLevel::Warn, "PBZFM 菜单：config.ini 写回失败：" + err);
+            }
+            lock.lock();
+            continue;
+        }
+        if (save_quit_) break;
+    }
+}
+
 void PbzfmClient::commit_settings(const Config& draft, const std::string& what) {
     {
         std::lock_guard<std::mutex> lock(mirror_mutex_);
         mirror_ = draft;
     }
-    std::string err;
-    const std::string ini_path = (std::filesystem::path(host_->mod_dir()) / "config.ini").string();
-    if (!save_config_file(ini_path, draft, &err)) {
-        host_->log(LogLevel::Warn, "PBZFM 菜单：config.ini 写回失败：" + err);
+    // 渲染线程不再直接写盘：落盘由 saver_main 用「临时文件 + 原子替换」完成，
+    // 避免框架渲染线程与引擎 tick 线程同时读写 config.ini 造成半写/读到旧值。
+    if (saver_running_.load(std::memory_order_acquire)) {
+        request_save(draft);
+    } else {
+        // 兜底（正常不会走到：commit 只可能由注册后的渲染回调触发）：同步原子写
+        std::string err;
+        const std::string ini_path = (std::filesystem::path(host_->mod_dir()) / "config.ini").string();
+        if (!save_config_file(ini_path, draft, &err)) {
+            host_->log(LogLevel::Warn, "PBZFM 菜单：config.ini 写回失败：" + err);
+        }
     }
     host_->submit_config(draft);  // 引擎 Tick 线程应用（键位表重建 + 实时开关）
-    host_->log(LogLevel::Info, "PBZFM 菜单：" + what + " 已更新并写回 config.ini");
+    host_->log(LogLevel::Info, "PBZFM 菜单：" + what + " 已更新（config.ini 写回已排队）");
 }
 
 void PbzfmClient::RenderSettingsThunk(void* userdata) {
@@ -393,25 +473,34 @@ void PbzfmClient::OnMenuEventThunk(int open, void* userdata) {
 
 // 语言切换区块（语言页与 0.4.x 回退整页共用）：写进 config.ini 的 [ui] menu_language
 void PbzfmClient::render_language_controls(Config& draft) {
-    const int lang_idx = lang_.FindLanguage(draft.menu_language.c_str());
-    const char* lang_preview = lang_idx >= 0 ? lang_.LanguageDisplay(lang_idx) : lang_.T("#lang_auto");
-    if (ImGui::BeginCombo(lang_.T("#language"), lang_preview)) {
-        if (ImGui::Selectable(lang_.T("#lang_auto"), lang_idx < 0) && lang_idx >= 0) {
+    // 一次性拷出整份语言列表：后续遍历期间即便另一线程重扫词典，本帧仍然一致。
+    const std::vector<PbzmI18n::LanguageInfo> languages = lang_.Languages();
+    int lang_idx = -1;
+    for (size_t i = 0; i < languages.size(); ++i) {
+        if (languages[i].id == draft.menu_language) {
+            lang_idx = static_cast<int>(i);
+            break;
+        }
+    }
+    const std::string auto_label = lang_.T("#lang_auto");
+    const std::string lang_preview = lang_idx >= 0 ? languages[static_cast<size_t>(lang_idx)].display : auto_label;
+    if (ImGui::BeginCombo(lang_.T("#language").c_str(), lang_preview.c_str())) {
+        if (ImGui::Selectable(auto_label.c_str(), lang_idx < 0) && lang_idx >= 0) {
             draft.menu_language = "auto";
             commit_settings(draft, "语言：跟随 PBZFM");
         }
-        for (int i = 0; i < lang_.LanguageCount(); ++i) {
-            const bool selected = i == lang_idx;
-            if (ImGui::Selectable(lang_.LanguageDisplay(i), selected) && !selected) {
-                draft.menu_language = lang_.LanguageId(i);
-                commit_settings(draft, std::string("语言：") + lang_.LanguageId(i));
-                lang_.SetLanguage(i);
+        for (size_t i = 0; i < languages.size(); ++i) {
+            const bool selected = static_cast<int>(i) == lang_idx;
+            if (ImGui::Selectable(languages[i].display.c_str(), selected) && !selected) {
+                draft.menu_language = languages[i].id;
+                commit_settings(draft, std::string("语言：") + languages[i].id);
+                lang_.SetLanguageById(languages[i].id);
             }
         }
         ImGui::EndCombo();
     }
     ImGui::SameLine();
-    if (ImGui::Button(lang_.T("#rescan_dicts"))) {
+    if (ImGui::Button(lang_.T("#rescan_dicts").c_str())) {
         lang_.RescanLanguages(host_->mod_dir(), true);
     }
 }
@@ -421,7 +510,7 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
     switch (f.kind) {
         case PbzfmFieldKind::Bool: {
             bool b = f.get_bool(draft);
-            if (ImGui::Checkbox(lang_.T(f.label), &b)) {
+            if (ImGui::Checkbox(lang_.T(f.label).c_str(), &b)) {
                 f.set_bool(draft, b);
                 commit_settings(draft, lang_.T(f.label));
             }
@@ -429,7 +518,7 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
         }
         case PbzfmFieldKind::Float: {
             float v = static_cast<float>(f.get_num(draft));
-            if (ImGui::SliderFloat(lang_.T(f.label), &v, static_cast<float>(f.mn), static_cast<float>(f.mx), f.fmt)) {
+            if (ImGui::SliderFloat(lang_.T(f.label).c_str(), &v, static_cast<float>(f.mn), static_cast<float>(f.mx), f.fmt)) {
                 f.set_num(draft, v);  // 拖动中先落 draft，松手才提交（与框架 schema 同语义）
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -439,10 +528,14 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
         }
         case PbzfmFieldKind::Enum: {
             int idx = f.get_enum(draft);
+            std::string opt_text[8];
             const char* opts[8]{};
             const int n = f.option_count < 8 ? f.option_count : 8;
-            for (int i = 0; i < n; ++i) opts[i] = lang_.T(f.options[i]);
-            if (ImGui::Combo(lang_.T(f.label), &idx, opts, n)) {
+            for (int i = 0; i < n; ++i) {
+                opt_text[i] = lang_.T(f.options[i]);
+                opts[i] = opt_text[i].c_str();
+            }
+            if (ImGui::Combo(lang_.T(f.label).c_str(), &idx, opts, n)) {
                 f.set_enum(draft, idx);
                 commit_settings(draft, lang_.T(f.label));
             }
@@ -469,13 +562,13 @@ void PbzfmClient::render_settings_page() {
     }
 
     render_language_controls(draft);
-    ImGui::TextDisabled(lang_.T("#hint"));
+    ImGui::TextDisabled(lang_.T("#hint").c_str());
     ImGui::Separator();
 
     const char* current_group = nullptr;
     for (const PbzfmField& f : pbzfm_fields()) {
         if (current_group == nullptr || std::strcmp(current_group, f.group) != 0) {
-            ImGui::SeparatorText(lang_.T(f.group));
+            ImGui::SeparatorText(lang_.T(f.group).c_str());
             current_group = f.group;
         }
         render_field_widget(f, draft);
@@ -497,7 +590,7 @@ void PbzfmClient::render_language_page() {
         draft = mirror_;
     }
     render_language_controls(draft);
-    ImGui::TextDisabled(lang_.T("#hint"));
+    ImGui::TextDisabled(lang_.T("#hint").c_str());
     if (font_pushed) ImGui::PopFont();
 }
 
@@ -521,23 +614,20 @@ void PbzfmClient::render_group_page(const char* group) {
 }
 
 void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft) {
-    // 捕获态只存在于渲染线程（static），5 秒未按键自动取消；
-    // 菜单被关掉（v2 菜单事件）时立即取消，避免重开后停在「按下新按键…」
-    static bool capturing = false;
-    static const PbzfmField* capture_field = nullptr;
-    static double capture_started = 0.0;
+    // 捕获态是成员变量（H-4：原函数内 static），线程归属见 pbzfm_client.h：
+    // 仅框架渲染线程读写；5 秒未按键自动取消，菜单被关掉（v2 菜单事件）时立即取消。
     if (menu_closed_tick_.exchange(false, std::memory_order_acq_rel)) {
-        capturing = false;
+        key_capturing_ = false;
     }
 
-    ImGui::TextUnformatted(lang_.T(f.label));
+    ImGui::TextUnformatted(lang_.T(f.label).c_str());
     ImGui::SameLine(0.0f, 12.0f);
     const int current_vk = vk_from_name(draft.*f.key_name);
     char kb[64]{};
     std::snprintf(kb, sizeof(kb), "[%s]", current_vk != 0 ? vk_to_name(current_vk).c_str() : "?");
 
-    if (capturing && capture_field == &f) {
-        ImGui::Button(lang_.T("#capturing"), ImVec2(150.0f, 0.0f));
+    if (key_capturing_ && key_capture_field_ == &f) {
+        ImGui::Button(lang_.T("#capturing").c_str(), ImVec2(150.0f, 0.0f));
         for (const int cand : kCandidateVks) {
             const ImGuiKey key = VkToImGuiKey(cand);
             if (key != ImGuiKey_None && ImGui::IsKeyPressed(key)) {
@@ -548,17 +638,17 @@ void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft) {
                 } else {
                     host_->log(LogLevel::Warn, std::string("PBZFM 菜单：") + lang_.T(f.label) + " 不支持该键，保持原键");
                 }
-                capturing = false;
+                key_capturing_ = false;
                 break;
             }
         }
-        if (capturing && SteadySeconds() - capture_started > kCaptureTimeoutSec) {
-            capturing = false;
+        if (key_capturing_ && SteadySeconds() - key_capture_started_ > kCaptureTimeoutSec) {
+            key_capturing_ = false;
         }
     } else if (ImGui::Button(kb, ImVec2(150.0f, 0.0f))) {
-        capturing = true;
-        capture_field = &f;
-        capture_started = SteadySeconds();
+        key_capturing_ = true;
+        key_capture_field_ = &f;
+        key_capture_started_ = SteadySeconds();
     }
 }
 
@@ -574,9 +664,10 @@ void PbzfmClient::render_diag_page() {
     }
 
     if (s.active) {
-        api_.Text(s.frozen ? lang_.T("#status_frozen") : lang_.T("#status_live"));
+        const std::string state_text = s.frozen ? lang_.T("#status_frozen") : lang_.T("#status_live");
+        api_.Text(state_text.c_str());
     } else {
-        api_.TextDisabled(lang_.T("#status_off"));
+        api_.TextDisabled(lang_.T("#status_off").c_str());
     }
     api_.Separator();
 
@@ -585,30 +676,32 @@ void PbzfmClient::render_diag_page() {
         host_->submit_command(PbzfmCommand{PbzfmAction::SetFov, static_cast<double>(fov)});
     }
 
-    if (api_.Button(s.active ? lang_.T("#btn_exit") : lang_.T("#btn_enter"))) {
+    const std::string mode_label = s.active ? lang_.T("#btn_exit") : lang_.T("#btn_enter");
+    if (api_.Button(mode_label.c_str())) {
         host_->submit_command(PbzfmCommand{PbzfmAction::ToggleMode, 0.0});
     }
     api_.SameLine();
-    if (api_.Button(s.frozen ? lang_.T("#btn_resume") : lang_.T("#btn_freeze"))) {
+    const std::string freeze_label = s.frozen ? lang_.T("#btn_resume") : lang_.T("#btn_freeze");
+    if (api_.Button(freeze_label.c_str())) {
         host_->submit_command(PbzfmCommand{PbzfmAction::ToggleFreeze, 0.0});
     }
     api_.SameLine();
-    if (api_.Button(lang_.T("#btn_reset"))) {
+    if (api_.Button(lang_.T("#btn_reset").c_str())) {
         host_->submit_command(PbzfmCommand{PbzfmAction::ResetView, 0.0});
     }
-    if (api_.Button(lang_.T("#btn_reload"))) {
+    if (api_.Button(lang_.T("#btn_reload").c_str())) {
         host_->submit_command(PbzfmCommand{PbzfmAction::ReloadConfig, 0.0});
     }
     api_.Separator();
 
     char buf[320]{};
-    std::snprintf(buf, sizeof(buf), lang_.T("#pose"), s.pos[0], s.pos[1], s.pos[2], s.pitch, s.yaw, s.roll);
+    std::snprintf(buf, sizeof(buf), lang_.T("#pose").c_str(), s.pos[0], s.pos[1], s.pos[2], s.pitch, s.yaw, s.roll);
     api_.Text(buf);
-    api_.TextDisabled(lang_.T("#help_look"));
-    std::snprintf(buf, sizeof(buf), lang_.T("#help_keys"), s.toggle_key.c_str(), s.freeze_key.c_str(),
+    api_.TextDisabled(lang_.T("#help_look").c_str());
+    std::snprintf(buf, sizeof(buf), lang_.T("#help_keys").c_str(), s.toggle_key.c_str(), s.freeze_key.c_str(),
                   s.reset_key.c_str(), s.roll_reset_key.c_str());
     api_.TextDisabled(buf);
-    api_.TextDisabled((std::string(lang_.T("#pad_prefix")) + s.pad_backend).c_str());
+    api_.TextDisabled((lang_.T("#pad_prefix") + s.pad_backend).c_str());
     api_.TextDisabled(PBZPM_DISPLAY_NAME " " PBZPM_VERSION);
     if (font_pushed) ImGui::PopFont();
 }

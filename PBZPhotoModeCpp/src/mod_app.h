@@ -9,6 +9,7 @@
 
 #include "core/config.h"
 #include "core/input_logic.h"
+#include "core/mod_runtime.h"
 #include "core/photo_mode.h"
 #include "pbzfm_client.h"
 
@@ -60,27 +61,40 @@ private:
     std::unique_ptr<PhotoMode> mode_;
     Config cfg_{};
     KeyMap keys_{};
+    // 引擎侧编排（进/退、tick 分工、配置应用与实时开关差异）放在 core/ModRuntime，
+    // 依赖按引用注入，便于用 FakeEngine 覆盖完整进退路径（见 tests/test_mod_runtime.cpp）。
+    std::unique_ptr<ModRuntime> runtime_;
     InputLogic input_{};
     Win32InputSource* input_source_{nullptr};
 
+    // 保护 cfg_ / keys_ / input_ / mode_ 与诊断字段：引擎 Tick 线程是主写者，
+    // PBZFM 控制台渲染线程与 mod 卸载路径会读/偶尔写；持锁期间不做全对象扫描等重活。
     std::mutex mutex_{};
     bool tick_hook_installed_{false};
     double attach_retry_timer_{0.0};
 
-    // 引擎侧鼠标增量（InputAxis 钩子喂进来，引擎 Tick 里取走）
+    // 引擎侧鼠标增量（InputAxis 钩子喂进来，引擎 Tick 里取走）。
+    // 线程归属：钩子回调写 axis_*，Tick 读取并清零 engine_*；原则上同线程，仍加锁防框架切换线程。
     std::mutex axis_mutex_;
     double axis_dx_{0.0};
     double axis_dy_{0.0};
     double axis_wheel_{0.0};
     bool axis_move_active_{false};
-    bool axis_hook_tried_{false};
+    // 引擎输入钩子安装状态（M-11）：done 之后每帧只做一次布尔判断（成功路径零成本）；
+    // failures 决定退避档位（0.5s→1s→2s→4s→8s 封顶），next_retry_at 是单调秒时间戳，
+    // 到点才再试。旧实现按调用次数 +1.0 累加并累计 30 次后永久放弃，已废弃。
+    bool axis_hook_done_{false};
+    int axis_hook_failures_{0};
+    double axis_hook_next_retry_at_{0.0};
     double engine_dx_{0.0};
     double engine_dy_{0.0};
     bool engine_delta_ok_{false};
     bool engine_delta_logged_{false};
     double engine_peak_dx_{0.0};
     double engine_peak_dy_{0.0};
-    double axis_hook_retry_timer_{0.0};
+    // 引擎鼠标增量接口持续不可用的告警（port 内 *_missing_ 永久缓存本轮不能清，只能明确告警）
+    double engine_delta_missing_accum_{0.0};
+    bool engine_delta_missing_warned_{false};
     double diag_accum_{0.0};
     double voice_hook_accum_{0.0};  // 对话语音钩子重试节流（每 2 秒试一次直到挂上）
     int voice_hook_attempts_{0};    // 重试次数（有上限：每次重试都是两遍全对象数组扫描）
@@ -97,6 +111,8 @@ private:
     // ---- PBZFM 菜单框架客户端（可选组件；框架线程只写下面三个字段，引擎 Tick 消化） ----
     // 构造期即创建（start() 在引擎初始化时才调）：控制台面板首帧就能共用 lang() 词典
     std::unique_ptr<PbzfmClient> pbzfm_{std::make_unique<PbzfmClient>()};
+    // 保护 pbzfm_pending_cfg_ / pbzfm_cfg_dirty_ / pbzfm_commands_：PBZFM 框架线程写入，
+    // 引擎 Tick 消费；锁内只搬移/拷贝，不调用框架 API。
     std::mutex pbzfm_mutex_;
     Config pbzfm_pending_cfg_{};
     bool pbzfm_cfg_dirty_{false};

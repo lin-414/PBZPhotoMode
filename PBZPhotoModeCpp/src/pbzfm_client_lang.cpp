@@ -1,6 +1,6 @@
 #include "pbzfm_client_lang.h"
 
-#ifdef PBZPM_WITH_UE4SS
+#include "core/i18n_logic.h"
 
 #include <algorithm>
 #include <chrono>
@@ -93,51 +93,46 @@ bool ParseFlatJson(const std::string& utf8, std::map<std::string, std::string>& 
     }
 }
 
-// 已知语言的固定展示顺序（en-US 为基准词典，排第一；其余语言按 id 排序追加其后）
-constexpr const char* const kKnownOrder[] = {"en-US", "zh-CN", "ja-JP", "ko-KR"};
-
 }  // namespace
 
-void PbzmI18n::Upsert(const std::string& id, const std::string& display,
+PbzmI18n::SnapshotPtr PbzmI18n::Load() const {
+    return snapshot_.load(std::memory_order_acquire);
+}
+
+void PbzmI18n::Publish(SnapshotPtr next) {
+    snapshot_.store(std::move(next), std::memory_order_release);
+}
+
+void PbzmI18n::Upsert(std::vector<Lang>& langs, const std::string& id, const std::string& display,
                       std::map<std::string, std::string>&& strings) {
-    for (Lang& l : langs_) {
+    for (Lang& l : langs) {
         if (l.id == id) {
             l.display = display;
             l.strings = std::move(strings);
             return;
         }
     }
-    langs_.push_back(Lang{id, display, std::move(strings)});
+    langs.push_back(Lang{id, display, std::move(strings)});
 }
 
-void PbzmI18n::SortAndClamp() {
-    if (langs_.empty()) {
-        current_ = 0;
+void PbzmI18n::SortAndClamp(Snapshot& snap) {
+    if (snap.langs.empty()) {
+        snap.current = 0;
         return;
     }
-    // 已知语言顺序优先，其余按 id 排序；current_ 按 id 重新定位
-    std::string keep = langs_[static_cast<size_t>(current_)].id;
-    auto orderOf = [](const std::string& id) -> int {
-        for (int i = 0; i < 4; ++i) {
-            if (id == kKnownOrder[i]) return i;
-        }
-        return 100;
-    };
-    std::sort(langs_.begin(), langs_.end(), [&](const Lang& a, const Lang& b) {
-        const int oa = orderOf(a.id);
-        const int ob = orderOf(b.id);
-        if (oa != ob) return oa < ob;
-        if (oa != 100) return false;  // 已知语言保持声明顺序
-        return a.id < b.id;
-    });
-    current_ = 0;
-    for (size_t i = 0; i < langs_.size(); ++i) {
-        if (langs_[i].id == keep) current_ = static_cast<int>(i);
+    // 已知语言顺序优先，其余按 id 排序；current 按 id 重新定位
+    const int old_current = snap.current >= 0 && snap.current < static_cast<int>(snap.langs.size()) ? snap.current : 0;
+    const std::string keep = snap.langs[static_cast<size_t>(old_current)].id;
+    std::sort(snap.langs.begin(), snap.langs.end(),
+              [](const Lang& a, const Lang& b) { return language_display_less(a.id, b.id); });
+    snap.current = 0;
+    for (size_t i = 0; i < snap.langs.size(); ++i) {
+        if (snap.langs[i].id == keep) snap.current = static_cast<int>(i);
     }
 }
 
 void PbzmI18n::RescanLanguages(const std::string& mod_dir, bool force) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::lock_guard<std::mutex> lock(write_mutex_);
     const double now = SteadySeconds();
     if (!force && now < next_scan_) return;
     next_scan_ = now + 2.0;
@@ -145,6 +140,9 @@ void PbzmI18n::RescanLanguages(const std::string& mod_dir, bool force) {
     std::error_code ec;
     if (!std::filesystem::is_directory(dir, ec)) return;
 
+    // 复制当前快照（保留目录里已消失的旧语言），写侧独占修改后整体发布。
+    const SnapshotPtr old = Load();
+    Snapshot next = old ? *old : Snapshot{};
     for (std::filesystem::directory_iterator it(dir, ec), end; it != end; it.increment(ec)) {
         if (ec) break;
         if (!it->is_regular_file(ec)) continue;
@@ -160,67 +158,99 @@ void PbzmI18n::RescanLanguages(const std::string& mod_dir, bool force) {
             if (!d->second.empty()) display = d->second;
             parsed.erase(d);
         }
-        Upsert(id, display, std::move(parsed));
+        Upsert(next.langs, id, display, std::move(parsed));
     }
-    SortAndClamp();
+    SortAndClamp(next);
+    Publish(std::make_shared<Snapshot>(std::move(next)));
 }
 
-int PbzmI18n::LanguageCount() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return static_cast<int>(langs_.size());
+int PbzmI18n::LanguageCount() const {
+    const SnapshotPtr snap = Load();
+    return snap ? static_cast<int>(snap->langs.size()) : 0;
 }
 
-const char* PbzmI18n::LanguageId(int index) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return index >= 0 && index < static_cast<int>(langs_.size()) ? langs_[static_cast<size_t>(index)].id.c_str() : "";
+std::string PbzmI18n::LanguageId(int index) const {
+    const SnapshotPtr snap = Load();
+    if (!snap || index < 0 || index >= static_cast<int>(snap->langs.size())) return {};
+    return snap->langs[static_cast<size_t>(index)].id;
 }
 
-const char* PbzmI18n::LanguageDisplay(int index) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return index >= 0 && index < static_cast<int>(langs_.size()) ? langs_[static_cast<size_t>(index)].display.c_str() : "";
+std::string PbzmI18n::LanguageDisplay(int index) const {
+    const SnapshotPtr snap = Load();
+    if (!snap || index < 0 || index >= static_cast<int>(snap->langs.size())) return {};
+    return snap->langs[static_cast<size_t>(index)].display;
 }
 
-int PbzmI18n::FindLanguage(const char* id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+std::vector<PbzmI18n::LanguageInfo> PbzmI18n::Languages() const {
+    std::vector<LanguageInfo> out;
+    const SnapshotPtr snap = Load();
+    if (!snap) return out;
+    out.reserve(snap->langs.size());
+    for (const Lang& l : snap->langs) out.push_back(LanguageInfo{l.id, l.display});
+    return out;
+}
+
+int PbzmI18n::FindLanguage(const char* id) const {
     if (id == nullptr || *id == '\0') return -1;
-    for (size_t i = 0; i < langs_.size(); ++i) {
-        if (langs_[i].id == id) return static_cast<int>(i);
+    const SnapshotPtr snap = Load();
+    if (!snap) return -1;
+    for (size_t i = 0; i < snap->langs.size(); ++i) {
+        if (snap->langs[i].id == id) return static_cast<int>(i);
     }
     return -1;
 }
 
 void PbzmI18n::SetLanguage(int index) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    current_ = index >= 0 && index < static_cast<int>(langs_.size()) ? index : 0;
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    const SnapshotPtr old = Load();
+    Snapshot next = old ? *old : Snapshot{};
+    next.current = index >= 0 && index < static_cast<int>(next.langs.size()) ? index : 0;
+    Publish(std::make_shared<Snapshot>(std::move(next)));
 }
 
-int PbzmI18n::CurrentIndex() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return current_;
-}
-
-const char* PbzmI18n::CurrentId() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return langs_.empty() ? "" : langs_[static_cast<size_t>(current_)].id.c_str();
-}
-
-const char* PbzmI18n::T(const char* key) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (key == nullptr || *key == '\0') return "";
-    if (langs_.empty()) return key;  // 没有任何词典：键名退化（label 本身是中文原文）
-    const Lang& cur = langs_[static_cast<size_t>(current_)];
-    if (auto it = cur.strings.find(key); it != cur.strings.end()) return it->second.c_str();
-    if (cur.id != "en-US") {
-        // 基准词典 en-US 兜底：某语言缺键时显示英文原文，而不是键名
-        for (const Lang& l : langs_) {
-            if (l.id != "en-US") continue;
-            if (auto it = l.strings.find(key); it != l.strings.end()) return it->second.c_str();
+void PbzmI18n::SetLanguageById(const std::string& id) {
+    std::lock_guard<std::mutex> lock(write_mutex_);
+    const SnapshotPtr old = Load();
+    Snapshot next = old ? *old : Snapshot{};
+    next.current = 0;  // 未找到（含空 id）归位到 0
+    for (size_t i = 0; i < next.langs.size(); ++i) {
+        if (next.langs[i].id == id) {
+            next.current = static_cast<int>(i);
             break;
         }
     }
-    return key;
+    Publish(std::make_shared<Snapshot>(std::move(next)));
+}
+
+int PbzmI18n::CurrentIndex() const {
+    const SnapshotPtr snap = Load();
+    if (!snap) return 0;
+    return snap->current >= 0 && snap->current < static_cast<int>(snap->langs.size()) ? snap->current : 0;
+}
+
+std::string PbzmI18n::CurrentId() const {
+    const SnapshotPtr snap = Load();
+    if (!snap || snap->langs.empty()) return {};
+    const int idx = snap->current >= 0 && snap->current < static_cast<int>(snap->langs.size()) ? snap->current : 0;
+    return snap->langs[static_cast<size_t>(idx)].id;
+}
+
+std::string PbzmI18n::T(const char* key) const {
+    if (key == nullptr || *key == '\0') return {};
+    const SnapshotPtr snap = Load();
+    if (!snap || snap->langs.empty()) return key;  // 没有任何词典：键名退化（label 本身是中文原文）
+    const int idx = snap->current >= 0 && snap->current < static_cast<int>(snap->langs.size()) ? snap->current : 0;
+    const Lang& cur = snap->langs[static_cast<size_t>(idx)];
+    const std::map<std::string, std::string>* base = nullptr;
+    if (cur.id != "en-US") {
+        // 基准词典 en-US 兜底：某语言缺键时显示英文原文，而不是键名
+        for (const Lang& l : snap->langs) {
+            if (l.id != "en-US") continue;
+            base = &l.strings;
+            break;
+        }
+    }
+    return resolve_translation(cur.strings, base, key);
 }
 
 }  // namespace pbzpm
-
-#endif  // PBZPM_WITH_UE4SS

@@ -90,7 +90,7 @@ struct Config {
     bool stop_camera_shakes_on_freeze{true};  // 冻结时停用相机修饰器并立即结束 shake（真实时间驱动的残余微动，冻结画面边缘抖动/脸部阴影爬动的主变化源），解冻按原状态还原
     bool freeze_wind{true};  // 冻结时把风源（WindDirectionalSource）风强/风速归零：材质顶点摆动（布料/植被）的幅度源，暂停拦不住；解冻还原
     bool freeze_mpc{true};   // 冻结时钉住材质参数集合（MPC）当前值：冻结期每帧写回快照，压制实时驱动参数继续推布料/植被摆动；解冻释放
-    bool freeze_diag{true};  // 冻结期每秒输出一条冻结诊断（风源/MPC 参数变化/相机修饰器），定位布料与阴影闪烁还剩哪个变化源没压住
+    bool freeze_diag{false}; // 冻结诊断默认关闭（诊断本身要做反射扫描）；开启后只在状态翻转或每 10 秒输出一条
     bool restore_fov_on_exit{true};
     bool restore_view_on_exit{true};
 
@@ -108,7 +108,11 @@ struct ConfigLoadResult {
     Config cfg{};
     std::vector<std::string> warnings{};
     std::string source{"内置默认值"};
+    // ok=false 表示文件层失败；用下面的细分标志区分「文件不存在」与「存在但读不了」，
+    // 解析层面的非法项只进 warnings，仍返回可用的 cfg。
     bool ok{true};
+    bool file_missing{false};
+    bool read_error{false};
 };
 
 // 解析 INI 文本。未知键 / 非法值只累积 warning，保留对应默认值。
@@ -124,7 +128,8 @@ std::string default_config_text();
 // （PBZFM 菜单写回 config.ini 用；所有字段都会输出，未改动的字段保持默认值）
 std::string config_ini_text(const Config& cfg);
 
-// 写出配置文件（UTF-8）。失败时 error 非空则填原因；返回是否成功。
+// 原子写出配置文件（UTF-8）：先写 <path>.tmp，成功后再 rename 覆盖目标，
+// 避免引擎线程读盘时读到半写的文件。失败时 error 非空则填原因；返回是否成功。
 bool save_config_file(const std::string& path, const Config& cfg, std::string* error = nullptr);
 
 const char* log_level_name(LogLevel level);

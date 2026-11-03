@@ -10,7 +10,7 @@
 // 之后才启动，天然满足。
 //
 // 页面全部由客户端自绘（SDK 的 PBZFM_GetImGuiContext 通道，要求与框架链接
-// 同一版 ImGui，1.92.1，见 static_assert）：
+// 同一版 ImGui；版本一致性在 ensure_imgui() 运行时校验，编译期只做基本 API 约束）：
 //   - 「设置 · Settings」页：语言切换（内置 zh/en/ja/ko + 外部词典
 //     languages/*.json，见 pbzfm_client_lang.h）+ 全部设置项（键位捕获为
 //     客户端自实现，镜像框架输入层的 VkToImGuiKey 映射）；
@@ -23,6 +23,7 @@
 #ifdef PBZPM_WITH_UE4SS
 
 #include <atomic>
+#include <condition_variable>
 #include <map>
 #include <mutex>
 #include <string>
@@ -120,6 +121,10 @@ private:
     static void OnMenuEventThunk(int open, void* userdata);  // v2：菜单开关（旧框架为 NULL）
     void worker_main();
     void register_all();
+    // 后台写盘线程：渲染线程只标记脏数据，落盘（临时文件 + 原子替换）在这里做；
+    // stop() 会通知它退出并在退出前 flush 最后一次改动。
+    void saver_main();
+    void request_save(const Config& draft);
 
     // ---- 自绘页（框架渲染线程） ----
     bool ensure_imgui();                 // SetCurrentContext + 后端指纹校验（一次）
@@ -140,6 +145,18 @@ private:
     std::thread worker_;
     std::atomic<bool> quit_{false};
     std::atomic<bool> alive_{false};   // 注册完成；回调入口用它挡掉 stop 之后的回调
+    // ---- 后台写盘（commit_settings 只排队，不阻塞渲染线程）----
+    std::thread saver_;
+    std::atomic<bool> saver_running_{false};
+    // 保护 save_dirty_ / save_quit_ / save_cfg_ / save_path_：渲染线程（commit_settings）
+    // 在锁内写并 notify，后台 saver 线程在锁内取走快照后落盘。
+    std::mutex save_mutex_;
+    std::condition_variable save_cv_;
+    bool save_dirty_{false};
+    bool save_quit_{false};
+    Config save_cfg_{};
+    std::string save_path_{};
+    // 保护 mirror_：引擎 Tick（sync_from_config）与 PBZFM 渲染线程（页面读写/提交）共用。
     std::mutex mirror_mutex_;
     Config mirror_{};                  // 自绘页绑定的当前配置（改动先落这里再提交）
     PbzmI18n lang_;                    // 客户端词典（外部 languages/*.json；控制台面板共用）
@@ -147,12 +164,23 @@ private:
     bool imgui_ok_{false};
     ImFont* page_font_{nullptr};       // 自绘页合并字体（懒建一次）
     bool page_font_failed_{false};     // 字体创建失败只告警一次
+    // 保护 snapshot_：引擎 Tick（publish_snapshot）写，PBZFM 渲染线程（诊断页）读。
     std::mutex snap_mutex_;
     PbzfmSnapshot snapshot_{};
 
-    // v2 菜单事件：关闭菜单的当帧取消改键捕获（键位捕获的 static 状态在渲染线程）
+    // v2 菜单事件：关闭菜单的当帧取消改键捕获
     std::atomic<bool> menu_closed_tick_{false};
     int menu_event_id_{0};
+
+    // ---- 框架渲染线程独占状态（H-4：原先的函数内 static）----
+    // 线程归属：register_all 在注册线程调用一次 refresh_language（alive_ 发布前），
+    // 此后只有 PBZFM 框架渲染线程的页面回调读写这些字段；注册完成由 alive_ 的
+    // release/acquire 建立顺序，两条线程不会并发访问。
+    std::string pbzfm_ini_lang_;         // PBZFM.ini 的 [framework] language 缓存
+    double pbzfm_ini_next_check_{0.0};   // 下次允许重读 PBZFM.ini 的时间（steady 秒）
+    bool key_capturing_{false};          // 改键捕获进行中
+    const PbzfmField* key_capture_field_{nullptr};  // 捕获中的字段（指向静态字段表）
+    double key_capture_started_{0.0};    // 捕获开始时间（steady 秒，用于 5 秒超时）
 
     // 分类树节点名（注册时按启动语言；语言变化后经 RenameSection 热改名）
     //   "language"/"status" = 固定顶层节点；"#group_*" = 六个分组顶层节点的当前显示名
