@@ -14,16 +14,25 @@ endif()
 add_library(pbzpm_core STATIC
     src/core/config.cpp
     src/core/gamepad.cpp
+    src/core/hook_registry.cpp
+    src/core/i18n_logic.cpp
     src/core/input_logic.cpp
+    src/core/mod_runtime.cpp
     src/core/photo_mode.cpp
     src/core/vk.cpp
+    src/pbzfm_client_lang.cpp
     src/pbzfm_schema_map.cpp
 )
 target_include_directories(pbzpm_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 option(PBZPM_BUILD_TESTS "构建核心层单元测试（不需要游戏与 UE4SS）" ON)
 if (PBZPM_BUILD_TESTS)
-    add_executable(pbzpm_tests tests/main.cpp)
+    add_executable(pbzpm_tests
+        tests/main.cpp
+        tests/test_mod_runtime.cpp
+        tests/test_input_pure.cpp
+        tests/test_pbzfm_validation.cpp
+    )
     target_link_libraries(pbzpm_tests PRIVATE pbzpm_core)
     enable_testing()
     add_test(NAME pbzpm_core COMMAND pbzpm_tests)
@@ -55,10 +64,16 @@ if (PBZPM_WITH_UE4SS)
 
     add_library(PBZPhotoModeCpp SHARED
         dllmain.cpp
-        src/engine/ue4ss_port.cpp
+        # Ue4ssPort 实现按子系统拆分，共享 helper 在 ue4ss_port_internal.h
+        src/engine/ue4ss_port.cpp                 # 核心/世界/日志
+        src/engine/ue4ss_port_camera_view.cpp     # 相机/ViewTarget/输入接管
+        src/engine/ue4ss_port_hud_ui.cpp          # HUD/血条/字幕/锁定标记
+        src/engine/ue4ss_port_time_pause.cpp      # 时间缩放/暂停
+        src/engine/ue4ss_port_micro_motion.cpp    # shake/风/MPC/POV 微动
+        src/engine/ue4ss_port_audio.cpp           # Wwise 音频
+        src/engine/ue4ss_port_diagnostics.cpp     # 冻结诊断/状态转储
         src/mod_app.cpp
         src/pbzfm_client.cpp
-        src/pbzfm_client_lang.cpp
         src/ui_tab.cpp
         src/win_input.cpp
     )
