@@ -39,6 +39,8 @@ class UWorld;
 class AActor;
 class UClass;
 class UFunction;
+class FProperty;
+struct FMinimalViewInfo;
 }  // namespace RC::Unreal
 
 namespace pbzpm {
@@ -64,6 +66,35 @@ public:
     bool apply_fov(double fov) override;
     bool destroy_camera() override;
 
+    // UUU 式「接管当前相机」：不 spawn、不切 ViewTarget，进入后由 write_takeover_pov_now()
+    // 在 GameViewportClient Tick 之后（UpdateCamera 之后、RedrawViewports 之前）把
+    // 位姿/FOV/景深写进相机管理器本帧的 CameraCache POV。
+    // 返回 false 表示当前环境接管不可用，core 会在同一次 enter 内回退到独立相机。
+    bool takeover_current_camera(const CameraPose& pose) override;
+    bool is_camera_takeover_active() const override { return takeover_active_; }
+    bool leave_camera_takeover() override;
+    bool takeover_view_lost() const override { return takeover_render_lost_; }
+    // 接管期间由 mod_app 在 GameViewportClient::Tick 之后调用（游戏 UpdateCamera 之后、
+    // RedrawViewports 之前）：这是唯一能把 POV 写进“本帧渲染”的时机。
+    void write_takeover_pov_now();
+
+    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖）：全部写进自建后处理体积。
+    // 这条通道已实测在本作 gameplay 视图里生效（暗角探针证明）。
+    bool set_look(const LookOptions& options) override;
+    bool look_active_{false};
+    bool look_logged_{false};
+    bool look_missing_logged_{false};
+    // 每次“写入值发生变化”都回读一遍体积里的实际值：写入成功不等于引擎认账
+    //（hotfix29 实机：色差 1.98 / 颗粒 7.68 / 饱和 0.74 / 对比 0.81 全都写了却没画面变化，
+    //  必须先分清「没写进去」和「写进去了被引擎档位跳过」）。
+    bool look_written_valid_{false};
+    LookOptions look_written_last_{};
+    // 色差/胶片颗粒/颜色分级（饱和/对比）都要过引擎的「后处理质量」档位：
+    // BaseScalability.ini 的 PostProcessQuality@0/@1 直接把 r.SceneColorFringeQuality 置 0、
+    // r.Tonemapper.Quality 置 0/2，档位不够时这些 pass 被整个跳过。本作 console 命令不执行，
+    // 唯一合法通道是借游戏自己的设置对象抬档（Scalability::SetQualityLevels）；成败以 cvar 回读为准。
+    bool look_vector_named_logged_{false};
+
     bool set_ignore_move_input(bool ignore) override;
     bool set_game_input_blocked(bool blocked) override;
     bool set_player_hidden(bool hidden) override;
@@ -81,25 +112,57 @@ public:
 
     double get_time_dilation() override;
     bool set_time_dilation(double dilation) override;
+    bool reassert_time_dilation(double dilation) override;
     // 只回写本 Mod 确实改过的 WorldSettings 字段；世界换代后旧快照作废，直接返回 true
     bool restore_time_dilation(double original) override;
     bool set_paused(bool paused) override;
     bool world_paused() override;
     SequenceFreezeReport pause_sequences(bool paused) override;
-    int wwise_component_count() override;
     int pause_wwise_voices(bool pause) override;
     bool suspend_wwise_engine(bool suspend) override;
+    // 当前 Wwise 整引擎是否处于 Suspend(true,false) 状态。F7 画面定格用它判断
+    // “摄影模式已经挂了就沿用，只有没挂时才由 F7 自己挂、自己唤醒”。
+    bool wwise_engine_suspended() const { return wwise_engine_suspended_; }
     void pov_watch_tick(bool camera_idle) override;
 
     CameraShakeFreezeReport freeze_camera_shakes(bool frozen) override;
     WindFreezeReport freeze_wind(bool frozen) override;
+    RenderTuningReport freeze_render_tuning(bool frozen, bool disable_aa, bool disable_wpo_velocity,
+                                             bool disable_framegen, bool disable_dlss,
+                                             bool disable_tonemapper_dither = false) override;
+    RenderTuningReport freeze_lighting(bool frozen, const LightingTuningOptions& options) override;
+    void lighting_ab_tick(double dt, bool enabled, double phase_seconds) override;
+    RenderTuningReport freeze_shadow_ab(bool frozen) override;
+    void shadow_ab_tick(double dt, bool enabled, double phase_seconds) override;
+    CustomClothFreezeReport freeze_custom_cloth(bool frozen) override;
+    WpoFreezeReport freeze_wpo(bool frozen) override;
+    RenderTuningReport apply_shadow_phase(const std::vector<std::pair<const char*, int>>& targets, bool verbose);
+    bool restore_shadow_options(bool verbose);
+    // 冻结期每帧重申渲染对照目标值：游戏在某些 tick 会把 FG/DLSS/AA 改回去。
+    void render_reassert_tick();
+    // 后处理体积（PostProcessVolume/PBZPostProcessVolume）覆盖治理：很多项目不在 cvar 上设
+    // AA/Lumen/动态模糊，而是在 PPV 的 FPostProcessSettings 里显式 override；此时改 cvar 只是在
+    // 改“默认值”，实际 view 仍按 PPV 的设置渲染。冻结时把 PPV 与相机 POV 的这几项强制改掉。
+    void apply_post_process_override(bool enabled);
+    void post_process_override_tick();
+    std::string render_runtime_text();
+    // 光照 CVar 的应用/还原（verbose=true 时输出逐项日志；阶段轮换用 verbose=false 合并成一行）
+    RenderTuningReport apply_lighting_options(const LightingTuningOptions& options, bool verbose);
+    bool restore_lighting_options(bool verbose);
     int mpc_take_snapshot() override;
     int mpc_hold_snapshot() override;
     void mpc_release_snapshot() override;
+    ClothFreezeReport freeze_cloth(bool frozen) override;
+    SkeletalAnimationFreezeReport freeze_skeletal_animation(bool frozen) override;
+    bool freeze_motion_blur(bool frozen) override;
     std::string freeze_diag_sample() override;
 
     // 尽早挂上 Post 钩子截获 PlayingID（mod_app 引擎 tick 里每 2 秒重试直到成功）
     bool install_voice_hooks();
+
+    // 音频诊断（纯日志）的运行开关：默认关。关闭时不装对话 Flow 诊断钩子、不做语音位置
+    // 校验、不跑 Wwise 组件探测——代码保留给真机排障，运行时零开销。
+    void set_audio_diag_verbose(bool enabled) { audio_diag_verbose_ = enabled; }
 
     // ---- 钩子注销（H-5）----
     // 按 hooks_ 记账表逐条注销脚本钩子与全局回调。可重复调用：已注销的不会重复处理，
@@ -154,6 +217,23 @@ private:
     void observe_world(RC::Unreal::UObject* scene, RC::Unreal::UObject* settings);
     void invalidate_world_scoped_state();
 
+    // ---- 接管当前相机 ----
+    // 解析相机管理器 CameraCache 的 POV 结构（兼容 FMinimalViewInfo 直接存放与
+    // FCameraCacheEntry.POV 两种布局），并给出 POV 基址；失败时返回 false。
+    struct PovView {
+        RC::Unreal::FProperty* pov{nullptr};
+        void* base{nullptr};
+        std::string layout{};
+    };
+    bool resolve_pov_view(PovView& out);
+    // 探测一次相机后端（CineCameraActor / CineCaptureComponent2D），结果缓存到 backend_report_
+    void probe_camera_backends();
+    // 把接管位姿/FOV 写进 POV（GameViewportClient Tick 之后调用，游戏相机逻辑跑完后覆盖）
+    bool write_takeover_pov();
+    // 渲染结束后回读 CameraCache.POV：位姿/FOV 与接管目标一致说明本帧渲染用的就是我们的值；
+    // 连续多帧不一致则判定接管失效（takeover_render_lost_），由 core 自动回退独立相机。
+    bool verify_takeover_pov();
+
     std::filesystem::path mod_dir_;
     RC::Unreal::UObject* camera_actor_{nullptr};
     RC::Unreal::UObject* camera_component_cache_{nullptr};
@@ -164,7 +244,32 @@ private:
     // 视角接管是否仍由本 port 持有：attach_view 成功置位、restore_view 清位；
     // destroy_camera 只在仍持有时才还原，避免 leave() 已还原后 destroy 又还原成 Pawn。
     bool view_attached_by_port_{false};
-    double saved_dilation_{1.0};
+
+    // ---- UUU 式接管当前相机（不 spawn / 不切 ViewTarget）----
+    // 接管期间每帧覆盖 CameraCache.POV；退出时直接停写，游戏相机从下一帧起恢复自身逻辑。
+    bool takeover_active_{false};
+    bool takeover_pose_known_{false};
+    CameraPose takeover_pose_{};
+    double takeover_fov_{90.0};
+    // ---- 自建的无界后处理体积（画面效果专用）----
+    // 「画面效果」（暗角/色差/颗粒/饱和/对比/泛光/冷暖）写在这个体积的 Settings 上：
+    // 本作 gameplay 视图里只有体积通道会被采纳。退出/关闭效果时销毁；世界换代时引擎已销毁它，只清指针。
+    RC::Unreal::UObject* post_volume_{nullptr};
+    bool post_volume_diag_logged_{false};
+    bool post_volume_fail_logged_{false};
+    bool ensure_post_volume();
+    void destroy_post_volume();
+    // 接管运行中每帧写 POV 的连续失败计数：连续多次失败只告警一次（诊断用，不改变控制流）
+    int takeover_write_fail_streak_{0};
+    bool takeover_write_fail_logged_{false};
+    // 接管写点是否已切到 GameViewportClient Tick 之后（成功写一次后打一条 Info，便于真机取证）
+    bool takeover_write_point_logged_{false};
+    // 渲染后回读验证：连续不一致帧数 / 是否已判定失效
+    int takeover_pov_mismatch_streak_{0};
+    bool takeover_render_lost_{false};
+    // 工作区/WorkSpace Cine 后端
+    bool camera_is_cine_{false};
+    bool camera_backend_probed_{false};
 
     // 超宽屏画幅解锁：进入时保存的相机管理器原值（aspect_saved_=true 时有效）
     bool aspect_saved_{false};
@@ -181,9 +286,15 @@ private:
     TimeSettingsSnapshot time_snapshot_;
 
     // 暂停模式：暂停时要让 PlayerController 继续完整 Tick，否则相机管理器会停住，
-    // 摄影相机无法移动/转向；同时临时把 GameMode 的 bPauseable 打开。
+    // 摄影相机无法移动/转向；同时临时把 GameMode 的 bPauseable 打开，
+    // 并把 UWorld.bIsCameraMoveableWhenPaused 置 true（A/B：暂停相机标准第二 flag）。
     // 读不到原值就不写，恢复只写本 Mod 确实写过的项。
     PauseSnapshot pause_snapshot_;
+    // A/B 诊断：UWorld.bIsCameraMoveableWhenPaused 不可读写只告警一次，避免每秒重申刷屏。
+    bool camera_moveable_probe_logged_{false};
+    // 回读 IsGamePaused：ok=false 表示接口/世界不可达。两处调用方的失败策略不同
+    //（set_paused 保持 accepted 的结论、world_paused 视作未暂停），所以只回传两值、不在此判断。
+    bool read_is_game_paused(bool& out);
 
     // M-2：游戏输入屏蔽的目标对象身份。只在确实写成功时记录；恢复前确认对象仍是同一个
     //（指针有效且全名一致），不一致就跳过写回，避免把输入屏蔽写到重生后的新 PC/Pawn 上。
@@ -211,6 +322,83 @@ private:
     int view_verify_fail_streak_{0};
     CameraPose last_applied_pose_{};
     bool last_applied_pose_known_{false};
+
+    // 渲染对照（A/B）：临时改过的 CVar 原值快照；解冻/退出按快照还原。
+    // 只记录本 Mod 确实写过的项，读不到原值就不写。
+    struct RenderCvarSnapshot {
+        std::string name;
+        int original{0};
+        int target{0};  // 冻结期目标值（每帧重申用）
+    };
+    std::vector<RenderCvarSnapshot> render_cvar_snapshots_;
+    bool render_cvar_probe_logged_{false};
+    int render_reassert_logged_{0};
+    // 光照 A/B（Lumen/屏幕空间光照）独立快照表：阶段轮换时先整组还原再应用，避免和 AA/DLSS/FG 混在一起。
+    std::vector<RenderCvarSnapshot> lighting_cvar_snapshots_;
+    bool lighting_probe_logged_{false};
+    int lighting_ab_phase_{-1};
+    double lighting_ab_accum_{0.0};
+    bool lighting_ab_active_{false};
+    // 阴影/后处理 A/B 独立快照表（与光照/渲染对照互不干扰）
+    std::vector<RenderCvarSnapshot> shadow_cvar_snapshots_;
+    bool shadow_probe_logged_{false};
+    int shadow_ab_phase_{-1};
+    double shadow_ab_accum_{0.0};
+    bool shadow_ab_active_{false};
+    // 自定义布料/摆动：Sway/WindSystem 组件 tick 快照 + 全局 Cloth/Sway CVar 原值
+    struct SwayTickState {
+        RC::Unreal::UObject* component{nullptr};
+        bool was_enabled{false};
+    };
+    std::vector<SwayTickState> sway_tick_states_;
+    int sway_full_scan_attempts_{0};  // 全对象扫描“类名含 Sway”的次数（前两次冻结各一次，避免每帧全表遍历）
+    int cloth_global_original_{-1};
+    bool cloth_global_active_{false};
+    // 毛发（Groom）模拟开关原值：bSimulationEnabled=false 可停掉 strand 模拟
+    struct GroomSimState {
+        RC::Unreal::UObject* component{nullptr};
+        bool was_enabled{true};
+    };
+    std::vector<GroomSimState> groom_states_;
+    // Niagara 粒子组件暂停状态（SetPaused(true) 会冻结 GPU/CPU 粒子演化，保留当前粒子位置）
+    struct NiagaraPauseState {
+        RC::Unreal::UObject* component{nullptr};
+        bool was_paused{false};
+        bool tick_was_enabled{true};
+        bool tick_changed{false};
+    };
+    std::vector<NiagaraPauseState> niagara_states_;
+    // WPO 评估关闭的 SkeletalMesh 列表（只记录确实调用成功 setter 的组件）
+    std::vector<RC::Unreal::UObject*> wpo_disabled_components_;
+    // WPO 评估关闭的其他图元（StaticMesh/Instanced/Landscape 等）及其 bEvaluateWorldPositionOffset 原值
+    struct WpoPrimitiveState {
+        RC::Unreal::UObject* component{nullptr};
+        bool evaluate{true};
+    };
+    std::vector<WpoPrimitiveState> wpo_primitive_states_;
+    // PPV / 相机 POV 的 FPostProcessSettings 原值快照（只保存实际存在的字段）
+    struct PostProcessOverrideState {
+        RC::Unreal::UObject* volume{nullptr};
+        bool is_pov{false};
+        double override_aa{0.0};
+        double aa_method{0.0};
+        double override_mb_amount{0.0};
+        double mb_amount{0.0};
+        double override_mb_max{0.0};
+        double mb_max{0.0};
+        double override_gi{0.0};
+        double gi_method{0.0};
+        double override_reflection{0.0};
+        double reflection_method{0.0};
+        double override_grain{0.0};
+        double grain_intensity{0.0};
+        bool has_aa{false};
+        bool has_mb{false};
+        bool has_gi{false};
+        bool has_reflection{false};
+        bool has_grain{false};
+    };
+    std::vector<PostProcessOverrideState> post_process_states_;
 
     // M-6：日志级别阈值；Ue4ssPort::log 用它过滤（Error 永不过滤）
     LogLevel log_level_{LogLevel::Info};
@@ -259,14 +447,32 @@ private:
     int dialogue_flow_event_count_{0};
     void on_dialogue_flow_event(const char* label);
     bool install_dialogue_debug_hooks();
-    // 一次性音频对象普查：全对象数组里认 Ak/Audio/Sound/Voice/Dialog 相关类，
-    // 为“对话语音走 Wwise 直接 post、组件 Stop 够不着”找下一版的目标
-    bool audio_dump_done_{false};
-    void dump_audio_objects_once();
+    // 音频诊断（纯日志）开关，默认关：见 set_audio_diag_verbose 的说明
+    bool audio_diag_verbose_{false};
+    // Wwise 组件数量诊断：日志用，不再是 EnginePort 的跨层接口
+    int wwise_component_count();
 
     // ---- 冻结期残余微动治理的状态（进入/退出摄影模式之外不持有，冻结还原即清空）----
     // 相机修饰器冻结前的 bDisabled 状态，恢复时按原值写回
     std::vector<std::pair<RC::Unreal::UObject*, bool>> camera_modifier_states_;
+    // 布料模拟冻结状态：SkeletalMeshComponent clothing / ChaosClothComponent
+    struct ClothComponentState {
+        RC::Unreal::UObject* component{nullptr};
+        bool chaos{false};
+        bool was_suspended{false};
+        bool suspended_by_us{false};
+    };
+    std::vector<ClothComponentState> cloth_states_;
+    // 骨骼动画冻结前的 bPauseAnims / bNoSkeletonUpdate 原值
+    struct SkeletalAnimState {
+        RC::Unreal::UObject* component{nullptr};
+        bool pause_anims{false};
+        bool no_skeleton_update{false};
+    };
+    std::vector<SkeletalAnimState> skeletal_anim_states_;
+    // 动态模糊原值
+    int motion_blur_original_{0};
+    bool motion_blur_active_{false};
     // 风源组件冻结前的参数值（读不到的项 has_=false，还原时跳过）
     struct WindParamBackup {
         RC::Unreal::UObject* component{nullptr};
@@ -295,12 +501,19 @@ private:
     std::vector<MpcCollectionSnapshot> mpc_snapshots_;
     // 写回限频时间戳：进入快照后首帧立即写，此后 4Hz（原为每帧，347 次 ProcessEvent/帧）
     std::chrono::steady_clock::time_point mpc_hold_last_{};
+    // 写回结果日志限频：每 10 秒一条，避免“MPC 快照 347 参数”被误认为“已写回 347 参数”
+    std::chrono::steady_clock::time_point mpc_hold_log_last_{};
     // 冻结期内已确认会触发游戏访问违例的参数（集合名+参数名）与类名不符的集合，隔离不再写
     std::set<std::string> mpc_bad_params_;
     std::set<std::string> mpc_bad_collections_;
     // 冻结诊断：MPC 上一拍样本（两次诊断之间比对参数变化）
     std::vector<MpcCollectionSnapshot> mpc_diag_last_;
     bool mpc_diag_has_last_{false};
+    // 把场景里所有 MaterialParameterCollection 的标量/向量参数读进快照数组。
+    // 冻结快照（mpc_take_snapshot）与冻结诊断（freeze_diag_sample）共用这一份采集；
+    // 返回读到的参数总数，out 只收非 Default__ 的集合（带原始 collection 指针与名字）。
+    int scan_mpc_collections(RC::Unreal::UObject* statics, RC::Unreal::UObject* scene,
+                             std::vector<MpcCollectionSnapshot>& out);
     bool wind_missing_logged_{false};   // 风源组件属性缺失只告警一次
     bool mpc_unavailable_logged_{false}; // KismetMaterialLibrary 不可用只告警一次
     // POV 微动监测状态（pov_watch_tick 累积，freeze_diag_sample 报告并清零）
@@ -322,10 +535,22 @@ private:
     // M-1 收口：回读“暂未确认”（同帧 Target=null/不可读）只告警一次，不累计失效
     bool view_unconfirmed_logged_{false};
     bool pose_apply_failure_logged_{false};
-    // 被隐藏的 UMG HUD 根控件（控件指针 + 原始 ESlateVisibility 值），退出时原样恢复
+    // 被隐藏的 UMG HUD 根控件（控件指针 + 原始 ESlateVisibility 值），退出时原样恢复。
+    // 只收布局根控件（本作 HUD 子树都挂在它下面），不逐控件扫描。
     std::vector<std::pair<RC::Unreal::UObject*, int>> hud_widgets_;
     bool hud_widget_missing_logged_{false};
     bool pv_hide_active_{false};  // 本次隐藏是否走了 UIManager.SetHideUIForPV
+    // AHUD 层粗粒度显示开关（PlayerController / MyHUD 的 bShowHUD 属性）。
+    // 本作 HUD 是纯 UMG（1.0.4 实机：DrawHUD 从不执行），这一路只覆盖可能存在的 AHUD Canvas，
+    // 与 PV 开关、UMG 根控件并列而不是替代。只有读到原值且写成功才 active；
+    // 退出按原值回写并回读校验，失败保留记账由 core 重试（H-1）。
+    RC::Unreal::UObject* hud_show_flag_owner_{nullptr};
+    bool hud_show_flag_original_{true};
+    bool hud_show_flag_active_{false};
+    bool hud_show_flag_probe_logged_{false};
+    // AHUD Actor 兜底隐藏：只有真正隐藏过才恢复（旧版退出时无条件置可见，
+    // 会把玩家本来关掉的 HUD 打开）。nullptr = 本 Mod 没隐藏过。
+    RC::Unreal::UObject* hud_actor_hidden_{nullptr};
 
     // 交互提示（E 键图标）：被隐藏的控件组件（指针 + 原始 bVisible），退出时原样恢复
     std::vector<std::pair<RC::Unreal::UObject*, bool>> prompt_components_;
@@ -369,7 +594,6 @@ private:
     // PBZSettingsShared 只有函数，属性在引擎 GlobalUserParam 上）——只要动过开关就必须还原，
     // 原值读不到时按 true 还原（字幕默认开的语义）。
     bool subtitle_setting_touched_{false};
-    bool subtitle_setting_saved_{false};
     bool subtitle_setting_original_{true};
     RC::Unreal::UObject* subtitle_setting_owner_{nullptr};
     bool subtitle_setting_missing_logged_{false};

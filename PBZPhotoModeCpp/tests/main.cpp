@@ -19,6 +19,7 @@
 #include "core/math3.h"
 #include "core/photo_mode.h"
 #include "core/retry_policy.h"
+#include "core/tuning.h"
 #include "core/vk.h"
 #include "core/world_snapshot.h"
 #include "pbzfm_client_lang.h"
@@ -109,6 +110,22 @@ void test_config_defaults_and_parse() {
     CHECK_STR(empty.cfg.key_roll_right, "E");
     CHECK_STR(empty.cfg.key_vertical_up, "MOUSE_LEFT");    // 升降默认鼠标左/右键（1.0.63 起可配置）
     CHECK_STR(empty.cfg.key_vertical_down, "MOUSE_RIGHT");
+    // 移动/变速/自由视角门控（2.0.0-cpp-hotfix9 起可配置，默认值与旧写死键一致）
+    CHECK_STR(empty.cfg.key_move_forward, "W");
+    CHECK_STR(empty.cfg.key_move_back, "S");
+    CHECK_STR(empty.cfg.key_move_left, "A");
+    CHECK_STR(empty.cfg.key_move_right, "D");
+    CHECK_STR(empty.cfg.key_boost, "SHIFT");
+    CHECK_STR(empty.cfg.key_slow, "CONTROL");
+    CHECK_STR(empty.cfg.key_free_look, "ALT");
+    CHECK(empty.cfg.wheel_fov);            // 滚轮默认参与 FOV
+    CHECK(!empty.cfg.wheel_fov_invert);    // 默认向上缩小 FOV
+    CHECK_STR(empty.cfg.pad_roll_left, "LB");
+    CHECK_STR(empty.cfg.pad_roll_right, "RB");
+    CHECK_STR(empty.cfg.pad_boost, "LS");
+    CHECK_STR(empty.cfg.pad_slow, "RS");
+    CHECK_STR(empty.cfg.pad_vertical_up, "RT");
+    CHECK_STR(empty.cfg.pad_vertical_down, "LT");
     CHECK_STR(empty.cfg.pad_pitch_up, "UP");    // 十字键上/下 = 俯仰
     CHECK_STR(empty.cfg.pad_pitch_down, "DOWN");
     CHECK_STR(empty.cfg.pad_roll_reset, "LB+RB");  // LB+RB 同按 = 滚转归零（1.0.41 并入）
@@ -117,6 +134,29 @@ void test_config_defaults_and_parse() {
     CHECK_STR(empty.cfg.pad_fov_up, "A");    // FOV 移到 A/B（十字键已全部让位给视角调节）
     CHECK_STR(empty.cfg.pad_fov_down, "B");
     CHECK(empty.cfg.freeze_mode == FreezeMode::Pause);
+    CHECK(!empty.cfg.freeze_aa_off);           // 渲染对照默认关闭，不影响正常画质
+    CHECK(!empty.cfg.freeze_wpo_velocity_off); // 渲染对照默认关闭，不影响正常画质
+    CHECK(empty.cfg.freeze_framegen_off);      // 摄影模式默认抑制帧生成
+    CHECK(empty.cfg.freeze_cloth);             // 布料模拟默认冻结，避免裙摆/披风在暂停下继续摆动
+    CHECK(empty.cfg.freeze_skeletal_animation); // 骨骼动画默认冻结，防止 AnimBP 在暂停下继续驱动布料
+    CHECK(empty.cfg.freeze_motion_blur_off);    // 动态模糊默认关闭，避免残留速度缓冲拖影
+    CHECK(!empty.cfg.freeze_dlss_off);         // DLSS 关闭默认关闭，保留画质
+    CHECK(!empty.cfg.freeze_custom_cloth);     // 自定义 Sway/Cloth 默认关闭，保持原有行为
+    CHECK(!empty.cfg.freeze_wpo);              // WPO 评估冻结默认关闭
+    CHECK(!empty.cfg.freeze_tonemapper_dither_off);  // Tonemapper 抖动关闭默认关闭
+    CHECK(!empty.cfg.freeze_lumen_screen_traces_off);  // 光照 A/B 默认全关，不影响正常画质
+    CHECK(!empty.cfg.freeze_lumen_short_range_ao_off);
+    CHECK(!empty.cfg.freeze_lumen_radiance_cache_off);
+    CHECK(!empty.cfg.freeze_lumen_fixed_jitter);
+    CHECK(!empty.cfg.freeze_lumen_off);
+    CHECK(!empty.cfg.freeze_lighting_ab_cycle);
+    CHECK_NEAR(empty.cfg.freeze_lighting_ab_phase_seconds, 8.0, 1e-9);
+    CHECK(!empty.cfg.freeze_shadow_ab_cycle);  // 阴影/后处理 A/B 默认关闭
+    CHECK_NEAR(empty.cfg.freeze_shadow_ab_phase_seconds, 8.0, 1e-9);
+    // F7 画面定格：默认时间补偿/音频挂起开启，安全阀 20 秒
+    CHECK(empty.cfg.frame_freeze_time_compensation);
+    CHECK(empty.cfg.frame_freeze_audio_suspend);
+    CHECK_NEAR(empty.cfg.frame_freeze_timeout_seconds, 60.0, 1e-9);
 
     const std::string ini = R"(
 ; 注释行
@@ -159,11 +199,32 @@ freeze_sequences = false
 freeze_dialogue_flow = false
 stop_wwise_on_freeze = true
 wwise_engine_suspend = false
+freeze_aa_off = true
+freeze_wpo_velocity_off = true
+freeze_framegen_off = false
+freeze_cloth = false
+freeze_custom_cloth = true
+freeze_wpo = true
+freeze_tonemapper_dither_off = true
+freeze_skeletal_animation = false
+freeze_motion_blur_off = false
+freeze_dlss_off = true
+freeze_lumen_screen_traces_off = true
+freeze_lumen_short_range_ao_off = true
+freeze_lumen_radiance_cache_off = true
+freeze_lumen_fixed_jitter = true
+freeze_lumen_off = true
+freeze_lighting_ab_cycle = true
+freeze_lighting_ab_phase_seconds = 4.5
+freeze_shadow_ab_cycle = true
+freeze_shadow_ab_phase_seconds = 5.5
+frame_freeze_time_compensation = false
+frame_freeze_audio_suspend = false
+frame_freeze_timeout_seconds = 45
 time_offset_compensation = false
 
 [misc]
 log_level = debug
-dry_run = on
 )";
     const ConfigLoadResult parsed = parse_config(ini, "test.ini");
     // time_offset_compensation 已弃用：无论值是什么都只告警一次（其余键无告警）
@@ -196,8 +257,29 @@ dry_run = on
     CHECK(!parsed.cfg.freeze_dialogue_flow);
     CHECK(parsed.cfg.stop_wwise_on_freeze);
     CHECK(!parsed.cfg.wwise_engine_suspend);
+    CHECK(parsed.cfg.freeze_aa_off);
+    CHECK(parsed.cfg.freeze_wpo_velocity_off);
+    CHECK(!parsed.cfg.freeze_framegen_off);
+    CHECK(!parsed.cfg.freeze_cloth);
+    CHECK(parsed.cfg.freeze_custom_cloth);
+    CHECK(parsed.cfg.freeze_wpo);
+    CHECK(parsed.cfg.freeze_tonemapper_dither_off);
+    CHECK(!parsed.cfg.freeze_skeletal_animation);
+    CHECK(!parsed.cfg.freeze_motion_blur_off);
+    CHECK(parsed.cfg.freeze_dlss_off);
+    CHECK(parsed.cfg.freeze_lumen_screen_traces_off);
+    CHECK(parsed.cfg.freeze_lumen_short_range_ao_off);
+    CHECK(parsed.cfg.freeze_lumen_radiance_cache_off);
+    CHECK(parsed.cfg.freeze_lumen_fixed_jitter);
+    CHECK(parsed.cfg.freeze_lumen_off);
+    CHECK(parsed.cfg.freeze_lighting_ab_cycle);
+    CHECK_NEAR(parsed.cfg.freeze_lighting_ab_phase_seconds, 4.5, 1e-9);
+    CHECK(parsed.cfg.freeze_shadow_ab_cycle);
+    CHECK_NEAR(parsed.cfg.freeze_shadow_ab_phase_seconds, 5.5, 1e-9);
+    CHECK(!parsed.cfg.frame_freeze_time_compensation);
+    CHECK(!parsed.cfg.frame_freeze_audio_suspend);
+    CHECK_NEAR(parsed.cfg.frame_freeze_timeout_seconds, 45.0, 1e-9);
     CHECK(parsed.cfg.log_level == LogLevel::Debug);
-    CHECK(parsed.cfg.dry_run);
     CHECK_STR(parsed.source, "test.ini");
 
     // 旧键名兼容（≤1.0.45 的 key_pan_*/pad_pan_* 是左右平移，1.0.46 起映射到转向键）
@@ -239,7 +321,7 @@ this line has no equals
     CHECK_NEAR(parsed.cfg.pitch_speed, 5.0, 1e-9);  // 俯仰速度同规则
     CHECK_NEAR(parsed.cfg.slow_look_mult, 0.01, 1e-9);   // 越界夹紧到下限
     CHECK_NEAR(parsed.cfg.yaw_speed, 5.0, 1e-9);    // 非正值夹紧到下限
-    CHECK_NEAR(parsed.cfg.freeze_dilation, 0.0001, 1e-12);  // 下限本身
+    CHECK_NEAR(parsed.cfg.freeze_dilation, 1e-9, 1e-15);  // 下限本身
 
     // fov_default 落在范围外要被夹紧并告警
     const ConfigLoadResult clamp = parse_config("fov_min = 20\nfov_max = 60\nfov_default = 90\n");
@@ -253,6 +335,33 @@ this line has no equals
     CHECK(!missing.read_error);
     CHECK(missing.warnings.size() >= 1);
     CHECK_STR(missing.cfg.key_toggle, "F2");
+}
+
+// 已废弃键（[dof] 段、色差/胶片颗粒）只收集到 legacy_keys、交给调用方一次性重写 config.ini，
+// 不会刷「未知配置项」，重写出来的文本里也绝不会再出现这些键（hotfix35）。
+void test_config_legacy_purge() {
+    section("parse_config 已废弃键清理");
+    using namespace pbzpm;
+
+    const ConfigLoadResult legacy = parse_config(
+        "[dof]\ndof_enabled = true\ndof_fstop = 1.4\nkey_focus_near = LEFT_BRACKET\n"
+        "[look]\nvignette = 2\nchromatic_aberration = 3\nfilm_grain = 7\n",
+        "legacy.ini");
+    // 五个废弃键全部收集（dof_enabled / dof_fstop / key_focus_near / chromatic_aberration / film_grain），
+    // 有效键照常解析
+    CHECK_INT(static_cast<int>(legacy.legacy_keys.size()), 5);
+    CHECK_NEAR(legacy.cfg.vignette, 2.0, 1e-9);
+    // 只按组告警（dof 一条 + look 一条），不会每个键刷一行
+    CHECK(legacy.warnings.size() <= 2);
+    // 重写出来的文本是「干净」的规范格式：没有废弃键、没有 [dof] 段，有效值保留
+    const std::string text = config_ini_text(legacy.cfg);
+    CHECK(text.find("chromatic_aberration") == std::string::npos);
+    CHECK(text.find("film_grain") == std::string::npos);
+    CHECK(text.find("[dof]") == std::string::npos);
+    CHECK(text.find("dof_fstop") == std::string::npos);
+    CHECK(text.find("vignette = 2") != std::string::npos);
+    // 干净的配置不会被判定成「需要清理」（否则每次启动都白重写一遍）
+    CHECK_INT(static_cast<int>(parse_config(text, "clean.ini").legacy_keys.size()), 0);
 }
 
 // schema 表驱动：每个数值键的 0 / 负值 / 极大 / 非法文本边界；section 归属；告警去重
@@ -286,7 +395,9 @@ void test_config_schema_and_sections() {
         {"fov_min", "camera", &Config::fov_min, 1.0, 178.0, "fov_max = 179\n"},
         {"fov_max", "camera", &Config::fov_max, 2.0, 179.0, "fov_min = 1\n"},
         {"fov_step", "camera", &Config::fov_step, 0.5, 10.0, ""},
-        {"freeze_dilation", "effects", &Config::freeze_dilation, 0.0001, 1.0, ""},
+        {"freeze_dilation", "effects", &Config::freeze_dilation, 1e-9, 1.0, ""},
+        {"freeze_lighting_ab_phase_seconds", "effects", &Config::freeze_lighting_ab_phase_seconds, 1.0, 120.0, ""},
+        {"freeze_shadow_ab_phase_seconds", "effects", &Config::freeze_shadow_ab_phase_seconds, 1.0, 120.0, ""},
     };
 
     auto parse_num = [](const NumCase& c, const char* value) {
@@ -401,6 +512,17 @@ void test_config_default_text_roundtrip() {
     CHECK(text.find("yaw_speed") != std::string::npos);
     CHECK(text.find("wwise_engine_suspend") != std::string::npos);
     CHECK(text.find("freeze_dialogue_flow") != std::string::npos);
+    CHECK(text.find("takeover_current_camera") != std::string::npos);
+    // 景深功能已整体移除：默认配置里不应再出现与它相关的键
+    CHECK(text.find("key_focus_near") == std::string::npos);
+    CHECK(text.find("pad_focus_near") == std::string::npos);
+    CHECK(text.find("[dof]") == std::string::npos);
+    CHECK(text.find("key_move_forward") != std::string::npos);  // 2.0.0-cpp-hotfix9
+    CHECK(text.find("key_boost") != std::string::npos);
+    CHECK(text.find("key_free_look") != std::string::npos);
+    CHECK(text.find("wheel_fov") != std::string::npos);
+    CHECK(text.find("pad_boost") != std::string::npos);
+    CHECK(text.find("pad_vertical_up") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
@@ -424,6 +546,17 @@ void test_config_default_text_roundtrip() {
     CHECK_STR(parsed.cfg.key_vertical_down, "MOUSE_RIGHT");
     CHECK_STR(parsed.cfg.pad_fov_up, "A");
     CHECK_STR(parsed.cfg.pad_yaw_right, "RIGHT");
+    CHECK_STR(parsed.cfg.key_move_forward, "W");
+    CHECK_STR(parsed.cfg.key_boost, "SHIFT");
+    CHECK_STR(parsed.cfg.key_slow, "CONTROL");
+    CHECK_STR(parsed.cfg.key_free_look, "ALT");
+    CHECK(parsed.cfg.wheel_fov);
+    CHECK(!parsed.cfg.wheel_fov_invert);
+    CHECK_STR(parsed.cfg.pad_roll_left, "LB");
+    CHECK_STR(parsed.cfg.pad_boost, "LS");
+    CHECK_STR(parsed.cfg.pad_vertical_up, "RT");
+    CHECK_STR(parsed.cfg.pad_vertical_down, "LT");
+    CHECK(parsed.cfg.takeover_current_camera);  // 默认启用接管当前相机（失败自动回退）
 }
 
 // ---------------------------------------------------------------- 数学
@@ -506,10 +639,14 @@ void test_engine_port_pure_logic() {
 
     // M-1 收口：回读 null / 不可读不是“确凿失效”，不能据此阻断进入或退出；
     // 只有读到明确的其他 Actor，或摄影相机位姿被搬走，才算接管真的失效。
-    CHECK(!view_loss_is_conclusive(false, false, false));  // 读不出，Target 也未知
-    CHECK(!view_loss_is_conclusive(true, false, false));   // 读到了但 Target=null（同帧未生效）
-    CHECK(view_loss_is_conclusive(true, true, false));     // 读到明确的其他 Actor
-    CHECK(view_loss_is_conclusive(true, false, true));     // 目标是摄影相机但位姿被搬走
+    CHECK(!view_loss_is_conclusive(false, false, true, false));  // 读不出，Target 也未知
+    CHECK(!view_loss_is_conclusive(true, false, true, false));   // 读到了但 Target=null（同帧未生效）
+    CHECK(view_loss_is_conclusive(true, true, true, false));     // 读到明确的其他 Actor
+    CHECK(view_loss_is_conclusive(true, false, true, true));     // 目标是摄影相机但位姿被搬走
+    // 首帧误报回归点：刚 spawn、apply_pose 还没写入时位姿不可比，
+    // 此时位姿偏差不能算确凿失效（真机 782/953/1019 行每次进入都误报一次）。
+    CHECK(!view_loss_is_conclusive(true, false, false, true));
+    CHECK(!view_loss_is_conclusive(false, false, false, true));
 
     // M-1：相机位姿容差（位置 10 / 角度 2°），角度要按 ±180 归一化
     CameraPose expected{};
@@ -530,6 +667,14 @@ void test_engine_port_pure_logic() {
     CHECK(camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
     actual.rot.roll = 4.0;
     CHECK(!camera_pose_within_tolerance(expected, actual, 10.0, 2.0));
+
+    // 焦距 ↔ FOV 换算：36mm 传感器、90° 水平视野 ≈ 18mm 焦距；往返一致；非法输入返回 0
+    CHECK_NEAR(focal_length_from_fov(36.0, 90.0), 18.0, 1e-9);
+    CHECK_NEAR(fov_from_focal_length(36.0, 18.0), 90.0, 1e-9);
+    CHECK_NEAR(fov_from_focal_length(36.0, focal_length_from_fov(36.0, 50.0)), 50.0, 1e-6);
+    CHECK_NEAR(focal_length_from_fov(0.0, 90.0), 0.0, 1e-12);
+    CHECK_NEAR(focal_length_from_fov(36.0, 0.0), 0.0, 1e-12);
+    CHECK_NEAR(focal_length_from_fov(36.0, 180.0), 0.0, 1e-12);
 }
 
 // ---------------------------------------------------------------- 输入
@@ -555,6 +700,20 @@ void test_input_logic() {
     CHECK_INT(keys.roll_right, 'E');
     CHECK_INT(keys.vertical_up, kMouseLeft);    // 升降默认鼠标左/右键（1.0.63 起可配置）
     CHECK_INT(keys.vertical_down, kMouseRight);
+    CHECK_INT(keys.move_forward, 'W');    // 移动/变速/自由视角门控默认值（2.0.0-cpp-hotfix9 起可配）
+    CHECK_INT(keys.move_back, 'S');
+    CHECK_INT(keys.move_left, 'A');
+    CHECK_INT(keys.move_right, 'D');
+    CHECK_INT(keys.boost, kShiftGeneric);
+    CHECK_INT(keys.slow, kCtrlGeneric);
+    CHECK_INT(keys.free_look, kAltGeneric);
+    CHECK_INT(keys.frame_freeze, 0x76);   // F7
+    CHECK_INT((int)keys.pad_roll_left.size(), 1);       // LB
+    CHECK_INT((int)keys.pad_roll_right.size(), 1);      // RB
+    CHECK_INT((int)keys.pad_boost.size(), 1);           // LS
+    CHECK_INT((int)keys.pad_slow.size(), 1);            // RS
+    CHECK_INT((int)keys.pad_vertical_up.size(), 1);     // RT
+    CHECK_INT((int)keys.pad_vertical_down.size(), 1);   // LT
 
     InputLogic in;
     in.on_key('W', true);
@@ -773,6 +932,95 @@ void test_input_logic() {
     CHECK(intent.slow);
     in.reset();
     CHECK(!in.build(cfg, keys).boost);
+
+    // ---- 2.0.0-cpp-hotfix9：移动 / 变速 / 自由视角门控改键 ----
+    Config rb = cfg;
+    rb.key_move_forward = "I";
+    rb.key_move_back = "K";
+    rb.key_move_left = "J";
+    rb.key_move_right = "L";
+    rb.key_boost = "G";
+    rb.key_slow = "H";
+    rb.key_free_look = "V";
+    std::vector<std::string> rb_warnings;
+    const KeyMap rb_keys = build_keymap(rb, &rb_warnings);
+    CHECK_INT(rb_warnings.size(), 0);
+    CHECK_INT(rb_keys.move_forward, 'I');
+    CHECK_INT(rb_keys.move_back, 'K');
+    CHECK_INT(rb_keys.move_left, 'J');
+    CHECK_INT(rb_keys.move_right, 'L');
+    CHECK_INT(rb_keys.boost, 'G');
+    CHECK_INT(rb_keys.slow, 'H');
+    CHECK_INT(rb_keys.free_look, 'V');
+
+    in.on_key('I', true);
+    in.on_key('J', true);
+    intent = in.build(rb, rb_keys);
+    CHECK_NEAR(intent.move_forward, 1.0, 1e-9);
+    CHECK_NEAR(intent.move_right, -1.0, 1e-9);
+    in.on_key('W', true);  // 旧默认键不再触发（W 不在 rb 的任何绑定上）
+    CHECK_NEAR(in.build(rb, rb_keys).move_forward, 1.0, 1e-9);
+    in.reset();
+
+    in.on_key('G', true);
+    in.on_key('H', true);
+    intent = in.build(rb, rb_keys);
+    CHECK(intent.boost);
+    CHECK(intent.slow);
+    in.reset();
+    in.on_key(kShiftLeft, true);  // 旧默认 SHIFT 不再触发变速
+    CHECK(!in.build(rb, rb_keys).boost);
+    in.reset();
+
+    // 自由视角门控：默认 ALT 换成 V 后，按 Alt 不再放行、按 V 放行
+    in.on_mouse_move(5.0, 5.0);
+    CHECK_NEAR(in.build(rb, rb_keys).look_dx, 0.0, 1e-9);
+    in.reset();
+    in.on_mouse_move(5.0, 5.0);
+    in.on_key(kAltLeft, true);
+    CHECK_NEAR(in.build(rb, rb_keys).look_dx, 0.0, 1e-9);
+    in.reset();
+    in.on_mouse_move(5.0, 5.0);
+    in.on_key('V', true);
+    CHECK_NEAR(in.build(rb, rb_keys).look_dx, 5.0, 1e-9);
+    in.reset();
+
+    // 手柄：滚转/变速/升降改绑后按新按钮生效
+    Config pad_cfg = cfg;
+    pad_cfg.pad_roll_left = "X";
+    pad_cfg.pad_roll_right = "Y";
+    pad_cfg.pad_boost = "A";
+    pad_cfg.pad_slow = "B";
+    pad_cfg.pad_vertical_up = "Y";
+    pad_cfg.pad_vertical_down = "X";
+    std::vector<std::string> pad_warnings;
+    const KeyMap pad_keys = build_keymap(pad_cfg, &pad_warnings);
+    CHECK_INT(pad_warnings.size(), 0);
+
+    PadState pad_y;
+    pad_y.held[static_cast<int>(PadButton::Y)] = true;
+    in.on_gamepad(pad_y);
+    intent = in.build(pad_cfg, pad_keys);
+    CHECK_NEAR(intent.roll, 1.0, 1e-9);      // Y = pad_roll_right
+    CHECK_NEAR(intent.move_up, 1.0, 1e-9);   // Y = pad_vertical_up（数字量）
+    in.on_gamepad(PadState{});
+    in.reset();
+
+    PadState pad_a;
+    pad_a.held[static_cast<int>(PadButton::A)] = true;
+    in.on_gamepad(pad_a);
+    CHECK(in.build(pad_cfg, pad_keys).boost);  // A = pad_boost
+    in.on_gamepad(PadState{});
+    in.reset();
+
+    // 默认 RT/LT 单键绑定保留模拟量：半按 = 0.5
+    PadState pad_half;
+    pad_half.rt = 0.5;
+    pad_half.held[static_cast<int>(PadButton::RT)] = true;
+    in.on_gamepad(pad_half);
+    CHECK_NEAR(in.build(cfg, keys).move_up, 0.5, 1e-9);
+    in.on_gamepad(PadState{});
+    in.reset();
 }
 
 // ---------------------------------------------------------------- 摄影模式状态机
@@ -825,7 +1073,8 @@ void test_photo_mode_happy_path() {
                     {"world_valid", "read_pov", "spawn_camera", "attach_view", "ignore_move_on", "block_input_on",
                      "hud_off", "prompt_off", "bars_off", "lockon_off", "subs_off", "aspect_unlock",
                      "get_time_dilation", "apply_fov", "apply_pose", "pause_on", "shakes_freeze",
-                     "wind_freeze", "mpc_snapshot", "sequences_pause", "flow_freeze_on", "wwise_pause"},
+                     "wind_freeze", "mpc_snapshot", "cloth_freeze", "anim_freeze", "motion_blur_freeze",
+                     "sequences_pause", "flow_freeze_on", "wwise_pause"},
                     "首次进入");
     // 有逐语音 PlayingID：只做逐语音真暂停，不得再调用整引擎 Suspend
     CHECK_INT(fe.count("wwise_engine_suspend"), 0);
@@ -854,7 +1103,8 @@ void test_photo_mode_happy_path() {
     fe.reset_calls();
     mode.leave("test");
     expect_sequence(fe,
-                    {"wind_restore", "shakes_restore", "sequences_resume", "pause_off",
+                    {"motion_blur_restore", "anim_restore", "cloth_restore", "wind_restore", "shakes_restore",
+                     "sequences_resume", "pause_off",
                      "wwise_resume", "flow_freeze_off", "restore_aspect",
                      "hud_on", "prompt_on", "bars_on", "lockon_on", "subs_on", "block_input_off", "ignore_move_off",
                      "restore_view", "destroy_camera"},
@@ -883,11 +1133,13 @@ void test_photo_mode_failures_rollback() {
     using namespace pbzpm;
     using pbzpm::test::FakeEngine;
 
-    // 1) spawn 失败：不留下任何状态
+    // 1) 关闭接管时 spawn 失败：不留下任何状态
     {
         FakeEngine fe;
         fe.fail_spawn = true;
-        PhotoMode mode(fe, Config{});
+        Config cfg;
+        cfg.takeover_current_camera = false;
+        PhotoMode mode(fe, cfg);
         CHECK(!mode.enter());
         CHECK(!mode.active());
         CHECK_STR(mode.last_error(), "创建 CameraActor 失败");
@@ -895,6 +1147,42 @@ void test_photo_mode_failures_rollback() {
         CHECK(!fe.view_attached);
         CHECK(!fe.ignore_move);
         CHECK(!fe.player_hidden);
+    }
+
+    // 1b) 接管失败 + 独立相机也失败：错误文案必须区分两条路径
+    {
+        FakeEngine fe;
+        fe.takeover_supported = false;
+        fe.fail_spawn = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(!mode.enter());
+        CHECK_INT(fe.takeover_attempts, 1);
+        CHECK_STR(mode.last_error(), "接管当前相机失败，且独立 CameraActor 创建也失败");
+        CHECK(!mode.takeover_active());
+        CHECK(!fe.takeover_active);
+    }
+
+    // 1c) 接管成功：不 spawn、不换 ViewTarget，退出只退出接管
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.record_camera_extras = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+        CHECK(fe.takeover_active);
+        CHECK(!fe.camera_exists);
+        CHECK(!fe.view_attached);
+        CHECK_INT(fe.count("spawn_camera"), 0);
+        CHECK_INT(fe.count("attach_view"), 0);
+        fe.reset_calls();
+        mode.leave("takeover");
+        CHECK(!mode.takeover_active());
+        CHECK(!fe.takeover_active);
+        CHECK_INT(fe.count("spawn_camera"), 0);
+        CHECK_INT(fe.count("attach_view"), 0);
+        CHECK_INT(fe.count("leave_camera_takeover"), 1);
+        CHECK_INT(fe.count("destroy_camera"), 0);
     }
 
     // 2) attach 失败：必须销毁已创建的相机，且不碰输入/隐藏/后处理
@@ -934,6 +1222,86 @@ void test_photo_mode_failures_rollback() {
         CHECK(mode.pov_fallback_used());
         CHECK_NEAR(mode.fov(), 90.0, 1e-9);
         CHECK(fe.logs_contain("读不到当前视角"));
+    }
+}
+
+void test_photo_mode_takeover_input() {
+    section("PhotoMode 接管模式：输入必须写进 POV / 失效必须自动回退");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 1.0.75 回归：接管模式下输入→相机位姿正常，但写点在渲染之后，镜头完全不动。
+    // 这里锁死两件事：① 每帧输入位移都必须反映到写出的 POV；② 引擎判定失效时必须回退独立相机。
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.pov.loc = Vec3{0.0, 0.0, 0.0};
+        fe.pov.rot = Rot{0.0, 0.0, 0.0};
+        fe.pov.fov = 90.0;
+        Config cfg;
+        cfg.auto_pause_time = false;  // 只测输入→位姿，不掺冻结路径
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+
+        const size_t before = fe.pose_history.size();
+        Intent forward;
+        forward.move_forward = 1.0;
+        for (int i = 0; i < 6; ++i) mode.tick(forward, 0.016);
+        CHECK(fe.pose_history.size() >= before + 6);  // 6 帧全都真的写了位姿
+        CHECK(mode.pose().loc.x > 0.0);
+        CHECK_NEAR(fe.last_pose.loc.x, mode.pose().loc.x, 1e-9);  // 写出的 POV == 内部状态
+        CHECK(fe.takeover_active);
+        CHECK_INT(fe.count("spawn_camera"), 0);  // 正常接管不能被误判成失效
+
+        // 视角输入同样必须写进 POV（先按住 Alt 的鼠标 look 路径）
+        Intent look;
+        look.look_dx = 10.0;
+        look.look_dy = 5.0;
+        mode.tick(look, 0.016);
+        CHECK_NEAR(fe.last_pose.rot.yaw, mode.pose().rot.yaw, 1e-9);
+        CHECK(fe.pose_history.back().rot.yaw > 0.0);
+
+        // 接管正常时连续多帧移动仍不回退
+        for (int i = 0; i < 20; ++i) mode.tick(forward, 0.016);
+        CHECK(mode.takeover_active());
+        CHECK_INT(fe.count("spawn_camera"), 0);
+        mode.leave();
+    }
+
+    // 引擎在渲染后回读确认接管失效：必须自动回退独立相机，不能停在「能进模式但动不了」
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.takeover_view_lost_value = true;
+        fe.record_camera_extras = true;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+
+        Intent forward;
+        forward.move_forward = 1.0;
+        fe.reset_calls();
+        mode.tick(forward, 0.016);
+
+        CHECK(!mode.takeover_active());
+        CHECK(!fe.takeover_active);
+        CHECK(mode.active());  // 摄影模式本身保留，只是换成独立相机
+        CHECK_INT(fe.count("leave_camera_takeover"), 1);
+        CHECK_INT(fe.count("spawn_camera"), 1);
+        CHECK_INT(fe.count("attach_view"), 1);
+        CHECK(fe.camera_exists);
+        CHECK(fe.view_attached);
+        CHECK(fe.has("apply_pose"));  // 位姿已写到新相机
+        CHECK(fe.logs_contain("已自动回退到独立相机"));
+
+        // 回退后继续移动：位姿仍要写出去
+        fe.reset_calls();
+        mode.tick(forward, 0.016);
+        CHECK(fe.has("apply_pose"));
+        mode.leave();
     }
 }
 
@@ -992,6 +1360,29 @@ void test_photo_mode_tick() {
     mode.tick(wheel, 0.016);
     CHECK_NEAR(mode.fov(), cfg.fov_min, 1e-9);
     CHECK_NEAR(fe.last_fov, cfg.fov_min, 1e-9);
+
+    // 滚轮可关 / 可反向（2.0.0-cpp-hotfix9）
+    {
+        Config no_wheel = cfg;
+        no_wheel.wheel_fov = false;
+        PhotoMode wheel_off(fe, no_wheel);
+        CHECK(wheel_off.enter());
+        const double f0 = wheel_off.fov();
+        Intent w;
+        w.wheel = 2.0;
+        wheel_off.tick(w, 0.016);
+        CHECK_NEAR(wheel_off.fov(), f0, 1e-9);
+        wheel_off.leave();
+
+        Config inv_wheel = cfg;
+        inv_wheel.wheel_fov_invert = true;
+        PhotoMode wheel_inv(fe, inv_wheel);
+        CHECK(wheel_inv.enter());
+        const double f1 = wheel_inv.fov();
+        wheel_inv.tick(w, 0.016);
+        CHECK_NEAR(wheel_inv.fov(), f1 + 4.0, 1e-9);  // 反转：向上 = 放大 FOV
+        wheel_inv.leave();
+    }
 
     // R 重置相机视角：回到进入摄影模式时的位置/朝向/FOV
     {
@@ -1291,6 +1682,90 @@ void test_photo_mode_freeze() {
         freeze.toggle_freeze = true;
         mode.tick(freeze, 0.016);
         CHECK(mode.frozen());
+    }
+
+    // 光照 A/B：单项开关冻结时应用、解冻时还原
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        cfg.freeze_lumen_off = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("lighting_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("lighting_restore"), 1);
+    }
+
+    // 光照 A/B 自动轮换：冻结期每帧 tick 驱动阶段切换
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        cfg.freeze_lighting_ab_cycle = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        Intent none;
+        mode.tick(none, 0.5);
+        CHECK(fe.lighting_ab_ticks > 0);
+        mode.leave("test");
+        CHECK_INT(fe.count("lighting_restore"), 1);
+    }
+
+    // 自定义布料/摆动：冻结时挂起、解冻时恢复
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        cfg.freeze_custom_cloth = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("custom_cloth_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("custom_cloth_restore"), 1);
+    }
+
+    // WPO 评估冻结：冻结时关闭、解冻时恢复
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        cfg.freeze_wpo = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("wpo_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("wpo_restore"), 1);
+    }
+
+    // 阴影/后处理 A/B：冻结时进入、每帧 tick、解冻还原
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        cfg.freeze_shadow_ab_cycle = true;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.toggle_freeze();
+        CHECK(mode.frozen());
+        CHECK_INT(fe.count("shadow_freeze"), 1);
+        Intent none;
+        mode.tick(none, 0.5);
+        CHECK(fe.shadow_ab_ticks > 0);
+        mode.toggle_freeze();
+        CHECK(!mode.frozen());
+        CHECK_INT(fe.count("shadow_restore"), 1);
     }
 }
 
@@ -1850,6 +2325,85 @@ void test_photo_mode_freeze_treatment() {
         CHECK_INT(fe.count("pov_watch_tick"), 0);  // freeze_diag=false 时 POV 监测同样关闭
     }
 
+    // 布料模拟：默认冻结/恢复；关闭开关不碰；失败不记账
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("cloth_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK_INT(fe.count("cloth_restore"), 1);
+        mode.toggle_freeze();
+        CHECK_INT(fe.count("cloth_freeze"), 2);
+        mode.leave("test");
+        CHECK_INT(fe.count("cloth_restore"), 2);
+    }
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        Config cfg;
+        cfg.freeze_cloth = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.leave("test");
+        CHECK_INT(fe.count("cloth_freeze"), 0);
+        CHECK_INT(fe.count("cloth_restore"), 0);
+    }
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        fe.fail_cloth = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("cloth_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK_INT(fe.count("cloth_restore"), 0);  // 冻结未成功，不假装还原
+        mode.leave("test");
+    }
+    {
+        FakeEngine fe;
+        fe.cloth_components = 1;
+        fe.fail_cloth_restore = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        mode.leave("test");
+        CHECK_INT(fe.count("cloth_restore"), 1);  // 失败保留标志，退出重试
+        mode.leave("test");
+        CHECK_INT(fe.count("cloth_restore"), 2);
+    }
+
+    // 骨骼动画 + 动态模糊：默认冻结/恢复；关闭开关不碰
+    {
+        FakeEngine fe;
+        fe.anim_components = 3;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.count("anim_freeze"), 1);
+        CHECK_INT(fe.count("motion_blur_freeze"), 1);
+        mode.toggle_freeze();
+        CHECK_INT(fe.count("anim_restore"), 1);
+        CHECK_INT(fe.count("motion_blur_restore"), 1);
+        mode.toggle_freeze();
+        CHECK_INT(fe.count("anim_freeze"), 2);
+        mode.leave("test");
+        CHECK_INT(fe.count("anim_restore"), 2);
+    }
+    {
+        FakeEngine fe;
+        fe.anim_components = 3;
+        Config cfg;
+        cfg.freeze_skeletal_animation = false;
+        cfg.freeze_motion_blur_off = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.leave("test");
+        CHECK_INT(fe.count("anim_freeze"), 0);
+        CHECK_INT(fe.count("motion_blur_freeze"), 0);
+        CHECK_INT(fe.count("anim_restore"), 0);
+        CHECK_INT(fe.count("motion_blur_restore"), 0);
+    }
+
     // 治理失败不记账：解冻不做对应还原（与 pause 失败回退同一语义）
     {
         FakeEngine fe;
@@ -2208,6 +2762,149 @@ void test_photo_mode_subtitles() {
     }
 }
 
+// ---------------------------------------------------------------- 相机后端热切换
+
+// PBZFM 菜单里改「接管当前相机」必须当场生效：拆旧后端 → 建新后端 → 重新下发 FOV/景深；
+// 任何一步失败都要回滚到原后端，绝不能让用户点了开关之后没有相机可用。
+void test_camera_backend_switch() {
+    section("相机后端热切换（接管 ↔ 独立相机）");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 1) 接管中 → 切独立相机：退出接管、spawn、attach
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.record_camera_extras = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+        CHECK(!fe.camera_exists);
+        fe.reset_calls();
+
+        CHECK(mode.set_camera_backend_live(false));
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+        CHECK(fe.view_attached);
+        CHECK_INT(fe.count("leave_camera_takeover"), 1);
+        CHECK_INT(fe.count("spawn_camera"), 1);
+        CHECK_INT(fe.count("attach_view"), 1);
+        CHECK(!mode.config().takeover_current_camera);
+
+        mode.leave("switch");
+        CHECK(!fe.camera_exists);
+    }
+
+    // 2) 独立相机中 → 切接管：还视角、销毁相机、接管 POV
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;   // 假件默认不支持接管，这里必须显式打开
+        fe.record_camera_extras = true;
+        Config cfg;
+        cfg.takeover_current_camera = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+        fe.reset_calls();
+
+        CHECK(mode.set_camera_backend_live(true));
+        CHECK(mode.takeover_active());
+        CHECK(fe.takeover_active);
+        CHECK(!fe.camera_exists);   // 独立相机已销毁
+        CHECK(!fe.view_attached);   // 视角已交还游戏
+        CHECK_INT(fe.count("takeover_camera"), 1);
+        CHECK_INT(fe.count("destroy_camera"), 1);
+        CHECK(mode.config().takeover_current_camera);
+
+        mode.leave("switch");
+        CHECK(!fe.takeover_active);
+    }
+
+    // 3) 切独立相机但 spawn 失败 → 回滚到接管，用户仍有相机
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.fail_spawn = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+
+        CHECK(!mode.set_camera_backend_live(false));
+        CHECK(mode.takeover_active());
+        CHECK(fe.takeover_active);
+        CHECK(!fe.camera_exists);
+        CHECK(mode.config().takeover_current_camera);  // 失败回滚：配置要跟实际后端一致
+    }
+
+    // 4) 切接管但接管不可用 → 回滚到独立相机，用户仍有相机
+    {
+        FakeEngine fe;
+        fe.takeover_supported = false;
+        Config cfg;
+        cfg.takeover_current_camera = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(!mode.takeover_active());
+
+        CHECK(!mode.set_camera_backend_live(true));
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+        CHECK(fe.view_attached);
+        CHECK(!mode.config().takeover_current_camera);  // 失败回滚：配置要跟实际后端一致
+    }
+
+    // 5) 未激活时只记配置，绝不碰引擎（下次 enter() 按新后端建立）
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        fe.reset_calls();
+        CHECK(mode.set_camera_backend_live(false));
+        CHECK_INT(fe.count("spawn_camera"), 0);
+        CHECK_INT(fe.count("takeover_camera"), 0);
+        CHECK(!mode.config().takeover_current_camera);
+        CHECK(mode.enter());
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+    }
+
+    // 8) 切接管但「先还视角」失败：保持独立相机，配置随实际后端回滚
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.fail_view_restore = true;
+        Config cfg;
+        cfg.takeover_current_camera = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+
+        CHECK(!mode.set_camera_backend_live(true));
+        CHECK(!mode.takeover_active());
+        CHECK(fe.camera_exists);
+        CHECK(!mode.config().takeover_current_camera);  // 失败回滚：配置要跟实际后端一致
+        fe.fail_view_restore = false;                    // 别让退出还原也跟着失败
+        mode.leave("switch-restore-view-fail");
+    }
+
+    // 9) 切独立相机但设置 ViewTarget 失败：回滚到接管，配置随实际后端回滚
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        fe.fail_attach = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+
+        CHECK(!mode.set_camera_backend_live(false));
+        CHECK(mode.takeover_active());
+        CHECK(mode.config().takeover_current_camera);  // 失败回滚：配置要跟实际后端一致
+        fe.fail_attach = false;
+        mode.leave("switch-attach-fail");
+    }
+}
+
 // ---------------------------------------------------------------- 超宽屏画幅解锁
 
 void test_photo_mode_ultrawide() {
@@ -2285,32 +2982,6 @@ void test_photo_mode_input_blocking() {
     using namespace pbzpm;
     using pbzpm::test::FakeEngine;
 
-    // 默认配置：不隐藏角色（要能拍到自己的角色），但必须屏蔽游戏键鼠
-    {
-        FakeEngine fe;
-        Config cfg;
-        PhotoMode mode(fe, cfg);
-        CHECK(mode.enter());
-        CHECK(!fe.player_hidden);
-        CHECK(fe.input_blocked);
-        CHECK_INT(fe.count("block_input_on"), 1);
-        mode.leave("test");
-        CHECK_INT(fe.count("block_input_off"), 1);
-        CHECK(!fe.input_blocked);
-    }
-
-    // 打开 hide_player 时才隐藏角色，退出必须还原
-    {
-        FakeEngine fe;
-        Config cfg;
-        cfg.hide_player = true;
-        PhotoMode mode(fe, cfg);
-        CHECK(mode.enter());
-        CHECK(fe.player_hidden);
-        mode.leave("test");
-        CHECK(!fe.player_hidden);
-    }
-
     // 关掉 block_game_input 就一步都不该做
     {
         FakeEngine fe;
@@ -2338,7 +3009,7 @@ void test_photo_mode_input_blocking() {
 }
 
 void test_photo_mode_live_toggles() {
-    section("PhotoMode 图形菜单实时开关");
+    section("PhotoMode 实时开关（输入屏蔽/角色/HUD）");
     using namespace pbzpm;
     using pbzpm::test::FakeEngine;
 
@@ -2348,6 +3019,9 @@ void test_photo_mode_live_toggles() {
         PhotoMode mode(fe, Config{});
         CHECK(mode.enter());
         CHECK(fe.input_blocked);
+        // 默认配置下进入模式不得隐藏角色（hide_player 默认 false）。
+        // 这条断言原先只在 test_photo_mode_input_blocking 里出现，去重时把它挪到这里保住覆盖。
+        CHECK(!fe.player_hidden);
         mode.set_block_game_input_live(false);
         CHECK(!fe.input_blocked);
         CHECK_INT(fe.count("block_input_off"), 1);
@@ -3414,10 +4088,10 @@ void test_world_snapshot() {
     CHECK(!time.any_written());
     CHECK(!time.belongs_to(7));
 
-    // 暂停快照：两项独立记账，读不到就完全不写
+    // 暂停快照：三项独立记账，读不到就完全不写
     PauseSnapshot pause;
     CHECK(!pause.any_written());
-    CHECK(!pause.full_tick_read && !pause.game_mode_read);
+    CHECK(!pause.full_tick_read && !pause.game_mode_read && !pause.camera_moveable_read);
     pause.adopt(11);
     CHECK(pause.belongs_to(11));
     pause.full_tick_read = true;
@@ -3427,6 +4101,15 @@ void test_world_snapshot() {
     CHECK(!pause.any_written());
     CHECK(!pause.belongs_to(11));
     CHECK(!pause.game_mode_written);
+    CHECK(!pause.camera_moveable_written);
+    // 只有相机标志写过也必须算 any_written（解冻/退出要能触发还原）
+    pause.camera_moveable_read = true;
+    pause.camera_moveable_original = false;
+    pause.camera_moveable_written = true;
+    CHECK(pause.any_written());
+    pause.reset();
+    CHECK(!pause.camera_moveable_read && !pause.camera_moveable_written);
+    CHECK(!pause.any_written());
 }
 
 // ---------------------------------------------------------------- 退出恢复失败重试（H-1）
@@ -3740,6 +4423,7 @@ int main() {
     test_vk_names();
     test_config_defaults_and_parse();
     test_config_warnings_and_clamps();
+    test_config_legacy_purge();
     test_config_schema_and_sections();
     test_config_default_text_roundtrip();
     test_math();
@@ -3747,6 +4431,7 @@ int main() {
     test_input_logic();
     test_photo_mode_happy_path();
     test_photo_mode_failures_rollback();
+    test_photo_mode_takeover_input();
     test_photo_mode_tick();
     test_photo_mode_freeze();
     test_photo_mode_auto_pause();
@@ -3757,6 +4442,7 @@ int main() {
     test_photo_mode_reassert_and_partial();
     test_photo_mode_input_blocking();
     test_photo_mode_live_toggles();
+    test_camera_backend_switch();
     test_photo_mode_ultrawide();
     test_photo_mode_interact_prompt();
     test_photo_mode_enemy_health_bars();

@@ -4,9 +4,9 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v1.0.75 |
+| 版本 | v2.0.0-cpp（**正式版**，2026-11-05） |
 | 核心层测试 | 当前断言总数见 [test_count.txt](test_count.txt)，全部通过 |
-| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；超宽屏/DInput 手柄/字幕压制各项待回归 |
+| 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；**1.0.75 收口批次：接管当前相机、HUD 恢复重构实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
 ## 项目结构
 
@@ -14,12 +14,21 @@
 src/core/      纯逻辑，不碰引擎 —— 已完成
   config        配置解析（含容错、范围夹紧、默认配置生成）
   vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…，含 MOUSE_LEFT/RIGHT/MIDDLE/X1/X2）
-  input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿）
+  input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿、对焦/光圈步进）
+  gamepad       XInput / DInput 手柄映射与组合键
   math3         前/右向量、俯仰夹紧、偏航/滚转回绕
-  photo_mode    进/退/每帧状态机（含失败回滚、幂等退出、1 秒视角守护）
+  photo_mode    进/退/每帧状态机（含失败回滚、幂等退出、接管失败自动回退、1 秒视角守护）
+  mod_runtime   引擎侧编排（依赖注入，可用 FakeEngine 驱动完整进退路径）
+  i18n_logic    词典加载/回退/热重载
+  retry_policy  恢复失败的有限重试与退避常量
+  tuning        手感/容差等遗留常量（数值不变）
+  engine_port.h 按职责拆分的引擎子接口（World/CameraView/Input/Hud/TimePause/Audio/FreezeMotion/Log）
 
 src/engine/    引擎适配层 —— 已完成，随 DLL 在实机运行
-  ue4ss_port    EnginePort 的 UE4SS 反射实现（相机/输入钩子/HUD 隐藏/时间冻结/画幅解锁）
+  ue4ss_port*   EnginePort 的 UE4SS 反射实现，按子系统分文件：
+                ue4ss_port.cpp（入口/反射 helper）· camera_view（相机/接管/景深/Cine）
+                hud_ui（HUD/字幕/提示/锁定）· time_pause（冻结）· micro_motion（微动治理）
+                audio（Wwise）· diagnostics（诊断日志）· process_freeze（F7 定格：挂起游戏引擎线程/时间补偿）
 
 src/mod_app    CppUserModBase 子类：配置加载、输入绑定、每帧 tick
 src/ui_tab     UE4SS 控制台诊断面板（滑块/按钮，纯展示 + 回传命令；游戏内无菜单，纯快捷键操作）
@@ -37,43 +46,99 @@ tools\build_tests.bat
 
 | 操作 | 按键 |
 | --- | --- |
-| 进入/退出摄影模式 | `F2` |
-| 自由转视角 | 按住 `Alt` + 移动鼠标 |
-| 前后左右平移 | `W` `A` `S` `D` |
+| 进入/退出摄影模式 | `F2`（`key_toggle`） |
+| 自由转视角 | 按住 `Alt` + 移动鼠标（`key_free_look` 可改；`free_look_requires_alt = false` 可不按键） |
+| 前后左右平移 | `W` `A` `S` `D`（`key_move_forward/back/left/right` 可改） |
 | 方向键转向/俯仰 | 方向键 左/右转视角（`yaw_speed`，默认 90 度/秒）、上/下俯仰（`pitch_speed`，默认 30 度/秒） |
-| 升降 | 默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改成鼠标中键、侧键或键盘键；translate 模式；手柄 RT / LT） |
-| 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`key_roll_left` / `key_roll_right` 可改键，`roll_speed` 可调）；手柄 `RB` / `LB` |
-| 加速 / 减速 | `Shift` / `Ctrl` |
-| 调整 FOV | 鼠标滚轮（向上缩小 / 向下放大）、小键盘 `+` / `-`（单击一格，按住约 0.35 秒后连发） |
-| 重置相机视角 | `R`（回到进入摄影模式时的位置/朝向/FOV） |
-| 滚转归零 | `Z`（只把滚转回 0，位置/朝向/FOV 不动）；手柄 `LB+RB` 同按（`key_roll_reset` / `pad_roll_reset` 可改） |
-| 冻结时间 | `F`（进入时按 `auto_pause_time` 自动冻结） |
+| 升降 | 默认左键上移 / 右键下移（`key_vertical_up` / `key_vertical_down` 可改成鼠标中键、侧键或键盘键；translate 模式；手柄 `pad_vertical_up/down`，默认 RT / LT） |
+| 滚转（旋转画面） | `Q` / `E`（E 顺时针 / Q 逆时针；`key_roll_left` / `key_roll_right` 可改键，`roll_speed` 可调）；手柄 `pad_roll_right` / `pad_roll_left`（默认 RB / LB） |
+| 加速 / 减速 | `Shift` / `Ctrl`（`key_boost` / `key_slow` 可改；手柄 `pad_boost` / `pad_slow`，默认 LS / RS） |
+| 调整 FOV | 鼠标滚轮（`[control] wheel_fov` 可关、`wheel_fov_invert` 可反向）、小键盘 `+` / `-`（`key_fov_up/down`，单击一格，按住约 0.35 秒后连发） |
+| 重置相机视角 | `R`（`key_reset`；回到进入摄影模式时的位置/朝向/FOV） |
+| 滚转归零 | `Z`（`key_roll_reset`；只把滚转回 0，位置/朝向/FOV 不动）；手柄 `LB+RB` 同按（`pad_roll_reset` 可改） |
+| 冻结时间 | `F`（`key_freeze`；进入时按 `auto_pause_time` 自动冻结） |
+| 画面定格（内置冻结渲染帧） | `F7`（`key_frame_freeze`；再按恢复；定格期间相机不响应输入，安全阀默认 60 秒） |
 
-键位都能在 `config.ini` 里改（`[keys]` 段）。
+所有键位都能在 `config.ini` 里改（`[keys]` 键盘 / `[gamepad]` 手柄组合键），没有写死的按键。鼠标移动、滚轮与手柄摇杆属于模拟轴：摇杆/鼠标位移不可改键，滚轮可用 `wheel_fov` 关闭或反向。
 
 ## 手柄支持
 
 - **Xbox 手柄**：XInput 读取（`XInputGetState` 轮询，强制加载 System32 的 DLL，绕开游戏目录代理）。
 - **DualSense / DualShock4**：**不是 XInput 设备**，Windows 把它们枚举成 DirectInput 手柄——1.4.0 起由 DInput8 轮询后端读取（USB/蓝牙均可），与 XInput 翻译成同一份 `PadState`，键位写法与 Xbox 完全一致。XInput 槽位优先，避免 Xbox 手柄在两套后端重复计数。
 - 映射（`core/gamepad.cpp`）：DIJOYSTATE2 按钮 0..13 → □╳○△/L1R1/L2R2/CREATE/OPTIONS/**L3=LS/R3=RS**/PS；轴 lX/lY/lZ/lRz=双摇杆（Y 取反）、lRx/lRy=L2/R2 模拟量；rgdwPOV=十字键。
-- 固定键位：RT/LT 升降；**RB/LB 滚转**（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；**L3/R3 变速**（LS 加速 / RS 减速；两杆同按是进出模式组合键，此时不触发变速）。
+- 可配键位（`[gamepad]`）：`pad_vertical_up/down`（默认 RT / LT；单键绑定保留扳机模拟量行程）、`pad_roll_right/left`（默认 RB / LB）、`pad_boost/slow`（默认 LS / RS；两杆同按是进出模式组合键，此时不触发变速）。
 - 十字键：上/下俯仰（`pitch_speed`）、左/右转视角（`yaw_speed`，1.0.46 起从左右平移改来）；FOV 在 `A` / `B`（`pad_fov_up` / `pad_fov_down` 可改）：单击一格，按住约 0.35 秒后连发，松开即停。
 - 接入诊断：`DInput 手柄已接入：<名>（VID_…&PID_…）首读：按钮=… 摇杆=… POV=…`（一次性，原始值，映射对不上真机时用它定位）；`手柄=<后端摘要>` 在每秒输入诊断行里。
 
-## 已知缺口（1.0.75）
+## 景深（本作不支持，功能已移除）
 
-- **`log_level` 当前未真正生效**（M-6 未修）：配置项会被解析，但日志输出级别没有按它过滤。
+**这个游戏的 gameplay 视图不渲染引擎景深**，取证在 hotfix25~31 完成，hotfix32 把整个功能删掉了：
+
+- 四条通道（相机 `CameraCache.POV` 的 PP / 自建无界体积 / 关卡自带体积 / `ViewTarget.POV` 每帧重申）
+  全部「写入成功、回读正确、画面零变化」；89px 的强力参数也不糊，而同一体积的暗角照常生效。
+- 唯一的引擎总闸 `ShowFlags.DepthOfField` 在反射层拿不到：console 命令在本作不执行，
+  `0xB8` 那块内存整局一位不变（不是真的 flags）。
+- 径向模糊替代方案也失败：40 个后处理体积的 `WeightedBlendables` 全空，
+  自建槽位时 `FWeightedBlendables.Array` 取址失败，材质挂不上去。
+
+因此 **PBZFM 的「景深（手动对焦）」页、`[dof]` 配置段、对焦/光圈按键、引擎侧写入与核心层状态机
+已全部删除**（hotfix32），不再保留「参数记录」这种看着有用、实际没用的东西。
+旧 `config.ini` 里残留的 `[dof]`、`key_focus_*`、`pad_aperture_*` 等键会被**静默忽略并给一条合并提示**，
+可以整段删掉。
+
+想给截图加虚化只能用外部后期：NVIDIA Ansel 的景深、或 ReShade 的 DOF。Mod 侧不会再碰这件事。
+
+## 接管当前相机（UUU 式，`[camera] takeover_current_camera`）
+
+- **默认开启（`true`）**：不 spawn 独立相机、不切 `ViewTarget`，每帧在 `GameViewportClient::Tick` 之后（游戏 `UpdateCameraManager` 重算完 `CameraCache.POV`、`RedrawViewports` 之前）覆写 `APlayerCameraManager.CameraCache.POV` 的位置/朝向/FOV。写点若晚于渲染（`EngineTickPost` 在 `RedrawViewports` 之后）就会表现为“镜头不动”，1.0.75 的回归即此。
+- 只写“每帧由相机管理器重算”的 POV 缓存，不写游戏相机组件，因此不存在持久污染；退出时先还原接管相机的后处理/景深，再停止每帧写 POV，游戏相机从下一帧起恢复自身逻辑。
+- **失败自动回退**：进入时读不到 `CameraCache`/POV 布局、或写入后回读不一致，会当场回退到独立相机（spawn + `SetViewTargetWithBlend`）；运行中连续 **15 帧**回读 POV 与目标位姿不一致，判定接管未生效并自动回退，日志 `已自动回退到独立相机（spawn + SetViewTargetWithBlend）`。
+- **游戏内就能换后端（不用重进）**：PBZFM 菜单里的「接管当前相机」可即时在两条后端之间切换——
+  关掉会当场拆掉接管、spawn 独立相机并把视角切过去；打开会当场还原视角、销毁独立相机、改为接管 POV。
+  任何一步失败都会自动回滚到原来的后端（不会出现「点了开关没相机可用」），并打一条 Warn。
+  同一项也可写进 `config.ini` 的 `[camera] takeover_current_camera`（`false` = 始终独立相机）。
+- **两条后端怎么选**：接管的优点是**侵入最小**（不 spawn Actor、不切 ViewTarget，退出时无需还原任何东西，
+  过场中进出也不会打断演出镜头）；独立相机的优点是**有真实焦距联动**（按 `Filmback.SensorWidth` 把 FOV 换算成
+  `CurrentFocalLength`，长焦是真实光学压缩而不是单纯 FOV 裁剪）。要长焦压缩感用独立相机，要最不打扰游戏用接管。
+- **接管有个硬前提**：必须挂上 UE4SS 的 `GameViewportClientTickPost` detour。挂不上时本 Mod 会
+  **自动降级为独立相机**并打 Warn（早期版本只报 Error 让用户自己改配置，结果是镜头完全不动）。
+- 运行中连续 3 次写 POV 失败只 Warn 一次；此时画面可能不再跟随输入，退出重进可重建接管。
+
+## CineCamera 焦距联动与出图通道
+
+- 包内存在 `CineCameraActor` / `CineCameraComponent` / `CurrentFocalLength` / `Filmback`：独立相机优先用 `CineCameraActor`，改 FOV 时按 `Filmback.SensorWidth`（读不到用 35mm 全画幅）换算并同步 `CurrentFocalLength`，长焦压缩是真实焦距而非纯 FOV 裁剪。
+- `UCineCaptureComponent2D`（CineCameraSceneCapture 插件）**确认未打进 Shipping**。进入时日志 `相机后端探测：… CineCaptureComponent2D=no(c: 插件 CineCameraSceneCapture 未打进 Shipping)` 可复核，因此高品质无 UI 出图通道不存在。
+- **设计边界**：实时取景始终走 `ViewTarget` / 相机组件（独立相机或接管 POV）；`SceneCapture2D` 仅作为独立出图通道，不用作取景器。
+
+## HUD 恢复重构（1.0.75 收口批次）
+
+- **粗粒度优先**：进入先调游戏自带 `UPBZUIManagerSubsystem::SetHideUIForPV(true)` 总开关，再关 `AHUD.bShowHUD`（PlayerController 或 MyHUD 上的反射属性；读不到原值就不写），最后把 UMG 根控件 `W_FrontEndHUDLayout_C` 设为 `Collapsed`。退出按原值成对恢复（PV 开关、`bShowHUD`、根控件 `Visibility`）。
+- **仍保留细粒度（有理由）**：字幕（`WBP_FlowSubTitle_C` / `GAA_Subtitles_C`）、世界空间交互提示（`PBZInteractComponent.InteractWidgetComponent`）、锁定标记（`TargetingComponent.LockWidget` 等）、对话 Flow（`WBP_FlowDialog_C` 需 `Hidden` 保留 Tick）。它们不在 PV 总开关 / 根控件覆盖范围内，必须单独处理。
+- 存活判定从“重扫列表 + `pointer_in`”改为 `is_ok()`（UE 对象数组反查 + 指针范围/对齐校验），不再要求“本轮重新扫描必须命中”。旧实现扫描漏项会让控件永远停在 `Collapsed`，这是字幕/提示反复消失的根因之一。
+- 退出恢复失败仍走既有有限重试机制（不吞错），逐项保留未完成状态，后续 tick 继续重试。
+
+## 已知缺口（1.0.75 收口批次）
+
+- **取景链路边界**：实时取景始终走 ViewTarget + 相机组件；SceneCapture2D 仅作为独立出图通道，不用作取景器。
+- **无高品质无 UI 出图通道**：`UCineCaptureComponent2D`（CineCameraSceneCapture 插件）未打进 Shipping；`SceneCapture2D` 也不作为取景器/出图替代。
+- **`HighResShot` 不可用**：本作 `BP_PlayerController_C` 没有 `ConsoleCommand` UFunction，且 `HighResShot` 仅 Editor/standalone 可用，故不采用。
+- **接管当前相机**：依赖本作 `CameraCache.POV` 布局（`FCameraCacheEntry.POV` 或直接 POV），布局不认识/回读不一致会自动回退独立相机；POV 的 FOV 在 UE5.5+ 可能位于 `Lens.FieldOfView`，代码两个字段都会写。
+- **`log_level` 已生效**（M-6 已修）：`PhotoMode` 构造时与每条日志都会把 `cfg_.log_level` 下发给引擎侧，`Ue4ssPort::log` 按 `log_level_enabled()` 过滤（`Error` 级永不过滤）；热重载后立即按新级别生效。
 - **已弃用键**：`interval_ms`、`ui_scale`、`time_offset_compensation` 接受但忽略，每个键首次出现时告警一次；不写则行为与默认一致。
 - **配置越界值**：现在 clamp 到 `min/max` 边界（M-5），不再回落默认值；想让某项恢复默认请删掉该行或改成默认值。
 - **锁定/血条/字幕等隐藏**：依赖游戏内反射查找，换世界后缓存统一失效并重新扫描，个别版本/场景可能扫不到（日志会告警）。
 
 ## 配置文件
 
-`config.ini`（示例见 `config.ini.example`）。写错不会崩：非法值保留默认、并在日志里给一条 warning；数值越界会 clamp 到边界。
+`config.ini`（示例见 `config.ini.example`，由 `tools/gen_config.bat` 从代码默认值生成，**勿手改**）。写错不会崩：非法值保留默认、并在日志里给一条 warning；数值越界会 clamp 到边界。
 
+- **`[camera]`**：`fov_default = 90` / `fov_min = 15` / `fov_max = 150` / `fov_step = 2`、`ultrawide_unlock = true`、`takeover_current_camera = true`（默认接管当前相机；`false` 固定走独立相机）。
+- **`[keys]` 的可配项**：`key_toggle/freeze/frame_freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/vertical_up/vertical_down/move_forward/move_back/move_left/move_right/boost/slow/free_look/focus_near/focus_far/aperture_open/aperture_close`——**没有写死的键盘键**。
+- **`[control]` 的滚轮**：`wheel_fov = true`（滚轮调 FOV）、`wheel_fov_invert = false`（向上缩小 / 向下放大，true 反向）。
+- **`[gamepad]` 的可配项**：`pad_toggle/freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/boost/slow/vertical_up/vertical_down/focus_near/focus_far/aperture_open/aperture_close`；组合键用 `+` 连接，`NONE` 解绑。
 - **注释规则**：`;` 或 `#` 在引号外即视为注释起点（独占一行或以空白开头最易读，但解析器不强制要求前置空白，`fov = 50;备注` 也有效）；引号内的 `;`/`#` 属于值本身，不当作注释。`key_toggle = "G"` 这类带引号写法同样适用。
 - **已弃用键**：`interval_ms`、`ui_scale`、`time_offset_compensation` 接受但忽略，每键告警一次。
-- **`log_level`**：当前解析后未真正生效，见「已知缺口」。
+- **`log_level`**：`error` / `warn` / `info` / `debug` 四档，`Error` 级永不过滤；运行中热重载立即生效。
 
 ## 构建 DLL 的前置条件
 
@@ -89,7 +154,7 @@ tools\build_tests.bat
 1.0.42 起本模组是 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（游戏内 ImGui 菜单框架，DirectComposition 覆盖窗实现，不碰游戏交换链、不影响 FSR3 帧生成）的**第一个客户端模组**。两个模组各自解压进 `ue4ss\Mods\`（enabled.txt 启用，互不改 mods.txt）后：
 
 - 游戏内按 PBZFM 的呼出键（默认 `F8`）打开菜单，侧栏出现「**PBZ Photo Mode**」分区（1.0.43 起两页均由本模组自绘，ImGui 版本与框架 1.92.1 对齐）
-- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
+- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 布料模拟 / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
 - **「状态 · Status」页**：OFF / LIVE / FROZEN 状态、位置与朝向读数、键位速查；FOV 滑条（实时变焦）与「进入/退出摄影模式」「冻结/恢复时间」「重置视角」「重新载入 config.ini」按钮
 - **多语言**：内置 zh-CN / en-US / ja-JP / ko-KR；**外部词典**放 `PBZPhotoModeCpp\languages\<id>.json`——UTF-8 扁平 JSON，key=中文原文、value=译文，可选 `__display` 当显示名；同名覆盖内置、新文件名即新语言，游戏内热重载（点按钮或等 2 秒）。翻译缺失的条目回落中文。韩文渲染用自建「雅黑 + Malgun Gothic」合并字体，不受框架启动字体限制
 - 手柄组合键绑定（多按钮同按）在菜单里表达不了，仍写在 `config.ini` 的 `[gamepad]` 节
@@ -103,132 +168,6 @@ tools\build_tests.bat
 - **P0**：核心逻辑 + 单元测试 → 完成
 - **P1**：引擎适配层与 DLL → 完成，已实机运行
 - **P2**：PostProcess 快照还原、滤镜、连拍、录像
-
-## 1.0.75-hotfix1 这次改了什么（修复“完全无法进入摄影模式”）
-
-- 现象：1.0.75 实机按 F2 后每次进入都在 `SetViewTargetWithBlend` 之后立刻回滚，日志 `相机接管校验第 1 次失败：ViewTarget 当前目标=null，不是摄影相机` + `设置 ViewTarget 失败`。
-- 根因：M-1 新增的 ViewTarget 回读确认被当成进入的硬性前置检查。真机上 `SetViewTargetWithBlend` 成功的同一帧里 `ViewTarget.Target` 读出 `null`，要等相机管理器本帧 `UpdateViewTarget` 之后才有值——属于“回读尚未生效”，不是接管失败。
-- 修复：`attach_view()` 恢复为“调用成功即返回 true”，回读结果降级为告警；只有读到明确的其他 Actor（视角被抢）或摄影相机位姿被搬走才算确凿失效，且仍需连续 3 次才 `leave`。回读 `null`/不可读不累计失效、不阻断进入。
-- 单测新增“回读暂未确认不阻断进入/不触发退出”的回归断言；核心层测试 3431 → **3440 项全绿**。
-
-## 1.0.75 这次改了什么（Q/E 滚转键可在 config.ini 配置）
-
-- 问题：用户反馈 Q/E 旋转视角（滚转）快捷键在 `config.ini` 里改不了——检查发现 1.0.74 及以前 Q/E 硬编码在 `input_logic.cpp` 的 `build()` 里（`kQ`/`kE` 常量），`[keys]` 段只有 `key_roll_reset`（滚转归零），没有滚转左右键配置项。
-- 修复：新增 `[keys] key_roll_left` / `key_roll_right`（默认 `Q` / `E`，左=逆时针、右=顺时针），解析进 `KeyMap` 并由 `InputLogic` 使用；`config_ini_text` / `config.ini.example` / PBZFM 菜单「快捷键（键盘）」页同步，PBZFM 改键后写回 `config.ini`。
-- 兼容：不写新键名时默认值仍是 Q/E，旧配置无需改动；`key_roll_reset`（默认 Z，滚转归零）保持不变。
-- 其他：控制台诊断面板的滚转提示改为显示当前实际键位；四语言词典补 `#key_roll_left/right`。
-- 核心层测试 2400 → **2529 项全绿**；DLL 编译 exit 0。
-
-## 1.0.74 这次改了什么（过场对话 Flow 冻结/诊断：保留相机，不挂线程）
-
-- 背景：用户提出「全线程冻结」；经 ANALYSIS.md / 线程模型核对，直接挂起所有线程会连渲染线程和 game thread 一起停，摄影相机与 F2 都会失效，只能得到静帧、无法取景；因此采用方案 A：保留相机线程与渲染，只冻结对话 Flow。
-- 1.0.73 实机日志（19:02）：`语音位置校验：可读 41 个，暂停期位置未变 41 个，前进 0 个（最大 +0 ms）`——Wwise 播放头已冻结，剩余疑点在对话 Flow 继续 Tick（`WBP_FlowDialog_C` 仍为 Hidden、Slate 仍 Tick）。
-- 新增配置 `freeze_dialogue_flow`（默认 `true`，仅 `hide_subtitles=true` 时生效）：冻结时把 `WBP_FlowDialog_C` 从 `Hidden` 改为 `Collapsed`（ESlateVisibility=1，停止 Slate Tick），解冻恢复 `Hidden`（2，仍隐藏但继续 Tick）；`leave()` 退出时按原可见性恢复。
-- 新增 `PlayAudio_C.ForceFinishAudio` / `StopAudio_C.ExecuteUbergraph_StopAudio` 只读诊断钩子：冻结期被调用时打日志（前 8 次），只确认对话 Flow 是否提前结束语音，不改播放行为。
-- 不挂线程、不碰 QPC/IAT、不改变 Wwise/相机逻辑；无对话/普通场景 FlowDialog=0 不产生新日志，配置关闭或 `hide_subtitles=false` 时行为回退 1.0.73。
-- 核心层测试 2306 → **2400 项全绿**；DLL 编译 exit 0。
-
-## 1.0.73 这次改了什么（过场/对话中进入摄影模式后语句仍不续播）
-
-- 实机反馈：1.0.72 装后，过场/对话中按 F2 进入摄影模式再退出，**被截断的语句仍不能续播**。
-- 根因（1.0.72 遗留）：`AK::SoundEngine::Suspend(true,false)` 的 render-anyway 只是“不输出”，音频线程和语音时间轴照常推进；即使逐 PlayingID `PBZPausePlayingID` 执行成功（日志 `对话语音暂停（PlayingID）：截获 47，执行 47`），当前句也会在冻结期间无声播完，解冻后无法从原位置续播。1.0.36 只用逐 PlayingID + 组件音量时实机验证可续播。
-- 修复①（整引擎 Suspend 降级为无 ID 兜底）：有逐语音 PlayingID 时**跳过整引擎 Suspend**，逐 PlayingID 真暂停（`PBZPausePlayingID`/`PBZResumePlayingID`）恢复为唯一常规路径；整引擎 `Suspend(true,false)` 仅在 `pause_wwise_voices` 返回 0（没有截获到 ID）时作为静音兜底（`wwise_engine_suspend` 仍默认 true，但只在无 ID 时生效）。
-- 修复②：新增 `GetPlayingIDPositionMs` 语音位置校验（只读诊断）：暂停时记录每个 PlayingID 的位置，恢复前再读一次，日志 `语音位置校验：可读 N 个，暂停期位置未变 N 个，前进 N 个（最大 +X ms）`；前进超过 100ms 会 Warn `语音暂停未冻住：当前句在冻结期继续前进`。
-- 修复③：`pause_wwise_voices` 返回值只统计实际执行的 PlayingID 数（组件音量兜底不计入），避免 core 误判「逐语音已生效」；补 `对话类函数：…` 一次性诊断。
-- 验证：有 ID 时日志应出现 `逐语音真暂停已执行 N 个 PlayingID，跳过整引擎 Suspend`，且**不再出现** `Wwise 音频引擎已静音挂起`；无 ID 时才出现 `无逐语音 PlayingID，整引擎 Suspend 作为静音兜底`。
-- 核心层测试 2301 → **2306 项全绿**；DLL 重编通过。
-
-## 1.0.72 这次改了什么（过场动画进入/退出摄影模式后语句断句不续播）
-
-- 实机反馈：过场动画（剧情演出）中按 F2 进入摄影模式、再退出后，**正在播的语句被截断，不能从原位置续播**。
-- 根因①（音频）：1.0.66 起冻结走 `AK::SoundEngine::Suspend(false,false)` 整引擎硬挂起。Wwise 2024.1 的签名是 `Suspend(bool in_bRenderAnyway, bool in_bFadeOut)`，`(false,false)` 表示音频完全不处理（连 `RenderAudio` 也不处理），音频线程被硬停、事件队列与语音流状态丢失，解冻后播到一半的语句无法续播；同时绕过了 1.0.36 实机验证过的逐 PlayingID `PBZPausePlayingID`/`PBZResumePlayingID` 路径。
-- 根因②（镜头）：退出摄影模式时 `restore_view()` 固定还原到玩家 Pawn，过场动画期间的 ViewTarget（过场相机）被切走，正在播的对话/语音被打断。
-- 根因③（对话 UI）：字幕文本画在 `WBP_FlowDialog_C` 等对话控件上；`Collapsed` 会停止控件 Tick、让对话 Flow/语句推进停摆；进入时关闭 `bEnableSubtitles` 也会截断当前语句。
-- 修复①：整引擎改 `AK::SoundEngine::Suspend(true,false)`（render-anyway：音频继续处理但不输出，保住语音流状态）；冻结顺序恢复为「先逐 PlayingID 真暂停 → 再整引擎 render-anyway 静音」，解冻逆序「先 `WakeupFromSuspend` 恢复输出 → 再 `PBZResumePlayingID` 恢复语音」。
-- 修复②：进入时保存相机管理器的原 `ViewTarget`，退出优先还原它（日志 `进入前 ViewTarget 已记录` / `已还原进入前 ViewTarget`），记录不可用时才回退玩家 Pawn。
-- 修复③：FlowDialog 家族控件用 `ESlateVisibility=2`（Hidden，保留 Tick），其他字幕控件仍用 `Collapsed`；扫描到 FlowDialog 时保留 `bEnableSubtitles` 原值、只隐藏控件（日志 `检测到对话 UI（FlowDialog），保留字幕设置开关不写…`）。
-- 配置说明：`stop_wwise_on_freeze` 仍默认 `true`；`wwise_engine_suspend` 仍默认 `true`，但现在是**第二层 render-anyway 静音**（音频继续处理、不输出），逐 PlayingID 暂停始终先行，不再被整引擎替代。
-- 核心层测试 2294 → **2301 项全绿**；DLL 重编通过。
-
-## 1.0.67 这次改了什么（清理两处旧日志提示）
-
-- **PostProcess 快照不再误报失败**：本版不修改后期处理设置，`save_postfx()` 没有需要保存的内容；此前返回 `false` 导致每次进摄影模式都打 `PostProcess 快照失败`。现在按“无需还原”处理并返回成功，退出时 `restore_postfx()` 为空操作，不再刷警告。（1.0.75 收口批次：改为如实返回 `false` 并日志「PostFX 快照暂不支持」，不再宣称“已保存、退出会还原”；后续版本已把该死接口整体移除）
-- **相机修饰器列表改用 UE5 正确字段名**：`APlayerCameraManager` 的运行时列表在 UE5 叫 `ModifierList`，旧代码只查 `CameraModifiers`（旧名/部分分支）导致找不到数组、冻结时跳过修饰器治理。现在按 `ModifierList` → `CameraModifiers` → `CameraModifierList` 顺序尝试；找到后正常停用/恢复，确实不存在时才打一次信息日志（恢复阶段也不再无条件警告）。
-
-## 1.0.66 这次改了什么（修复移动视角卡顿）
-
-- **现象**：1.0.65 相比 1.0.64 没有明显改善，反而在冻结状态下移动视角时频繁卡顿。
-- **根因（时间偏移补偿）**：1.0.65 的 IAT Hook 把 `PBZ.exe` 和 `MRTCEngine.dll` 的 `QueryPerformanceCounter` 也换成了“冻结期返回常量”的钩子。PBZPause 能这么做，是因为它把进程内所有线程（包括渲染线程）都挂起了；摄影模式必须保留渲染线程和相机 Tick，QPC 被冻住后渲染线程的帧计时/引擎 delta 变成 0，画面就会一顿一顿。这个前提在本项目不成立，套用后只有副作用。
-- **修复**：整段移除时间偏移补偿（IAT Hook、`time_offset_begin/end`、配置项、菜单项与四语言标签全部删除）；旧 `config.ini` 若保留 `time_offset_compensation = true` 会收到“已移除并忽略”的 warning，不影响启动。摄影模式仍用 `SetGamePaused` / 时间缩放冻结，不依赖 QPC 钩子。
-- **同时修复 Wwise 整引擎 Suspend 的静默失效**：当前 PBZ 把 Wwise 静态链接进 `PBZ.exe`，`AkSoundEngineDLL.dll` 并不会被加载；1.0.65 只查 DLL，导致 `AK::SoundEngine::Suspend` 从未真正调用、每次都回落逐语音。1.0.66 优先从主程序导出表解析 `Suspend` / `WakeupFromSuspend` / `IsInitialized`，失败才回落 DLL 与逐语音，并在日志中写明接口来源；同时修正 `AKRESULT` 成功值判断（`AK_Success = 1`，旧代码误把 1 当失败）。
-- 核心层测试 **2294 项全绿**（移除时间偏移用例，保留 Wwise 整引擎优先/回落/关闭用例）。
-
-## 1.0.65 这次改了什么（修复 1.0.64 冻结崩溃）
-
-- **根因**：1.0.64 的 `PatchModuleImports` 在解析导入函数名时把 `IMAGE_THUNK_DATA.AddressOfData`（RVA）直接当指针传给 `strcmp`，没有加模块基址。PBZ.exe 的 RVA 是 `0xD9CEABE`，`strcmp` 访问 `0xD9CEAC0` 触发 `0xC0000005`，所以一按 F2 自动冻结就崩。
-- **修复**：按 PBZPause 原实现改为 `module_base + AddressOfData + sizeof(WORD)`，并对 `FirstThunk` / `OriginalFirstThunk` / 名称 RVA 增加模块 `SizeOfImage` 边界校验，坏模块/怪 import 表直接跳过而不是让 `strcmp` 读飞。
-- 本次崩溃 dump：`crash_2026_11_02_13_17_56.3389705.dmp`，异常地址 `ucrtbase.dll+0xED8B0`，栈顶回到 `PBZPhotoModeCpp.dll!patch_module_time_imports`。
-
-## 1.0.64 这次改了什么（Wwise 整引擎 Suspend + 时间偏移补偿）
-
-- **Wwise 整引擎挂起**：冻结时优先调用 `AkSoundEngineDLL.dll` 的 `AK::SoundEngine::Suspend(false,false)`，解冻 `WakeupFromSuspend(0)`——一次覆盖环境/音乐/语音/UI 全部声音，解冻从冻结位置继续；引擎未初始化或调用失败自动回落原有逐 `PlayingID` + 组件音量兜底（`stop_wwise_on_freeze` 仍总开关，新配置 `wwise_engine_suspend` 默认 true）。
-- **时间偏移补偿**：借鉴 PBZPause 的 IAT Hook 方案，冻结前把主程序与游戏侧 DLL（MRTCEngine/AkSoundEngineDLL/Media Foundation/audioclient）的 `QueryPerformanceCounter`、`GetTickCount`、`GetTickCount64`、`timeGetTime` 换成钩子；冻结期间返回暂停瞬间值，解冻时把本次暂停时长累加进偏移——动画/物理/粒子/计时器不会在解冻瞬间跳时间。新配置 `time_offset_compensation` 默认 true，Hook 失败自动降级并告警；不 patch 本模组自身的 CRT，摄影相机 dt 不受影响。
-- **安全边界**：只改 IAT 不挂线程；钩子只用原子变量、不分配/不加锁；`Ue4ssPort` 析构时恢复所有 IAT 槽，避免 DLL 卸载后悬空。
-- 核心层测试 **2372 项全绿**（新增 Wwise 整引擎优先/回落、时间偏移时序/失败降级/关闭用例）。
-- **后续（1.0.66）**：实测确认时间偏移补偿会冻结渲染线程 QPC、导致移动视角卡顿，已整段移除；Wwise 整引擎 Suspend 保留并从 PBZ.exe 静态导出解析。
-
-## 1.0.63 这次改了什么（升降键可配置）
-
-- **需求**：右键/左键是升降键，但 config.ini 里没有键位项，无法改成其它鼠标键或键盘键。
-- **实现**：新增 `[keys] key_vertical_up` / `key_vertical_down`（默认 `MOUSE_LEFT` / `MOUSE_RIGHT`）。键名表新增 `MOUSE_LEFT` / `MOUSE_RIGHT` / `MOUSE_MIDDLE` / `MOUSE_X1` / `MOUSE_X2`（别名 `LMB` / `RMB` / `MMB` / `MOUSE_BACK` / `MOUSE_FORWARD`）；输入层把 5 个鼠标键并入 `GetAsyncKeyState` 轮询，`translate`（上下平移）与 `look`（俯仰）两种模式都按新键工作。
-- PBZFM 菜单「快捷键（键盘）」页同步显示两项，改键捕获支持鼠标键；四语言词典新增对应标签。
-- 核心层测试 **2216 项全绿**（新增鼠标键名解析、默认值、交换键位、键盘键替代与 PBZFM 字段往返用例）。
-
-## 1.0.71 这次改了什么（字幕/交互提示反复进出后仍消失）
-
-- 实机反馈：1.0.70 不再崩溃，但进入相机模式再退出几次后字幕和 E 交互图标一直消失。
-- 日志证据：只有 `UI 设置修复：等待玩家进入游戏世界…`，20 次后 `UI 设置修复多次重试未成功…跳过`（修复从未执行）；每次进出都是 `字幕设置开关原值=关（读取=GetSubtitlesEnabled()）`、`场景交互提示开关原值=关（读取=GetSceneInteractPromptVisible()）`。
-- 根因：① `find_live_player_pawn()` 要求 Player 属性 + Pawn + `bBegunPlay` 全部命中，实机 Player 属性/世界属性读不到导致永远失败；② 设置原值 getter 优先读到了未同步旧副本，退出把「本来开着」还原成关。1.0.34 实机证明 `bEnableSubtitles` / `bSceneInteractPromptVisible` 属性才是生效值。
-- 修复：`find_live_player_pawn()` 只要求 Pawn 可读、`bBegunPlay` 仅在明确 false 时拦截；修复只在非摄影模式的 Tick 执行。`read_bool_setting()` 改为属性优先、getter 兜底，回读校验按属性；写仍走 setter + Pending + 属性三路。
-- 核心层 2294 项测试全绿；DLL 重编通过。
-
-## 1.0.70 这次改了什么（进入游戏时崩溃）
-
-- 实机反馈：安装 1.0.69 后进入游戏即崩溃（`crash_2026_11_02_15_36_45.7956922.dmp`）。
-- minidump 取证：异常 `0xC0000005` 读地址 `0xFFFFFFFFFFFFFFFF`，RIP=`PBZPhotoModeCpp.dll+0x198A3`（`pbzpm::find_property`，ue4ss_port.cpp:117）；调用链 `recover_ui_settings_once` → `player_pawn`（ue4ss_port.cpp:939）→ `find_property(UObject*)`（:126）→ `find_property(UStruct*)`（:117）。
-- 根因：1.0.69 的 UI 一次性修复启动 3 秒就调用 `player_pawn()`；`controller()` 缓存的 PlayerController 在换图/读档时已被销毁，`GetClassPrivate()` 读成 `0xFFFFFFFFFFFFFFFF`，旧 `is_ok` 只判非空，`find_property` 把 -1 当 `UStruct*` 构造 `TFieldIterator` 读地址 -1 崩溃。
-- 修复：`is_ok()` 增加指针范围/对齐 + SEH 保护的 `GetClassPrivate` + `FUObjectItem` 对象数组反查；`find_property`/`find_function` 同样前置校验。UI 修复改用新增的 `find_live_player_pawn()`——每次重新枚举 PlayerController，要求 Player+Pawn 都在且 Pawn 所在 `UWorld.bBegunPlay=true`。
-- 核心层 2294 项测试全绿；DLL 重编通过。
-
-## 1.0.69 这次改了什么（字幕/交互提示退出后一直消失）
-
-- 实机反馈：1.0.68 白点/血条正常了，但退出摄影模式后**字幕与交互按钮一直消失**，重进重出也不行。日志证据：首次进入即「字幕设置开关已关闭（原值=关，回读=关）」——两个开关在测试前就已是关闭态（旧版本 1.0.30 时代遗留：还原静默失败被游戏存盘）。
-- **一次性修复**：新配置 `repair_ui_settings_once`（默认开）——引擎 Tick 起每 3 秒试一次（上限 20 次/约 1 分钟），把字幕/场景交互提示两个设置强制打开、回读校验、调用 `PBZSettingsShared::SaveSettings()` 立即存盘，成功后写 `ui_settings_repair_done.flag` 只执行一次。若你本来就关闭字幕，把它设为 false。
-- **设置读写加固**：字幕/提示开关改为 getter 优先读（`GetSubtitlesEnabled`/`AreSubtitlesEnabled`/`GetSceneInteractPromptVisible`）、setter + Pending + 属性三路写、回读校验，日志记录原值与回读，不再静默写坏玩家设置。
-
-## 1.0.68 这次改了什么（锁定白点与锁定血条一起残留）
-
-- 实机反馈：锁定敌人后进摄影模式，**血条与白点一起残留**。日志证据：原血条模式=OnlyLockedTarget（切档无效——该模式只为当前锁定目标显示血条，锁定目标不清就永远在）；关键词扫描零命中（白点不是普通 UMG/可视化组件）。
-- exe 反射字符串取证找到游戏自己的锁定系统 `TargetingComponent`（PBZ 里锁定 = Focus 家族）：`LockWidget` / `SecondaryLockIndicators`（锁定/副目标指示器控件）、`SetShowLockIndicator(bool)`、`HasLockTarget` / `GetLockTarget` / `SetLockTarget` / `StopLockTarget`、`TargetingHandlers`。
-- 本版（`hide_lockon_marker` 默认开）：运行时定位锁定系统对象 → `LockWidget`/`SecondaryLockIndicators` 逐个 Collapsed（宿主 WidgetComponent 一并隐藏）→ `SetShowLockIndicator(false)` → **保存 `GetLockTarget` 后 `StopLockTarget` 清掉锁定目标**（血条根因）；退出时 `SetLockTarget(保存目标)` + `SetShowLockIndicator(true)` 成对恢复。
-- 关键词补网：`focus`/`indicator`/`monsterhp`/`enemyhp`/`hpbar`/`healthbar`（实机可见清单 `WG_PBZFocus_C` 即疑似白点控件）；全名带 Monster/Enemy 的 WidgetComponent（敌人头顶血条/名牌）一并隐藏兜底。
-- 诊断④：锁定系统对象清单（类/对象/有锁定/目标/成员表）；诊断①②上限 40→120。所有动作逐条记日志、退出按原值还原。
-
-## 1.0.44 这次改了什么（隐藏锁定标记）
-
-- 需求：锁定敌人后进摄影模式，敌人身上的**锁定白点**仍在——`SetHideUIForPV` 订阅者、HUD 布局、血条设置（`MonsterHealthBarMode` 只管血条）都不覆盖它。
-- 实现（新配置 `hide_lockon_marker`，默认开，PBZFM 菜单「隐藏」页同名开关）：进入摄影模式全量扫描对象数组，类名/资产名命中锁定·目标·标记关键词（`_`/`-` 归一、`block` 排除）的 UMG 控件 Collapsed、可视组件（Widget/Niagara/Particle/Decal/Sprite/Mesh）bVisible=false，退出全部按原值还原；隐藏清单逐条记日志。
-- 白点的真实类名离线证不了：零命中时直接确认完成（进模式后无法再锁定，重扫无益），并打一次性诊断（可见 UserWidget 清单 / 可视组件清单 / 玩家 pawn 名下锁定·目标组件清单）——白点仍在时把日志发回来收敛关键词。
-- 隐藏失败（有目标藏不住）才按秒重试，上限 10 次（同 HUD/提示/血条）。
-
-## 1.0.3 这次改了什么
-
-1. **鼠标增量改从引擎取**：hook `PlayerController::InputAxis`，直接用引擎算好的 `MouseX`/`MouseY`/`MouseWheelAxis` 增量。
-   系统层 Raw Input 只是兜底 —— 上一版日志显示 Raw Input 在游戏里会「装上但收不到事件」，这条路不可靠。
-2. **进模式时打一份引擎对象清单**：PC / Pawn / HUD / MyHUD / 相机 Actor / 相机组件 / ViewTarget.Actor / PC 上和输入有关的函数名。
-3. **每秒诊断行加了相机状态**：管理器视角坐标、我们相机的坐标与朝向、组件 FOV、ViewTarget 是不是我们的相机。
-4. **ViewTarget 没接管就每秒重试**一次，并把 SpawnActor / SetViewTargetWithBlend 的失败明确写进日志（以前是静默返回）。
-5. 菜单文本同时写进 UE 日志（bPrintToLog），用来判断 PrintString 到底有没有执行。
 
 ## 出问题怎么报
 
@@ -248,171 +187,74 @@ tools\build_tests.bat
 - 「相机接管确认」/「ViewTarget 校验失败」/「拿不到 UWorld」/「SpawnActor 返回空」
 - 每秒一行「输入诊断 ... | 管理器视角=... 我们的相机=... 组件FOV=... ViewTarget=...」
 
-## 1.0.4 这次改了什么（按你的日志逐条修）
+## 最近的版本
 
-日志证据 → 修法：
+- **2.0.0-cpp 正式版**（2026-11-05）：hotfix1~35 的成果收进 2.0 正式版号（`PBZPM_HOTFIX 35 → 0`，版本串不带 `-hotfixNN`）。内容见 [CHANGELOG.md](CHANGELOG.md) 的「2.0.0-cpp 正式版」一节：摄影模式本体（世界冻结/帧冻结、键位全可配、接管相机与独立相机双后端、画幅解锁、出图）、**画面效果五项全部实机生效**（暗角 / 饱和 / 对比 / 泛光 / 冷暖）、PBZFM 可选图形菜单、四语言。**明确不支持并已从界面移除**：引擎景深、色差、胶片颗粒（取证结论在 `core/tuning.h` 顶部）。核心层 **5,133 项**全绿；发行包 `PBZPhotoModeCpp_2.0.0-cpp.zip`。
+- **2.0.0-cpp-hotfix35**（2026-11-05）：**旧配置真清理**——hotfix34 删了色差/胶片颗粒，但旧 `config.ini` 里的残留键只是「提示一次然后忽略」，文件里那几行还在。本版给 `ConfigLoadResult` 加 `legacy_keys`，`PhotoModeMod::reload_config()` 拿到非空时用规范格式**原子重写一次 config.ini**（`.tmp` → rename），把 `[dof]` 段、`key_focus_*`/`key_aperture_*`/`pad_focus_*`/`pad_aperture_*`、`chromatic_aberration`、`film_grain` 从文件里物理删掉，并打一行 `配置清理：已从 config.ini 删除 N 个已废弃键并重写文件（…）`。告警文案改成「已忽略并将从 config.ini 清理」；**只在真命中废弃键时才写盘**（干净配置不会每次启动白重写，有单测盯着）；重写用 `config_ini_text()` 规范序列化，顺带把未知/拼错键也一并清掉。核心层 5,124 → **5,133 项**全绿（新增 `test_config_legacy_purge`）。
+- **2.0.0-cpp-hotfix34**（2026-11-05）：**色差与胶片颗粒整条删除**（按景深那套做法）——PBZFM「画面效果」组里 `色差` / `胶片颗粒` 两条滑条、`[look]` 段的 `chromatic_aberration` / `film_grain` 两键（含 `Config` 成员 / schema / `default_config_text()` 输出）、四语言两个标签键、`set_look()` 里的 `SceneFringeIntensity` / `FilmGrainIntensity` / `ChromaticAberrationStartOffset` 写入与下发回读字段、`log_look_gates()` 取证函数、`LookOptions` 两个字段一并移除。取证结论改由 `core/tuning.h` 顶部注释承担（档位依据、抬档被 cvar 优先级丢弃、console 不执行、UE4SS 无 `IConsoleManager`、补噪声纹理后颗粒仍不出现）。`[look]` 现在只剩 **暗角 / 饱和 / 对比 / 泛光 / 冷暖** 五项，全部实测生效。核心层 5,291 → **5,124 项**全绿。
+- **2.0.0-cpp-hotfix33**（2026-11-05）：**胶片颗粒判定「本作不支持」**——hotfix32 那套「补 `FilmGrainTexture`」的实测结果是：噪声纹理确实挂上了（`Texture2D /Engine/EngineMaterials/Good64x64TilingNoiseHighFreq`）、`FilmGrainTexelSize=1` 写了、`r.FilmGrain=1`（pass 总开关开着）、强度拉到 6.85，画面里一粒颗粒都没有 → 颗粒 pass 与色差 pass 同属被 `r.Tonemapper.Quality=2` 钉死的那一档。本版删除 `attach_film_grain_texture()` 及 `film_grain_texture_`/`film_grain_scanned_` 两个状态成员与 `FilmGrainTexture`/`FilmGrainTexelSize` 写入（实测证伪的东西不留），颗粒强度仍照常写入作参数记录，四语言菜单标签标注「本作不支持」，`config.ini.example` 注释同步。核心层 **5,291 项**全绿。
+- **2.0.0-cpp-hotfix32**（2026-11-05）：**景深功能整体移除**——菜单「景深（手动对焦）」整页、`[dof]` 配置段、对焦/光圈键位、`Intent.*_nudge` 与连发状态、`PhotoMode::apply_depth_of_field` 与全部 `dof_*` 状态、`EnginePort` 三个景深接口、引擎侧 `write_post_process_dof`（含 SEH 包装）与 `takeover_pp_*` 快照、`core/dof_math.h`、四语言 11 个标签键、1,106 项单测断言——端到端删干净。自建后处理体积保留（改名 `ensure_post_volume`/`post_volume_`），画面效果七项不受影响。旧 `config.ini` 的 `[dof]` 与键位残留合并成一条提示后静默忽略。DLL -43,008 字节，核心层 **5,291 项**测试全绿。同版**修掉画面效果两处真 bug**：① `ColorSaturation`/`ColorContrast` 在 UE5 是 `FVector4`（成员名 **X/Y/Z/W**，不是 R/G/B/A），hotfix29~31 一直按 R/G/B/A 找 → 三个通道全 `nullptr`，饱和度/对比度**一个字节都没写进去**（日志里 `饱和=<读不到>` 就是它），现按 X/Y/Z/W 写入并回读；② 胶片颗粒当时以为缺 `FilmGrainTexture`，于是从场景纹理里挑一张 `grain/noise/perlin` 贴图挂上去（日志 `画面效果：胶片颗粒纹理 = …`）——**实测无效**，hotfix33 已删除该机制并标注不支持。色差则**判定为本作不支持**（`r.SceneColorFringeQuality` 被钉死在 0 且优先级高于任何游戏设置级写入，console 命令在本作不执行、UE4SS 不暴露 `IConsoleManager`），菜单标签照此标注、抬档代码删除。
 
-| 日志里的现象 | 真正原因 | 1.0.4 的改法 |
-| --- | --- | --- |
-| `PC 输入相关函数` 里没有 `InputAxis`/`InputKey` | 本作是 Enhanced Input，PlayerController 上没有这两个 UFUNCTION | 改用 `PlayerController.GetInputMouseDelta(DeltaX&, DeltaY&)`，直接读引擎这一帧的鼠标增量 |
-| `raw=1 事件计数=0`、`raw失效=1` | Raw Input 注册成功但一个事件都收不到 | 滚轮改走 `WH_MOUSE_LL` 低级鼠标钩子（装在跑消息循环的那条线程上，只放行不拦截） |
-| `HUD 上找不到 DrawHUD` | `AHUD::DrawHUD` 是 C++ 虚函数、不是 UFUNCTION | 改钩蓝图事件 `ReceiveDrawHUD(SizeX, SizeY)`，用 `AHUD::DrawText` + `GetTextSize` 画右下角菜单 |
-| 我们的相机=(4972,280454) 朝向=(0,0)，管理器视角=(4795,280138) | 相机被生成在**角色原点**、朝向 0，等于卡在角色身体里 | 初始位姿改用相机管理器的真实视角 `GetCameraLocation`/`GetCameraRotation` |
-| `读不到 PlayerController.ViewTarget.Actor` | 这个属性在本作读不出来 | 改读 `PlayerCameraManager.ViewTarget.Target`，能读到就打印当前视角目标是谁 |
-| 按 W 不是向前走 | 视角没被摄影相机接管，相机朝向是 0，WASD 的参考方向就错了 | 上面两条修好后，移动基准跟着相机朝向走 |
+- **2.0.0-cpp-hotfix31**（2026-11-05）：**输入手感 + 景深死代码清零 + 画面效果四项修复**——① 对焦/光圈也支持**按住连发**（与 FOV 同一套状态机：按下 1 格，0.35s 后每 0.08s 1 格，掉帧补格）；② `Shift` 粗调 / `Ctrl` 微调（×`boost_mult` / ×`slow_mult`，乘在比例步进之后）；③ 对焦**比例步进**：`max(配置步进, 当前距离×10%)`，100m 外一步 10m；④ 删除景深实验设施的 20 个函数/整块（通道③④⑤、ShowFlags 采样、console 闸门、探针、材质普查、MPC dump），`ue4ss_port_camera_view.cpp` 3,046 → 1,926 行、头文件 825 → 679 行、DLL -23,040 字节；⑤ 景深反射写入加 SEH 兜底；⑥ 世界换代时作废接管与后处理快照并回退独立相机（不再把旧世界的值写进新相机）；⑦ **画面效果四项失效修复**——色差/颗粒/饱和/对比在本作里不进画面，根因是后处理质量停在 `r.Tonemapper.Quality=2`、`r.SceneColorFringeQuality=0`（`BaseScalability.ini` 的 `PostProcessQuality@0/@1`），这些 pass 被引擎整段跳过，而暗角/泛光/冷暖不受档位管辖所以一直正常；本版加「写后回读」`画面效果：回读 …` 区分「没写进去」与「引擎不画」，补 `ColorGradingIntensity` / `ChromaticAberrationStartOffset` 兜底，并用游戏自己的 `UGameUserSettings.SetPostProcessingQuality(3)` + `ApplyNonResolutionSettings()` 临时抬档，**以 `r.Tonemapper.Quality` / `r.SceneColorFringeQuality` 回读判定成败**，抬不动立刻写回原档位，退出摄影模式自动还原。核心层 6,365 → **6,397 项**全绿。
 
-另外：进模式时会打印「已屏蔽游戏键鼠输入」，退出时也会逐项还原并打日志。
+- **2.0.0-cpp-hotfix30**（2026-11-05）：**景深收口，删除径向模糊实验**——hotfix28 的日志给出最后一格：40 个后处理体积的 `WeightedBlendables` 一个都不带条目（没槽位可借），自建槽位时 `Array` 取址失败，材质根本挂不上 → 这条替代路线在挂载这一步就断了。本版把 `attach_radial_blur_material` / `detach_radial_blur_material` / `scan_weighted_blendables` 及全部状态与日志整体删除（engine 层 -233 行、头文件 -21 行，连 `FMemory.hpp` 一并去掉），不留死代码；`[dof]` 段注释改写为「本作不渲染引擎景深、以下仅为记录」；`tuning::kDofExperimentalChannels` 注释补齐取证结论。`[look]` 画面效果走另一条已验证通道，不受影响。核心层测试 **6,365 项**全绿。
 
-## 1.0.9 这次改了什么（按 13:02 真机日志）
+- **2.0.0-cpp-hotfix29**（2026-11-05）：**画面效果全套**——暗角/色差/胶片颗粒/饱和度/对比度/泛光/冷暖 7 项全部接进 `[look]` 段与 PBZFM「画面效果」菜单，走同一套已被证明有效的自建后处理体积通道（`bOverride_*` + 值）。中性值即关闭（暗角/色差/颗粒/泛光/冷暖=0，饱和/对比=1），关闭时把 `bOverride_` 置回 false 交还游戏。`ColorSaturation`/`ColorContrast` 写 FVector4（R=G=B），冷暖写 `SceneColorTint`（R=1+0.18t、G=1-0.02t、B=1-0.22t）；字段缺失只告警一次并列名。核心层测试 5,816 → **6,365 项**全绿。
 
-- **修 Alt + 鼠标上下反向**：引擎 `GetInputMouseDelta` / `InputAxis` 的 `MouseY` 是「向上为正」，
-  而 core 的 `Intent.look_dy` 和 Win32 原始坐标是「向下为正」。旧代码直接把引擎 Y 喂给 core，
-  所以鼠标上移被当成下移。现在引擎/轴输入统一取反 Y，`invert_y` 仍可再反转。
-- **修滚轮 FOV 方向**：`Intent.wheel` 正值定义为滚轮向上；现在向上 `FOV -= wheel * fov_step`（拉近），
-  向下则放大。旧代码是加的，方向相反。
-- **新增 `R` 重置相机视角**：回到进入摄影模式时快照的位置/朝向/FOV（`key_reset` 可改键）。
-- 顺手修了 `handle_intent` 和 `PhotoMode::tick` 重复调用 `toggle_freeze` 导致的“按 F 没反应/双翻转”。
-- 核心层测试 236 → **252 项全绿**。
+- **2.0.0-cpp-hotfix28**（2026-11-05）：**自建 blendable 槽位没走到头 → 每一步加日志**——hotfix27 材质找到了，但自建槽位那段静默返回；本版把「取 `WeightedBlendables` → 取 `Array` → 取 `Inner` → 取 `Object/Weight` → 分配 → 写入」每一步都拆开打日志，失败时输出具体是哪一环（`找不到 WeightedBlendables` / `Array 不是 FArrayProperty` / `找不到 Object/Weight` …），拿到那一行就知道 5.7 里这个结构的真实字段名/类型。
 
+- **2.0.0-cpp-hotfix28**（2026-11-05）：**新增屏幕暗角（Vignette）**——景深走不通，但同一轮探针第 2 段证明「写进自建 `PostProcessVolume` 的 `VignetteIntensity`」是本作 gameplay 视图里**唯一实测能出画面**的后处理通道。本版把它做成正式功能：新增 `[look]` 段 `vignette = 0`（0~4，0=关闭），PBZFM 菜单新增「画面效果（暗角）」滑条，拖完即时生效；走自建无界高优先级体积（与景深同一个），关闭时把 `bOverride_VignetteIntensity` 置回 false，退出摄影模式恢复。`EnginePort::set_vignette` + `PhotoMode::apply_look_if_needed`（值变化才下发、失败只告警一次并重试）。核心层测试 5,728 → **5,816 项**全绿。
 
-## 1.0.8 这次改了什么（按 12:25 真机日志）
+- **2.0.0-cpp-hotfix27**（2026-11-05）：**借不到槽位 → 用引擎分配器造一个**——hotfix26 找到材质 `M_FX_PP_RadialBlur`，但 40 个后处理体积的 `WeightedBlendables` 全是空的。本版改用 UE4SS 暴露的 `FMemory::Malloc/Free`（游戏自己的 GMalloc，Binned2 只认它；CRT malloc 交给它 free 会崩）分配 1 个 `FWeightedBlendable`（16 字节），写入材质与权重 1.0，并把 `FScriptArray` 头设成 `{Data,1,1}`；退出时先清空数组头、再自己释放，避免二次释放。风险：效果强弱未定、极端情况下可能崩——把 `[dof] enabled` 改 false 即可完全绕开。
 
-- **修相机朝向永远 (0,0)**：根因不是输入，也不是 Mobility，而是 UE4SS 的 UEPseudo 里
-  `AActor::K2_SetActorRotation` 包装按 float 往 `FRotator`（UE5 是 3 个 double）里写值，等于写 0。
-  现在改为按反射属性写 `NewRotation.Pitch/Yaw/Roll`，自动按 FDoubleProperty 处理。
-  相机位置能动、鼠标也进了 core，但画面不转的根因就是这一条。
-- **修 WASD 与视角方向对不上**：这是上一条的连带现象 —— 移动方向用的是 core 里的 yaw，画面用的却是
-  被写坏的相机旋转 (0,0)，两者自然不一致。旋转修好后两者同源。
-- **修进入摄影模式没有菜单**：`KismetSystemLibrary::PrintString` 的参数名是小写 `duration`，
-  旧代码写成 `Duration` 导致 duration=0，消息瞬间消失。现在 duration=1.0 并每 0.35 秒重推，
-  按视口尺寸补空行/空格推到右下角；HUD Canvas 路径只作为命中 `ReceiveDrawHUD` 时的主路径。
+- **2.0.0-cpp-hotfix26**（2026-11-05）：**径向模糊伪虚化**——引擎景深已确认不渲染，但后处理体积的 `WeightedBlendables` 是走过引擎 PP 混合链的（暗角证明过）。本版把游戏自己的后处理材质 `M_FX_PP_RadialBlur` **借槽位**挂到某个已有一条 blendable 的体积上（记原值、退出还原；不自己分配 TArray），实现「中心清晰、四周发糊」。注意：这不是景深，前景背景会一起糊；日志会打印 `伪虚化诊断：N 个体积里带 WeightedBlendables 的有 M 个` 与挂载结果，若全为空则明确失败，再决定是否冒险自己分配内存。
 
+- **2.0.0-cpp-hotfix25**（2026-11-05）：**收口：景深标注为「本作不支持」，关闭实验通道**——hotfix24 日志给出最后一块拼图：`ViewTarget.POV 的 fstop 在两次 tick 之间从 1.84 变回 40.00`，即便每帧重申，游戏仍会把 `fstop` 写回 `F40`（全合焦）。证据链完整：相机 POV 无效、自建体积只有暗角生效、关卡体积无效、ViewTarget.POV 每帧被写回、`r.DOF.*` 全健康但 console 命令在本作完全不执行、`ShowFlags@0xB8` 整局不变（不是真的 flags）、6864 个材质里无 DOF 后处理材质 → **本作 gameplay 视图不渲染引擎景深**。本版：① 四个景深标签在四种语言里追加「本作不支持」；② `tuning::kDofExperimentalChannels = false` 关闭四条实验通道/探针/采样/每帧重申（换不来画面变化，只会每帧写游戏对象）；③ 第一次下发景深时打一条一次性说明。配置项与滑条保留为参数记录。
 
-## 1.0.10 这次改了什么（按 13:25 真机日志：F 键冻结时间不生效）
+- **2.0.0-cpp-hotfix24**（2026-11-05）：**通道⑤ 改为每帧重申**——hotfix23 结果：`ShowFlags@0xB8` 整局一次没变（说明那块内存不是真的 `FEngineShowFlags`，`bit20=1` 作废）；材质普查 6864 个里没有任何 DOF/bokeh 后处理材质（只有 `M_FX_PP_RadialBlur` 等径向模糊）。但审计发现 `ViewTarget.POV` 的 focal 两次进入分别为 221/362 → 这份 POV 被游戏反复重填，而通道⑤ 之前只在开启/拖滑条时写，写一次就被下一帧的 F40 抹掉。本版每帧重申（探针第 3 段期间用强力参数），并打印 `景深诊断：ViewTarget.POV 的 fstop 在两次 tick 之间从 … 变回 …` 直接回答「写进去的值能不能活过一帧」。
 
-- 13:16:59 / 13:17:07 的日志里 F 键确实触发了 `时间已冻结` / `时间已恢复`，说明按键和状态机没问题；
-  问题是 `UGameplayStatics::SetGlobalTimeDilation` 在这个作里只是“调用成功”，实际倍率没变。
-- UE5 的 `AWorldSettings::SetTimeDilation` 会把目标值夹在 `MinGlobalTimeDilation` / `MaxGlobalTimeDilation` 之间；
-  且 `GetEffectiveTimeDilation()` 在 `bAllowTimeDilation=false` 时直接返回 1.0。
-- 现在直接写 `AWorldSettings.bAllowTimeDilation / TimeDilation / MinGlobalTimeDilation / MaxGlobalTimeDilation`，
-  再调用一次 `SetGlobalTimeDilation` 并回读校验，解冻/退出时恢复原始字段。
-- 进入摄影模式时日志会多一行 `时间设置：WorldSettings bAllowTimeDilation=... TimeDilation=... Min=... Max=...`，
-  下次如果还没冻结成功，把这行发回来即可直接定位。
+- **2.0.0-cpp-hotfix23**（2026-11-05）：**88px 打进四条通道仍不糊 → 收束核查**——hotfix22 把 fstop=0.1 / 对焦 300cm / 传感器 200mm（≈88px）同时写进相机 POV、自建体积、关卡自带体积、`ViewTarget.POV`（后两者写入成功），画面依旧完全不糊，而同一个体积的暗角是有效的 →「值不对 / 通道不对 / 被覆盖」全部排除，只剩「这个视图里没有 DOF pass」。本版：① 每帧采样 `UGameViewportClient+0xB8` 的 16 字节并记录变化，验证那块内存到底是不是真的 `FEngineShowFlags`；② 材质普查，列出所有名字含 blur/dof/bokeh/coc 的材质——找到就能用游戏自己的模糊材质做背景虚化（绕开引擎 DOF），找不到就把景深标注为本作不支持。
 
-## 1.0.11 这次改了什么（15:50 日志：TimeDilation 已生效，但角色/敌人/特效仍在动）
+- **2.0.0-cpp-hotfix22**（2026-11-05）：**找到按着光圈的那个值：`ViewTarget.POV` 里写着 `fstop=F40`**——hotfix21 打印出`景深诊断：ViewTarget.POV 的景深原值 focal=221(override=1) fstop=F40.00(override=1) sensor=23.8(override=1)`：游戏在相机管理器的 `ViewTarget.POV` 里显式把光圈写成 F40（≈0.04px，等于全部合焦），而这份 POV 在**体积之后以 weight=1** 生效，于是写体积/相机 POV 的光圈全被按回去，只有暗角这类没被覆盖的字段能穿过。本版把**通道⑤ 加进探针第 3 段**：`fstop=0.1 / 对焦 300cm / 传感器 200mm`（≈88px）现在同时写进四条通道。第 3 段糊了 = 引擎 DOF 一直没问题，只是被 F40 按着；接下来只需调滑条默认值/范围（当前默认仅 ≈5px）。
 
-- 15:50:15 的日志：`时间设置目标=0.0001 生效=0.0001`，说明 `AWorldSettings.TimeDilation` 确实写进去了；
-  但你在游戏里看到角色/敌人/NPC 的动作和特效继续播放，说明本作的 SGame 玩法模拟并不吃全局时间膨胀。
-- 因此 v1.0.11 把默认冻结方式改成 **pause（游戏暂停）**，不再依赖 `TimeDilation`：
-  - 暂停时临时把 `APlayerController.bShouldPerformFullTickWhenPaused` 设为 true，让相机管理器继续 Tick，
-    摄影相机仍可自由移动/转视角；
-  - 如 GameMode 的 `bPauseable` 被关掉，也会临时打开，退出/解冻时原样恢复；
-  - 解冻/退出用 `IsGamePaused` 回读确认。
-- 想保留原来的时间膨胀行为，可在 `config.ini` 把 `freeze_mode` 改回 `dilation`。
-- 版本 `1.0.11-cpp`；核心层测试 252 项全绿；打包为 `dist/PBZPhotoModeCpp_1.0.11-cpp.zip`。
+- **2.0.0-cpp-hotfix21**（2026-11-05）：**通道⑤：相机管理器的 `ViewTarget.POV`**——hotfix20 的通道④没成（玩家 Pawn/PC 身上没有原生 `CameraComponent`）。改走 UE 里视图 PP 的另一条来源：`APlayerCameraManager::ViewTarget.POV`，它由 `UpdateCamera` 从相机组件填好，而摄影模式会暂停世界导致它不再重建、一直停在进入前的状态；它很可能带着 `bOverride_DepthOfFieldFocalDistance=1` + `focal=0`（关 gameplay DOF 的标准写法），且在体积之后以 weight=1 生效——正好解释「体积的暗角有效、体积的光圈无效」。本版快照并写入这份 POV 的景深三项，退出还原，并打印 `景深诊断：ViewTarget.POV 的景深原值 focal=…(override=…) …` 直接指认元凶。
 
-## 1.0.11 实机验证
+- **2.0.0-cpp-hotfix20**（2026-11-05）：**新增通道④：玩家相机组件**——hotfix19 证实**console 命令在本作里完全不生效**（Kismet 与直连 `PlayerController::ConsoleCommand` 都改不动 `r.Tonemapper.Quality`），过去十几轮的 cvar/ShowFlag 操作全是空转。而探针显示「相机 POV 的 PP 无效、体积的暗角有效、体积的光圈无效」——只能解释为体积之后还有一步单独覆盖了 DOF 字段，即 `CalcSceneView` 时从 ViewTarget 的相机组件重填的 `ViewInfo.PostProcessSettings`（weight=1），那里极可能写着 `bOverride_DepthOfFieldFocalDistance=1` + `focal=0`（关 gameplay DOF 的标准写法）。本版遍历玩家 Pawn/PC 名下的 `CameraComponent`，快照并写入我们的焦点/光圈/传感器（退出还原），并打印 `景深诊断：玩家相机组件 … 的景深原值 focal=…(override=…) …` 直接指认元凶。
 
-2026-10-30 16:04 用户日志确认：`游戏暂停成功 | IsGamePaused=true` → `时间已冻结`，暂停期间相机仍可移动；`IsGamePaused=false` → `时间已恢复`。F 键冻结时间已验证通过。
+- **2.0.0-cpp-hotfix19**（2026-11-05）：**90px 强力景深照样不糊 → 转头查 console 命令到底执行了没有**——hotfix18 把 fstop=0.1 / 对焦 300cm / 传感器 200mm（约 90px）同时写进相机 POV、自建体积、关卡自带体积，画面依旧完全不糊，于是「通道不对」「参数太弱」都排除。但日志里 `r.DepthOfFieldQuality 写 3 回读=2` 与 `ShowFlag.DepthOfField 翻转后内存一位没变` 同时出现，最像的解释是**这些 console 命令根本没执行**（`ExecuteConsoleCommand` 返回成功 ≠ 执行）。本版用可回读的 `r.Tonemapper.Quality` 验证 exec 通道，不过就切到直连 `APlayerController::ConsoleCommand`，再在可用通道上重做 ShowFlag 翻转与 `sg.DepthOfFieldQuality 4`。
 
-## 1.0.12 这次改了什么（进入摄影模式自动隐藏 HUD）
+- **2.0.0-cpp-hotfix18**（2026-11-05）：**用「不可能看不见」的强力景深测通道**——hotfix16 探针经确认：相机 POV 写 `ColorSaturation` 毫无变化、自建体积写 `VignetteIntensity` 明确「四周变暗」→ **相机 POV 的 PostProcessSettings 在本作 gameplay 视图里不被采纳**。回看历史：过去所有极端光圈（F0.08 / 421cm / 164mm ≈ 200px）都写在死通道上，而现用参数 F1.8 / 678cm / 286mm 只有约 3px——难怪「写了没反应」。本版把探针第 3 段换成强力景深（fstop=0.1、对焦 300cm、传感器 200mm ≈ 90px），同时写进相机 POV / 自建体积 / 关卡自带体积，2.5 秒后还原。第 3 段糊了 = DOF 能跑，只是通道/参数问题；没糊 = 该视图里 DOF 被引擎关掉。
 
-- 旧版 `hide_game_hud` 只是把 `PlayerController.MyHUD`（AHUD Actor）`SetActorHiddenInGame`，对本作纯 UMG 的 HUD 无效。
-- 1.0.12 首先调用游戏自带的 `UPBZUIManagerSubsystem::SetHideUIForPV(true/false)` 总开关（它会广播 `OnHideUIForPVChanged`，
-  Boss 血条、教程提示等订阅者一起隐藏/恢复）；同时找 UMG HUD 根控件 `W_FrontEndHUDLayout_C`
-  （`UPBZHUDLayout` 的唯一蓝图子类，HP/快捷栏/武器/任务等挂在它下面），通过
-  `UWidget::SetVisibility(ESlateVisibility::Collapsed)` 隐藏，退出时按进入前读到的原始 `Visibility` 值恢复。
-- 如果进入模式时 HUD 根控件还没建好，每秒重试一次；成功后不再重复遍历对象数组，退出时清理记录。
-- `hide_game_hud` 默认值改为 `true`；想保留游戏 HUD 可在 `config.ini` 改回 `false`。
-- 进入摄影模式时的引擎对象日志会多出 `HUD控件=... Visibility=...`，用于确认根控件是否找到。
-- 版本 `1.0.12-cpp`；核心层测试 258 项全绿；打包为 `dist/PBZPhotoModeCpp_1.0.12-cpp.zip`。
+- **2.0.0-cpp-hotfix17**（2026-11-05）：**写错通道了：改用关卡自带体积 + 实证 ShowFlag 位索引**——hotfix16 日志显示（1）游戏画质「景深质量」=4、`r.DOF.*` 全是健康值、`r.DepthOfFieldQuality` 被钉在 2 → 质量闸门全部排除；（2）探针里相机 POV 的 `ColorSaturation` 毫无反应、自建体积的 `VignetteIntensity` 有明显反应 → **之前十几轮把景深写在「相机 CameraCache.POV 的 PostProcessSettings」上，而这条通道在本作 gameplay 视图里很可能没被采纳**；（3）深度模糊（不看光圈的分支）也没糊。本版：① 新增通道③——把关卡自带的 `PostProcessVolume`（一定在 `UWorld::PostProcessVolumes` 里）也写上当前光圈/焦距/传感器，退出按快照还原；② 用引擎自己的 `ShowFlag.DepthOfField 0/1` 翻一次并对比内存差异，**实测**真正的位索引与当前值，翻不动就明确写「这条路到此为止」，不再靠猜。
 
-## 1.0.13 这次改了什么（移除 F9 截图）
+- **2.0.0-cpp-hotfix16**（2026-11-05）：**撤回 ShowFlags 内存写入 + 加一根「深度模糊」探针**——打包后做了一轮 UE 源码核对：① `FEngineShowFlags` 在 Shipping 下 `SHOWFLAG_FIXED_IN_SHIPPING` 类开关**没有存储**，「第一个 32 位字 bit20 = DepthOfField」的映射不成立，hotfix14/15 往那块内存写 bit20 有风险 → 本版**只读不写**，hex 留档、结论交给探针；hotfix15 的包作废。② 混合顺序是「体积 → 相机 POV（weight=1，最后生效）→ 相机动画 PP → `UpdatePhotographyPostProcessing`」，所以摘体积覆盖其实不必要，能顶掉 DOF 的只可能是 POV 之后那几步。③ `DepthOfFieldScale` 在 `DiaphragmDOF.cpp` 里出现 0 次（CircleDOF 专用），关不掉 DiaphragmDOF。新增探针第三段：`DiaphragmDOF::IsEnabled` 的第二条放行分支 `DepthBlurRadius > 0`（不看光圈），`DepthOfFieldDepthBlurRadius=400 / Amount=1.0` 同时写相机与体积——背景 3 米外糊掉 = 引擎 DOF 活着（问题在焦距/光圈被顶掉），三段都没反应 = 本作没跑 DiaphragmDOF（例如 `bSupportsDiaphragmDOF=0` 会让 `IsSupported()` 静默返回 false）。
 
-- 曾尝试用 `HighResShot` 实现 F9 截图，但本作 `BP_PlayerController_C` 没有 `ConsoleCommand` UFunction；直接调用 `UGameViewportClient` 虚函数存在 ABI/崩溃风险，已全部移除。
-- 截图请使用 NVIDIA App / GeForce Experience（默认 `Alt + F1`）或 Steam（`F12`）等系统工具。
-- 版本 `1.0.13-cpp`；核心层测试 257 项全绿。
+- **2.0.0-cpp-hotfix15**（2026-11-05）：**闸门每 2 秒复核 + 两条后处理通道分开测**——hotfix14 日志里 `EngineShowFlags@0xB8 = 07FFFFFF FFFFFBFF FFFFFFFF FFFFFFFF`（bit20 本来就是 1，上一版却按 5.3 的声明顺序判形状、每次误报「形状不符」而不敢写）、`r.DepthOfFieldQuality 2 → 3 | 回读=2`（被钉住，写了等于没写）、`sg.DepthOfFieldQuality=0` 且包里存在 `gq.DepthOfFieldQualityLevel`（本作把「景深质量」做成独立画质档）三条同时成立。本版：① 闸门每 2 秒复核——一次性打印 11 个 cvar 普查行、`gq.DepthOfFieldQualityLevel` 低于 3 抬到 3 并补位（退出还原）、`r.DepthOfFieldQuality` 写不动只告警「被钉住」、`ShowFlags.DepthOfField` 若在进入之后被清掉立刻补位并告警；② 探针重做——A 段只去色（整屏黑白）、停顿 1 秒、B 段只加暗角（四周变暗），用肉眼就能分辨到底是「相机 POV」还是「自建体积」在起作用；③ ShowFlags 形状判定改成「位很密、四个字都不为 0」，不再误报。
 
-## 1.0.14 这次改了什么（进入摄影模式自动暂停时间）
+- **2.0.0-cpp-hotfix14**（2026-11-05）：**最后一道闸门：`ShowFlags.DepthOfField` 位**——hotfix13 日志证实关卡体积确实覆盖了 `fstop`（原值 F7.1）且已被摘掉，但 focal=421cm/F0.08/sensor=164mm（公式算 203px 虚化）依然毫无虚化。后处理通道通、结构对、覆盖也摘了，只剩引擎不建 DOF pass 这一种可能。查 UE5 `ShowFlagsValues.inl`：`DepthOfField` 是 `ALWAYS_ACCESSIBLE` 的真实位（按声明序为第 20 位），默认全开，游戏可在运行时关掉。本版从 `UGameViewportClient + 0xB8` 读 `EngineShowFlags` 前 8 个字打印 hex、用「低 12 位全 1 / 12~16 为 0」的形状确认偏移，若 bit20 为 0 就置位并回读；形状不符则只留 hex 不写内存。另加 `r.DOF.Gather.RingCount`/`r.DOF.HalfRes`/`r.DOF.Recombine.Quality` 读数与抬档（<3 抬到 3，退出还原）。
+- **2.0.0-cpp-hotfix13**（2026-11-05）：**暗角生效 = 后处理通道是活的 → 真凶是关卡体积盖掉了光圈**——hotfix12 探针证明写的是真正的 `FPostProcessSettings`（2208 字节/588 字段）、属性名基本都在，且 `VignetteIntensity=3` 让用户看到「四周变暗」，说明相机后处理确实进了渲染。唯一能同时解释「暗角生效、去色无效、景深无效」的机制是字段被更高优先级的覆盖顶掉：本关两个有界 `PostProcessVolume` 显式覆盖了 `DepthOfFieldFstop`。本版在开启景深时快照并摘掉这些体积的 DOF 覆盖（退出/关景深写回），让本 Mod 写的焦点/光圈/传感器成为唯一来源。
+- **2.0.0-cpp-hotfix12**（2026-11-05）：**探针 A/B 都执行了但画面毫无变化 → 先证伪「我们写的到底是不是后处理结构」**——hotfix11 的两段探针（相机通道去色、自建体积染红）用户反馈完全没变化；结合 33px 虚化也没反应，必须排除更基础的可能：结构或属性名在这个 build 里不起作用。本版探针改为「自证 + 多重旋钮」：打印被写结构的字节数与字段数（真正的 `FPostProcessSettings` 有两百多个字段）、同时改 `ExposureCompensation+6`/`VignetteIntensity=3`/`ColorSaturation=0` 三个互不相关的旋钮、并在写之前核对每个 `bOverride_*`/值属性是否存在（缺了就打印缺失名 + 该结构里所有相关真实字段名）。
+- **2.0.0-cpp-hotfix11**（2026-11-05）：**闸门全开、虚化算到 33px 仍无变化 → 改为分辨「哪条通道真的进了渲染」**——hotfix8 日志证明 `r.DepthOfFieldQuality=2`、CoC 半径 0.025、`override` 全 1、`blendWeight=1.00`、体积 priority=10000 且独立相机确实是 ViewTarget，按公式算到 16.6~33.2px@1920 却没变化。本版进摄影模式后做两段探针：A（1.2s）只把相机通道饱和度压 0 → 黑白；B（1.2s）只把自建体积 ColorGain 改强红。看到 A/B 的组合直接决定下一步（换写入位置 / 写进关卡体积 / 判 DOF 被关）。另加一次性 `MPC 景深候选参数` 日志，用于排查本作是否用自家后处理材质做景深。
+- **2.0.0-cpp-hotfix10**（2026-11-05）：**景深配置独立成节点**——PBZFM 设置页原来把 `[dof]` 的六项（`dof_enabled`、对焦距离、光圈 F 值、传感器宽度、对焦步进、光圈步进）混在「相机与移动」分组里，现在拆出独立节点「景深（手动对焦）」（`#group_dof`），四个语言词典同步；纯菜单分组调整，不动配置键名与运行逻辑。
+- **2.0.0-cpp-hotfix9**（2026-11-05）：**按键全量可配 + 删除 F9 截图**——原来写死的 `W/A/S/D` 平移、`Shift/Ctrl` 变速、`Alt` 自由视角门控、手柄 `RT/LT` 升降、`LB/RB` 滚转、`LS/RS` 变速全部进配置（`[keys]` / `[gamepad]` 新增对应项，默认值保持不变）；滚轮 FOV 增加 `wheel_fov` 开关与 `wheel_fov_invert` 反向。输入层改用 **1..255 全量 VK 轮询**（旧白名单漏了 `OEM_4/OEM_6`，默认 `[`/`]` 光圈键实际不触发，且任意改键都可能静默失效）。删除 **F9 无 UI 截图**整套逻辑（本作导出表无 `FScreenshotRequest::RequestScreenshot`，原本也只打一条不可用日志）。PBZFM 设置页键盘键位补全到 26 项（含 `F7` 画面定格、对焦/光圈键），状态页与 UE4SS 控制台速查改为显示当前生效键名。
+- **2.0.0-cpp-hotfix8**（2026-11-05）：**真因是物理量：默认参数与上限根本虚不了**——hotfix7 自检证明引擎侧闸门全开（`r.DepthOfFieldQuality=2`、CoC 半径 0.025、`override` 全 1、`blendWeight=1.00`；`DepthOfFieldEnabled` 在本作不存在）。薄透镜换算显示玩家落点只有 0.4~2.5px、旧默认 0.42px、旧配置（对焦 513 米 + F18.4）0.00px —— 2px 以下肉眼等于没有。改法：光圈下限 0.5→0.05、传感器上限 100→400mm（光圈滑条改对数）、默认值改 300cm/F0.5/60mm（≈9.7px@1920）、日志直接打 `预计背景虚化≈X.Xpx`、旧配置进模式时一次性纠正并打印原值、加一次性黑白探针区分「虚化太弱」与「后处理通道没进渲染」；新增 `core/dof_math.h` 与 12 项断言。
+- **2.0.0-cpp-hotfix7**（2026-11-05）：**「景深调数值没反应」：把引擎侧三道闸门一次调到可用**——既有证据说明字段写对了、后处理通道也通（AA/动态模糊/GI 覆盖每帧生效、自建 priority=10000 无界体积建得起来、关卡 6 个体积都不抢 DOF），剩余可能全在引擎闸门：`r.DepthOfFieldQuality<=0`（不建 DOF pass）、`ShowFlag.DepthOfField` 被关、`r.DOF.Kernel.Max*Radius` 把 CoC 夹没；另补写 UE5.4+ 的 per-view 总开关 `DepthOfFieldEnabled`。开景深时一次处理这三道闸门（各记基线，退出/关景深/世界换代还原，失败交给 1s/2s/4s 重试环），并新增一轮「景深自检」日志（CVar 读数 + 相机/体积两个通道的写后回读，读不到印 `<na>`）。
+- **2.0.0-cpp-hotfix6**（2026-11-05）：**对焦距离滑条窗口直接收到 300~1500cm**（按用户建议）——菜单滑条只铺 3~15m（1 像素≈12cm，线性更直观），`[dof]` 配置与按键步进仍是 1..100000cm（微距/远景照旧可用 config 或 PAGE_UP 调）；窗口外的旧值打开菜单会贴在右端、一拖动即夹到 1500。`对焦步进` 保持对数。
+- **2.0.0-cpp-hotfix5**（2026-11-05）：**修复「对焦距离滑条拖不到可用值、画面自然没景深」**——hotfix4 的诊断证明体积通道正常、关卡体积只覆盖了有界 `fstop`，问题在数值：1..100000cm 的线性滑条 1 像素≈500cm，可用的 300~1500cm 只占最左 0.3%，每次落点都是几万 cm + F16~20（物理上等于全清晰）。`对焦距离` 与 `对焦步进` 改为对数滑条（500cm 落在 54% 处），其余 Float 保持线性；并加断言锁死「对数字段下界>0、这两个字段必须对数」。hotfix6 按用户建议把该字段改成 300~1500cm 的线性窗口（更直观），对数刻度保留给 `对焦步进`。
+- **2.0.0-cpp-hotfix4**（2026-11-05）：**修复「数值改得动、画面没有景深」**——UE 的最终后处理按优先级把场上 `PostProcessVolume` 的 `bOverride_*` 盖在相机/POV 设置之上，相机通道只是基座；关卡里只要有体积覆盖 DOF，写进去的值就进不了画面。新增**景深专用后处理体积**通道（`bUnbound + Priority=10000`，把 DOF 三项与 override 写进它的 `Settings`），相机/POV 通道保留、任一成功即可用；退出/关景深/切后端/换代时销毁。同时新增 Info 级诊断：体积建立日志、场上体积优先级与 DOF 覆盖清单、每次下发的 `focal/fstop/sensor` 实际值。
+- **2.0.0-cpp-hotfix3**（2026-11-04）：**修复 PBZFM 菜单 Float 滑条拖不动/松手回弹**——自绘页每帧把草案从 `mirror_` 重建，而 Float 滑条是「拖动中只改草案、松手才提交」，中间值每帧被丢弃、松手提交的是旧值（`ImGui` 的拖拽为逐帧增量，宿主每帧重置绑定变量就只能动一帧）。改为草案跨帧写回 `mirror_`，并加 `mirror_generation_` 代次防止旧草案覆盖同帧的配置重载。相机/移动/手柄/冻结各组的所有 Float 滑条一并修好。
+- **2.0.0-cpp-hotfix2**（2026-11-04）：**景深/手动对焦缺陷修复**——手柄调焦/调光圈不再连带滚转（四个组合键按住时肩上键只当修饰键）；景深写不进改按秒重探、环境恢复即自动可用（不再「一次失败整局对焦键失效」）；接管快照与运行值拆成两套变量，退出还原真正写回进入前的原值（「关→开→退出」也会重新快照）；后端热切换保留本次会话调好的对焦值，切换失败回滚也重新下发景深；独立相机后端关景深立即撤销 `bOverride_*`；景深写失败不再被误报成「应用相机位姿失败」；`[dof]` 合法范围集中到 `core/tuning.h`。核心层 4,498 项测试全绿，详见 [CHANGELOG.md](CHANGELOG.md)。
+- **2.0.0-cpp-hotfix1**（2026-11-04）：**修复 F7 定格期间 Ctrl+P/PixPin 截图卡顿**——上版白名单挂起没有生效（`NtQueryInformationThread(ThreadQuerySetWin32StartAddress)` 在 `THREAD_QUERY_LIMITED_INFORMATION` 句柄上取不到起始地址，日志每次只显示「跳过 1 个」）。本版：枚举保持 limited 权限，查询起始地址时临时用 `THREAD_QUERY_INFORMATION` 句柄重试，并用 `VirtualQuery(...).AllocationBase` 解析线程所属模块；同时把 PBZFM、Steam/NVIDIA/Discord/RTSS 等已知覆盖层模块加入跳过名单。日志应看到「跳过 M 个非游戏/输入钩子线程」中 M 明显大于 1（正常为 PBZFM 的 2~3 个线程 + 本模组输入线程 + 其他覆盖层）。
+- **2.0.0**（2026-11-04）：**冗余清理 + 缺陷修复 + 相机后端可热切换**。
+  删掉 3,129 行冗余（含与 UE4SS 逐字节相同的 ImGui backends 2,763 行、变更史从 README 迁出、合并重复构建脚本），
+  释放 1,833 MB 过期构建目录；修掉 7 处实际缺陷（解冻级联分叉导致布料/植被可能永久静止、手柄回退键位错 3 处、
+  发行包配置与代码默认值差 10 项、菜单坏键名显示 `?`、4 个零消费者配置项、`.bat` 中文注释导致脚本半坏、
+  PBZFM 菜单事件只注册不反注册）；相机后端（接管当前相机 ↔ 独立相机）改为**菜单内即时切换**；
+  接管依赖的 `GameViewportClientTickPost` 缺失时**自动降级**为独立相机而不是镜头卡死。
+- **1.0.76-cpp-hotfix29**（2026-11-04）：F7 定格改为**白名单挂起** —— 只挂 `PBZ.exe` / `MRTCEngine.dll` / `AkSoundEngineDLL.dll` 里的线程，第三方覆盖层与输入钩子线程全部保留，解决 F7 期间 Ctrl+P 截图卡顿。
+- **1.0.76**（2026-11-04）：修复「进入摄影模式自动冻结后布料件整体换位」—— 不再写 `r.MorphTarget.Enable/ForceUpdate` 与 `pbz.Sway.SkipSkeletalKinematicBoneUpdate`，改为按扫描到的真实 Sway 类名停组件 tick。
 
-- 需求：打开相机模式时自动暂停时间，用户可在 `config.ini` 中修改开关，默认开启。
-- `[effects]` 新增 `auto_pause_time = true`：进入摄影模式成功后，自动按 `freeze_mode` 的方式冻结时间
-  （`pause` = 游戏暂停，`dilation` = 全局时间变慢）；退出摄影模式时照常恢复。
-- 关闭后（`auto_pause_time = false`）进入摄影模式时间照常流动，仍可按 `F` 手动冻结/恢复。
-- 游戏内菜单新增「进入时暂停」状态行，UE4SS 的 ImGui 面板新增对应开关。
-- 自动暂停失败只写 warning，不会阻止进入摄影模式。
-- 版本 `1.0.14-cpp`；核心层测试 298 项全绿。
+## 完整变更史
 
-## 1.5.0 这次改了什么（超宽屏支持，消除两侧黑边）
-
-- 需求：21:9 / 32:9 超宽屏用户反映，进入摄影模式后画面两侧仍有黑边。游戏官方支持超宽屏
-  （超过 3:1 的比例，21:9/32:9 均在范围内），黑边应只出在摄影模式路径——拍照/演出常主动约束画幅：
-  UE 里这把锁挂在 `APlayerCameraManager.bDefaultConstrainAspectRatio / DefaultAspectRatio`
-  （对任何 ViewTarget 生效，换成摄影相机也锁），部分相机还会在组件上开 `bConstrainAspectRatio`；
-  真机日志 `画幅锁=开/关(比例)` 会确认锁的位置。
-- `[camera]` 新增 `ultrawide_unlock = true`（默认开启）：进入摄影模式时保存管理器原值并解除锁定，
-  同时把摄影相机组件的 `bConstrainAspectRatio` 显式关掉；退出摄影模式时按进入前的值还原。
-- 解锁结果写日志：`画幅解锁：已解除 16:9 锁定（原比例=1.778）`；管理器没锁会打
-  `画幅：相机管理器未锁定画幅，无需解锁`；属性读不到/写不进去会打 warning（黑边若来自别的机制，
-  把这条日志发回来）。解锁失败不阻断进入摄影模式。
-- 每秒诊断行新增 `画幅锁=开/关(比例)`，真机验证解锁是否生效一眼可查。
-- 想保留 16:9 构图（比如要裁成 16:9 输出）的用户可在 `config.ini` 里把 `ultrawide_unlock` 改为 `false`。
-- 版本 `1.5.0-cpp`；核心层测试 503 → **527 项全绿**（新增画幅解锁进退/失败/热重载用例）。
-
-## 1.0.30 这次改了什么（对话语音：游戏自有停止接口）
-
-- 真机观察：冻结时对话推进已随世界冻结（说过的句子不会触发下一句），残留的是「正在播的当前句」。
-- 普查在 `PBZSoundFXSubsystem` 找到游戏自有的 `PBZStopAkComponent`/`PBZStopAllSoundsOnActor`/`PBZPausePlayingID`/`PBZResumePlayingID` 等接口。冻结静音改为优先调用 `PBZStopAkComponent`（参数签名校验，失败回落组件 `Stop`）。
-- `stop_wwise_on_freeze` 默认改为 **true**：冻结即静音（环境/对话/音乐一并停，解冻后由游戏自行重播）；不想静音改回 `false`。
-
-## 1.0.35 这次改了什么（字幕压制扩到对话 UI 本体；对话语音按真实签名填参）
-
-- **字幕**：1.0.34 实机确认设置开关已真关（`bEnableSubtitles` 回读=关）、字幕子控件已 Collapsed，但文本仍显示——文本画在对话 UI 本体 `WBP_FlowDialog_C` 上。压制范围扩到对话框家族（类名含 FlowDialog）：摄影模式里对话框+字幕一起隐藏，退出还原。
-- 每 10 次重申做一次全量扫描：对话中途新出现的控件类也会被收编。
-- 一次性「可见 UserWidget 清单」诊断：若压制后字幕仍显示，日志会列出场上所有可见控件类——把那行发回来即可精确指认。
-- **对话语音**：`PBZPausePlayingID`/`PBZResumePlayingID` 按真实签名 `(int32 PlayingID, float FadeTime)` 填参（FadeTime=0 立即生效），冻结当前句真静音、解冻从停住位置续播。
-
-## 1.0.33 这次改了什么（字幕隐藏改持续压制；对话语音见 PROGRESS）
-
-- 1.0.32 反馈：进模式后字幕不消失。根因：对话 UI 只在创建时读一次字幕设置，运行中的对话由游戏逐条把控件重新显示——进入时藏一次会被下一条字幕盖回去。
-- 修复：进入后**每秒重申**——已管控件被游戏改回可见就再压回 Collapsed，新实例（对话 UI 重建）自动收编并记录原值，退出统一还原；设置开关只在进入时写一次（避免重复写的未知副作用）。
-- 进入/退出各做一次全量扫描并缓存字幕控件类名（`WBP_FlowSubTitle_C`），每秒重申只按类名查找，微秒级不拖帧。
-- 已知边界：字幕被 1.0.30 写成关闭的游戏存档，仍需在游戏设置里手动开回一次。
-
-## 1.0.31 这次改了什么（修复：字幕退出后永久消失）
-
-- 1.0.30 实机 bug：进模式字幕消失正常，退出后字幕永久消失。根因：`PBZSettingsShared` 只有 `SetSubtitlesEnabled` 函数、没有 `bSubtitlesEnabled` 属性（属性在引擎 GlobalUserParam 上），旧代码只在属性读成功时记录原值，导致开关翻转后退出还原分支被整个跳过（且静默无日志）。
-- 修复：原值改走 `AreSubtitlesEnabled` getter（读不到按开兜底）；还原条件改为「只要动过开关」，还原失败打 Warn；字幕控件收集扩到游戏自制控件 `GAA_Subtitles_C`（场上没有 USubtitleDisplay 插件控件）。
-- **曾被子 1.0.30 卡掉字幕的，先在游戏设置里把字幕手动开回来，再装本包。**
-
-## 1.0.30 这次改了什么（对话语音停住 + 隐藏对话字幕）
-
-- **对话语音**：冻结静音升级走游戏自有接口（`PBZSoundFXSubsystem.PBZStopAkComponent`，签名校验通过才调，失败回落组件 `Stop`）；`stop_wwise_on_freeze` 默认改为 **true**（实测对话流程随世界冻结，停掉当前句不丢内容，不想静音可在 config.ini 改回 false）。
-- **进入摄影模式自动隐藏对话字幕**（`hide_subtitles` 默认 `true`）：双路径——① 游戏字幕设置 `bSubtitlesEnabled` 关掉（管住之后新出的字幕，退出还原原状态）；② 字幕显示控件（GameSubtitles 插件 `USubtitleDisplay`，含 BP 子类）直接 Collapsed（管住此刻已经画出来的；暂停下控件不再刷新，光改设置对已显示的字幕不生效，退出按原可见性恢复）。失败每秒重试，不阻断进模式。
-- 字幕控件一个都没找到时会打一次性 Warn 并列出场上类名带 Subtitle 的控件类——游戏若用自制字幕控件，把那行日志发回来定下一版。
-## 1.0.25 这次改了什么（按真机日志：命中 1 执行 0 + Wwise 语音）
-
-- 真机日志结论：动作冻结已稳定；但日志里多次「剧情播放器：命中 1，执行 0」——Sequencer 的 `Pause`/`Play` 是无参函数，参数块为空导致调用在 ProcessEvent 之前就放弃。已修复（缓冲区至少留 1 字节），剧情与场景后台播放器现在真正能暂停/恢复。
-- 对话语音「有时拦得住有时拦不住」：序列音轨驱动的语音随上面的修复一起停；Wwise 直接 post 的语音由新增的 `stop_wwise_on_freeze`（默认 false，停止不可恢复）处理。
-- 每会话探测一次并打日志：`Wwise 组件诊断：AkComponent=N，可用函数=…`——下一版据此决定是否做可恢复的音频暂停。
-- **进入摄影模式自动隐藏敌人（怪物）血条**（`hide_enemy_health_bars` 默认 `true`）：游戏侧总开关是设置项 `MonsterHealthBarMode`（总是显示/仅锁定目标/满血隐藏），摄影模式没有锁定目标，切到"仅锁定目标"即全部隐藏，退出还原原模式；设置没就绪时每秒重试，失败只告警不阻断。
-
-## 1.0.24 这次改了什么（剧情中冻结失效修复）
-
-- 现象：游戏处于剧情时进摄影模式，自动冻结"看起来"生效（画面像冻住），但角色动作和声音还在继续。
-- 修复分三层：① 冻结时同时**暂停 Sequencer 剧情播放器**（`FindAllOf(MovieSceneSequencePlayer)` 沿继承链匹配，`LevelSequenceActor.SequencePlayer` 兜底；暂停用 `Pause()`，解冻只恢复处于暂停态的 `Play()`；`freeze_sequences` 默认 `true`）；② **暂停被游戏拒绝时自动回退时间缩放**，不再只告警；③ **冻结期每秒回读自检**，被剧情/游戏改写就重新冻结，连续 3 次压不住停止对抗并告警。
-- 已知边界：剧情语音若走 Wwise/独立音频组件，播放器暂停拦不住（日志里有 `Wwise=有/无` 探测），实机确认后单独处理。
-- 每次冻结/解冻日志会打 `剧情播放器[暂停/恢复]：扫描 N，命中 M，执行 K`——剧情中冻结仍无效时把这行发回来即可定位。
-
-## 1.6.0 这次改了什么（进入摄影模式隐藏交互提示）
-
-- 需求：进入摄影模式后，对准场景互动物（铃铛/拾取点）时的“E”键提示图标不会消失。
-- 根因：该提示是 `PBZInteractComponent` 挂的**世界空间 UMG**（组件属性 `InteractWidgetComponent`），
-  不在 `SetHideUIForPV` / HUD 根控件的覆盖范围内；且 `freeze_mode=pause` 暂停下游戏 UI 不再刷新，
-  已画出来的提示必须隐藏控件组件本身才会消失。
-- 实现（双路径，退出都还原）：① 游戏自带设置开关 `bSceneInteractPromptVisible`（运行时按候选类探测，
-  优先调 `SetSceneInteractPromptVisible`，参数名对不上直写属性）——管住之后新出现的提示；
-  ② 枚举 `PBZInteractComponent` 的 `InteractWidgetComponent` 并 `SetVisibility(false)`——管住此刻已画出的。
-- `[effects]` 新增 `hide_interact_prompt = true`（想保留提示可改 `false`）。
-- 失败不阻断进入摄影模式：两路都失败只打一次性 Warn（真机排障把日志发回来）。
-- 版本 `1.6.0-cpp`；核心层测试 527 → **544 项全绿**（新增交互提示隐藏用例）。
+1.0.3 → 1.0.76 共 62 节逐版本「这次改了什么」已整体迁到 **[CHANGELOG.md](CHANGELOG.md)**（正文未改动，只换文件）；
+更详细的取证链（每次真机日志的根因分析、已判死路线）见 [PROGRESS.md](../PROGRESS.md)。

@@ -67,6 +67,18 @@ void test_live_toggle_plan() {
     other.move_speed = 800.0;
     other.pad_deadzone = 0.3;
     CHECK(!plan_live_toggles(base, other).any());
+
+    // 相机后端（接管 ↔ 独立相机）必须走热切换：两条后端都是进入时建立的，
+    // 只改配置的话得退出重进才生效。
+    Config swapped = base;
+    swapped.takeover_current_camera = !base.takeover_current_camera;
+    const LiveTogglePlan backend_plan = plan_live_toggles(base, swapped);
+    CHECK(backend_plan.camera_backend);
+    CHECK(backend_plan.any());
+    CHECK(!backend_plan.hide_player);
+    CHECK(!backend_plan.block_game_input);
+    CHECK(!backend_plan.hide_game_hud);
+    CHECK(!plan_live_toggles(swapped, swapped).camera_backend);
 }
 
 // ---- 完整集成路径 ----

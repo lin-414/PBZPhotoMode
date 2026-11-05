@@ -26,6 +26,16 @@ struct KeyMap {
     int roll_right{'E'};   // 滚转：顺时针（默认 E）
     int vertical_up{kMouseLeft};    // 升降上：默认鼠标左键（可改键盘键/其它鼠标键）
     int vertical_down{kMouseRight}; // 升降下：默认鼠标右键
+    // 移动/变速/自由视角门控（2.0 起可配）
+    int move_forward{'W'};
+    int move_back{'S'};
+    int move_left{'A'};
+    int move_right{'D'};
+    int boost{kShiftGeneric};   // 加速（默认 SHIFT，兼容左右 Shift）
+    int slow{kCtrlGeneric};     // 减速（默认 CONTROL）
+    int free_look{kAltGeneric}; // 自由转视角门控（默认 ALT；free_look_requires_alt=false 时不使用）
+    // 画面定格键：只给 PBZFM 菜单显示/回退用。InputLogic 不消费（定格走独立 watcher 线程）。
+    int frame_freeze{0x76};
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
     std::vector<PadButton> pad_toggle{PadButton::LS, PadButton::RS};  // 默认：左右摇杆同时按下
     std::vector<PadButton> pad_freeze{PadButton::X};
@@ -37,6 +47,16 @@ struct KeyMap {
     std::vector<PadButton> pad_pitch_down{PadButton::Down};  // 十字键下 = 俯视
     std::vector<PadButton> pad_yaw_left{PadButton::Left};    // 十字键左 = 左转视角（1.0.46 起从平移改来）
     std::vector<PadButton> pad_yaw_right{PadButton::Right};  // 十字键右 = 右转视角
+    // 原写死键（2.0 起可配）：单键 RT/LT 绑定仍按模拟量行程给量
+    std::vector<PadButton> pad_roll_left{PadButton::LB};    // 滚转逆时针（默认 LB）
+    std::vector<PadButton> pad_roll_right{PadButton::RB};   // 滚转顺时针（默认 RB）
+    std::vector<PadButton> pad_boost{PadButton::LS};        // 加速（默认 L3）
+    std::vector<PadButton> pad_slow{PadButton::RS};         // 减速（默认 R3）
+    std::vector<PadButton> pad_vertical_up{PadButton::RT};    // 升降上（默认 RT，模拟量）
+    std::vector<PadButton> pad_vertical_down{PadButton::LT};  // 升降下（默认 LT，模拟量）
+    // 景深/光圈：解析失败时的回退值。必须与 Config::pad_* 的字符串默认值
+    // （config.h:72-75）逐项一致，否则 ini 写错时手柄会静默换一套键位。
+    // 历史缺陷：下面 3 个曾漂移成单按 BACK/START 与 LB↔RB 互换。
     bool all_resolved{true};
 };
 
@@ -55,8 +75,8 @@ struct Intent {
     double yaw_axis{};      // 偏航：+1 右转 / -1 左转（方向键或十字键左/右按住；tick 里乘 yaw_speed × dt）
     bool pitch_up_click{};  // look 模式：升降上键
     bool pitch_down_click{};// look 模式：升降下键
-    bool boost{};           // Shift
-    bool slow{};            // Ctrl
+    bool boost{};           // 加速键（默认 Shift）
+    bool slow{};            // 减速键（默认 Ctrl）
     bool toggle_mode{};
     bool toggle_freeze{};
     bool reset_view{};  // R：回到进入摄影模式时的位姿/FOV
@@ -76,7 +96,6 @@ public:
     void on_gamepad(const PadState& state);
 
     bool held(int vk) const;
-    bool alt_down() const;
 
     // dt 用于 FOV 按住连发计时；默认 0 表示不推进计时（旧调用/单测兼容）。每帧只调用一次。
     Intent build(const Config& cfg, const KeyMap& keys, double dt = 0.0);
@@ -91,17 +110,20 @@ public:
 private:
     bool key_held(int vk) const { return vk != 0 && held_.count(vk) != 0; }
     bool key_pressed(int vk) const { return vk != 0 && pressed_.count(vk) != 0; }
+    // 配置到通用修饰键（SHIFT/CONTROL/ALT）时，左右两侧的具体键也算按住：
+    // 保持旧版「Shift 左右都行」的手感；用户显式绑 LEFT_SHIFT 时则只认左 Shift。
+    bool modifier_held(int vk) const;
     // 组合键：全部按钮按下才算“按住”；本帧按住且上一帧没按住才算一次按下沿
     bool pad_combo_down(const PadState& s, const std::vector<PadButton>& combo) const;
     bool pad_combo_pressed(const std::vector<PadButton>& combo) const;
 
-    // FOV 单个方向的按住连发：按下沿立即 1 格，按住超过延迟后按固定间隔补格
-    struct FovRepeat {
+    // 单个方向的按住连发（FOV / 对焦 / 光圈共用）：按下沿立即 1 格，按住超过延迟后按固定间隔补格
+    struct RepeatState {
         bool was_down{};  // 上一帧该方向是否按住（键盘键或手柄组合任一）
         double hold{};    // 已连续按住的时长（秒）
         double next{};    // 下一次连发步进的时间点（秒，从按下起算）
     };
-    int fov_axis_nudge(int vk, const std::vector<PadButton>& combo, double dt, FovRepeat& st);
+    int axis_nudge(int vk, const std::vector<PadButton>& combo, double dt, RepeatState& st);
 
     std::unordered_set<int> held_;
     std::unordered_set<int> pressed_;
@@ -110,8 +132,8 @@ private:
     double wheel_{};
     PadState pad_{};
     PadState pad_prev_{};
-    FovRepeat fov_up_repeat_{};
-    FovRepeat fov_down_repeat_{};
+    RepeatState fov_up_repeat_{};
+    RepeatState fov_down_repeat_{};
 };
 
 }  // namespace pbzpm

@@ -169,18 +169,6 @@ int PbzmI18n::LanguageCount() const {
     return snap ? static_cast<int>(snap->langs.size()) : 0;
 }
 
-std::string PbzmI18n::LanguageId(int index) const {
-    const SnapshotPtr snap = Load();
-    if (!snap || index < 0 || index >= static_cast<int>(snap->langs.size())) return {};
-    return snap->langs[static_cast<size_t>(index)].id;
-}
-
-std::string PbzmI18n::LanguageDisplay(int index) const {
-    const SnapshotPtr snap = Load();
-    if (!snap || index < 0 || index >= static_cast<int>(snap->langs.size())) return {};
-    return snap->langs[static_cast<size_t>(index)].display;
-}
-
 std::vector<PbzmI18n::LanguageInfo> PbzmI18n::Languages() const {
     std::vector<LanguageInfo> out;
     const SnapshotPtr snap = Load();
@@ -200,14 +188,6 @@ int PbzmI18n::FindLanguage(const char* id) const {
     return -1;
 }
 
-void PbzmI18n::SetLanguage(int index) {
-    std::lock_guard<std::mutex> lock(write_mutex_);
-    const SnapshotPtr old = Load();
-    Snapshot next = old ? *old : Snapshot{};
-    next.current = index >= 0 && index < static_cast<int>(next.langs.size()) ? index : 0;
-    Publish(std::make_shared<Snapshot>(std::move(next)));
-}
-
 void PbzmI18n::SetLanguageById(const std::string& id) {
     std::lock_guard<std::mutex> lock(write_mutex_);
     const SnapshotPtr old = Load();
@@ -220,12 +200,6 @@ void PbzmI18n::SetLanguageById(const std::string& id) {
         }
     }
     Publish(std::make_shared<Snapshot>(std::move(next)));
-}
-
-int PbzmI18n::CurrentIndex() const {
-    const SnapshotPtr snap = Load();
-    if (!snap) return 0;
-    return snap->current >= 0 && snap->current < static_cast<int>(snap->langs.size()) ? snap->current : 0;
 }
 
 std::string PbzmI18n::CurrentId() const {

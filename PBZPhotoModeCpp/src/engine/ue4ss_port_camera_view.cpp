@@ -5,6 +5,10 @@
 
 #include "engine/ue4ss_port_internal.h"
 
+#include <cstring>
+
+#include "core/tuning.h"
+
 namespace pbzpm {
 using namespace detail;
 
@@ -12,45 +16,21 @@ using namespace detail;
 
 bool Ue4ssPort::world_valid() { return is_ok(world()); }
 
-// 调一个返回结构体的无参 UFUNCTION（例如 GetCameraLocation / GetCameraRotation），
-// 按字段名读 3 个 double。FVector 用 X/Y/Z，FRotator 用 Pitch/Yaw/Roll。
-static auto read_return_vector(UObject* object, const char* function_name, const char* a_name,
-                               const char* b_name, const char* c_name, double& a, double& b, double& c)
-    -> bool {
-    if (!is_ok(object)) return false;
-    UFunction* function = find_function(object, function_name);
-    if (function == nullptr) return false;
-    ParamBlock params(function);
-    if (!params.valid()) return false;
-    object->ProcessEvent(function, params.data());
-    FProperty* result = params.prop({"ReturnValue"});
-    if (result == nullptr) return false;
-    return read_struct_number(result, params.data(), a_name, a) &&
-           read_struct_number(result, params.data(), b_name, b) &&
-           read_struct_number(result, params.data(), c_name, c);
-}
-
-// 调一个返回数值的无参 UFUNCTION（例如 PlayerCameraManager::GetFOVAngle），读 ReturnValue。
-static auto read_return_number(UObject* object, const char* function_name, double& out) -> bool {
-    if (!is_ok(object)) return false;
-    UFunction* function = find_function(object, function_name);
-    if (function == nullptr) return false;
-    ParamBlock params(function);
-    if (!params.valid()) return false;
-    object->ProcessEvent(function, params.data());
-    return params.get_number("ReturnValue", out);
-}
-
 // APlayerCameraManager::CameraCache（FMinimalViewInfo）存着这一帧最终视角。
 // 5.4 及以前 FOV 是直接成员，5.5 起挪进 Lens（FieldOfView）；两处都试。
 static auto read_camera_cache_fov(UObject* manager, double& out) -> bool {
     if (!is_ok(manager)) return false;
     FProperty* cache = find_property(manager, "CameraCache");
     if (cache == nullptr || !cache->IsA<FStructProperty>()) return false;
-    if (read_struct_number(cache, manager, "FOV", out) && out > 1.0) return true;
     void* base = struct_member_base(cache, manager);
-    FProperty* field_of_view = struct_member(struct_member(cache, "Lens"), "FieldOfView");
-    return base != nullptr && field_of_view != nullptr && read_number(field_of_view, base, out) && out > 1.0;
+    // 5.5+ 相机 Lens 重构后引擎读 Lens.FieldOfView；旧 FOV 可能还在结构里但已不是渲染读点，
+    // 所以先取 Lens，取不到再退回旧字段。
+    FProperty* lens_fov = struct_member(struct_member(cache, "Lens"), "FieldOfView");
+    if (base != nullptr && lens_fov != nullptr && read_number(lens_fov, struct_member_base(struct_member(cache, "Lens"), base), out) &&
+        out > 1.0) {
+        return true;
+    }
+    return read_struct_number(cache, manager, "FOV", out) && out > 1.0;
 }
 
 bool Ue4ssPort::read_pov(CameraPose& out) {
@@ -153,12 +133,28 @@ bool Ue4ssPort::spawn_camera(const CameraPose& pose) {
         return false;
     }
 
+    probe_camera_backends();
+
+    // 优先 CinematicCamera 插件的 CineCameraActor：有它才能做真实的焦距/Filmback 联动。
+    // Shipping 未打进该插件时退回普通 CameraActor，并在报告里如实说明“长焦压缩只是 FOV 视觉裁剪”。
     UClass* camera_class =
-        RC::Unreal::UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.CameraActor"));
+        RC::Unreal::UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr,
+                                                             STR("/Script/CinematicCamera.CineCameraActor"));
+    camera_is_cine_ = camera_class != nullptr;
     if (camera_class == nullptr) {
-        log(LogLevel::Warn, "找不到 /Script/Engine.CameraActor 类");
+        camera_class =
+            RC::Unreal::UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, STR("/Script/Engine.CameraActor"));
+    }
+    if (camera_class == nullptr) {
+        log(LogLevel::Warn, "找不到 CameraActor 类，无法生成摄影相机");
         return false;
     }
+    log(camera_is_cine_
+            ? LogLevel::Info
+            : LogLevel::Warn,
+        camera_is_cine_ ? "相机后端：CineCameraActor 可用（FOV 会同步 CurrentFocalLength/Filmback）"
+                        : "相机后端：包内没有 CineCameraActor（CinematicCamera 插件未打进 Shipping），"
+                          "改用 CameraActor；长焦压缩只是 FOV 视野裁剪，不是真实焦距");
 
     // 记录进入前的 ViewTarget：过场动画/剧情演出期间相机管理器指向的是过场相机，
     // 退出时必须还原到它而不是玩家 Pawn，否则过场会被强行切回玩家视角、语音也被打断。
@@ -197,9 +193,11 @@ bool Ue4ssPort::spawn_camera(const CameraPose& pose) {
     if (UObject* component = camera_component(); is_ok(component)) {
         write_number(find_property(component, "Mobility"), component, 2.0);
     }
-    // SpawnActor 已按 pose 放置；记录期望位姿，供 attach_view 的位姿回读比对（M-1）
+    // SpawnActor 已按 pose 放置，但真机实测 apply_pose() 之前首次 attach_view 读回的位姿
+    // 与期望值对不上（引擎 spawn 后还会做一次组件变换整理），会被误报“位姿已被改写”。
+    // 这里标记“位姿暂不可比”，等 apply_pose() 真正写入后再置为可比较。
     last_applied_pose_ = pose;
-    last_applied_pose_known_ = true;
+    last_applied_pose_known_ = false;
     view_verify_fail_streak_ = 0;
     return true;
 }
@@ -418,7 +416,9 @@ bool Ue4ssPort::attach_view() {
     // 只有读到明确的其他 Actor（视角被抢）或摄影相机位姿被搬走才算确凿失效；
     // 其余情况只告警一次、继续每秒重试，绝不阻断 enter()。
     const bool observed_other = is_ok(observed) && observed != camera_actor_;
-    const bool conclusive = view_loss_is_conclusive(readable, observed_other, !pose_ok);
+    // 刚 spawn / apply_pose 尚未写入时位姿不可比，不能把“偏离”当成确凿失效
+    const bool pose_comparable = last_applied_pose_known_ && is_ok(camera_actor_);
+    const bool conclusive = view_loss_is_conclusive(readable, observed_other, pose_comparable, !pose_ok);
     if (!conclusive) {
         if (!view_unconfirmed_logged_) {
             view_unconfirmed_logged_ = true;
@@ -444,12 +444,34 @@ bool Ue4ssPort::view_confirmation_failed() const {
 }
 
 void Ue4ssPort::reassert_view_target() {
+    // EngineTickPost 在 RedrawViewports 之后：这里写 POV 赶不上当帧渲染，真正的写点在
+    // write_takeover_pov_now()（GameViewportClient Tick 之后、RedrawViewports 之前）。
+    // 这里只做两件事：1) 回读本帧渲染实际用的 POV，验证接管是否真的生效；
+    // 2) 继续写一次，保证游戏下一帧 UpdateCamera 之前缓存里也是我们的值（多为兜底）。
+    if (takeover_active_) {
+        verify_takeover_pov();
+        write_takeover_pov();
+        return;
+    }
     UObject* pc = controller();
     if (!is_ok(pc) || !is_ok(camera_actor_)) return;
     set_view_target_cached(pc, camera_actor_);
 }
 
+void Ue4ssPort::write_takeover_pov_now() {
+    if (!takeover_active_) return;
+    if (!write_takeover_pov()) return;
+    if (!takeover_write_point_logged_) {
+        takeover_write_point_logged_ = true;
+        log(LogLevel::Info,
+            "接管当前相机：POV 写点已切到 GameViewportClient Tick 之后（UpdateCamera 之后、"
+            "RedrawViewports 之前），本帧渲染应使用本 Mod 的位姿");
+    }
+}
+
 bool Ue4ssPort::restore_view() {
+    // 接管模式从未切换 ViewTarget，没有任何东西可还原；由 leave_camera_takeover 负责停止覆盖。
+    if (takeover_active_) return true;
     // 先同步世界身份：换代时 invalidate 会清掉旧相机/旧 ViewTarget 缓存，
     // 之后再 is_ok 校验，避免把视角还原到已销毁的旧对象（H-3）。
     (void)world();
@@ -474,6 +496,11 @@ bool Ue4ssPort::restore_view() {
 }
 
 bool Ue4ssPort::apply_pose(const CameraPose& pose) {
+    if (takeover_active_) {
+        takeover_pose_ = pose;
+        takeover_pose_known_ = true;
+        return write_takeover_pov();
+    }
     if (!is_ok(camera_actor_)) return false;
     auto* actor = static_cast<AActor*>(camera_actor_);
     FVector location(pose.loc.x, pose.loc.y, pose.loc.z);
@@ -509,12 +536,31 @@ bool Ue4ssPort::apply_pose(const CameraPose& pose) {
 }
 
 bool Ue4ssPort::apply_fov(double fov) {
+    if (takeover_active_) {
+        takeover_fov_ = fov;
+        return write_takeover_pov();
+    }
     UObject* component = camera_component();
     if (!is_ok(component)) return false;
-    return write_number(find_property(component, "FieldOfView"), component, fov);
+    const bool ok = write_number(find_property(component, "FieldOfView"), component, fov);
+    // CineCameraComponent：同步真实焦距。CurrentFocalLength 由 Filmback.SensorWidth 与水平 FOV 换算；
+    // 读不到 Filmback 时用 35mm 全画幅近似，并只在首次告警一次。
+    if (camera_is_cine_ && ok) {
+        double sensor_width = 35.0;
+        (void)read_struct_number(find_property(component, "Filmback"), component, "SensorWidth", sensor_width);
+        const double focal = focal_length_from_fov(sensor_width, fov);
+        if (focal > 0.0) {
+            write_number(find_property(component, "CurrentFocalLength"), component, focal);
+        }
+    }
+    return ok;
 }
 
 bool Ue4ssPort::destroy_camera() {
+    // 画面效果用的自建后处理体积不随相机走：进入失败/退出时一并清掉。
+    destroy_post_volume();
+    // 接管模式没有本 Mod 生成的 Actor；退出接管（停止覆盖 + 还原后处理快照）即可。
+    if (takeover_active_) leave_camera_takeover();
     // 先同步世界身份：旧世界的相机已随关卡销毁，换代后缓存会被清空，不能再 K2_DestroyActor。
     (void)world();
     const bool had_view = is_ok(camera_actor_);
@@ -536,6 +582,588 @@ bool Ue4ssPort::destroy_camera() {
     original_view_target_saved_ = false;
     view_attached_by_port_ = false;
     return had_view;
+}
+
+// =============================================================================
+// UUU 式「接管当前相机」+ 景深/手动对焦 + Cine 后端探测
+//
+// 设计边界（与 docs/README.md 一致）：
+//   * 实时取景始终走 ViewTarget/POV（独立相机或接管当前相机），绝不用 SceneCapture 当取景器。
+//   * 接管模式不 spawn Actor、不切 ViewTarget，只在 GameViewportClient::Tick 之后
+//     （游戏 PlayerController::UpdateCameraManager 重算完 CameraCache.POV、RedrawViewports 之前）
+//     覆盖 APlayerCameraManager 本帧的 CameraCache.POV。UE 的帧顺序是：
+//     World->Tick（所有 actor tick）→ UpdateCameraManager → GameViewportClient->Tick → RedrawViewports。
+//     EngineTickPost 已经在 RedrawViewports 之后，那里写 POV 永远赶不上当帧渲染（1.0.75 的回归原因）。
+//   * 只写“每帧由相机管理器重算”的 POV 缓存，不写游戏相机组件，因此不存在持久污染；
+//     退出时仍显式写回进入前后处理/FOV/位姿快照，做到双保险。
+// =============================================================================
+
+namespace {
+
+using namespace pbzpm::detail;
+
+
+// POV 的 FOV 在不同版本里可能是直接成员，也可能在 Lens.FieldOfView（UE5.5+ 相机 Lens 重构）。
+// 5.5+ 两个字段可能同时存在，而引擎只认其中一个——判定/写回都优先 Lens.FieldOfView。
+auto pov_fov_property(FProperty* pov_property) -> FProperty* {
+    if (FProperty* lens_fov = struct_member(struct_member(pov_property, "Lens"), "FieldOfView"); lens_fov != nullptr) {
+        return lens_fov;
+    }
+    return struct_member(pov_property, "FOV");
+}
+
+auto pov_fov_base(FProperty* pov_property, void* pov_base) -> void* {
+    if (struct_member(struct_member(pov_property, "Lens"), "FieldOfView") != nullptr) {
+        return struct_member_base(struct_member(pov_property, "Lens"), pov_base);
+    }
+    return pov_base;
+}
+
+// 写 POV.FOV：两个字段都存在时都写（本作 UE5.7 只认 Lens.FieldOfView 的可能性更高，
+// 但旧 FOV 若仍是渲染读点也不能留旧值）。
+auto write_pov_fov(FProperty* pov_property, void* pov_base, double fov) -> bool {
+    bool any = false;
+    FProperty* lens = struct_member(pov_property, "Lens");
+    FProperty* lens_fov = struct_member(lens, "FieldOfView");
+    if (lens_fov != nullptr) {
+        any = write_number(lens_fov, struct_member_base(lens, pov_base), fov) || any;
+    }
+    FProperty* legacy = struct_member(pov_property, "FOV");
+    if (legacy != nullptr) {
+        any = write_number(legacy, pov_base, fov) || any;
+    }
+    return any;
+}
+
+}  // namespace
+
+bool Ue4ssPort::resolve_pov_view(PovView& out) {
+    out = PovView{};
+    UObject* manager = camera_manager();
+    if (!is_ok(manager)) return false;
+
+    FProperty* cache = find_property(manager, "CameraCache");
+    if (cache == nullptr) cache = find_property(manager, "CameraCachePrivate");
+    if (cache == nullptr || !cache->IsA<FStructProperty>()) return false;
+
+    void* cache_base = struct_member_base(cache, manager);
+    if (cache_base == nullptr) return false;
+
+    // UE4.27/UE5.x：CameraCache 是 FCameraCacheEntry { Timestamp, POV }；
+    // 部分分支/包装直接把 FMinimalViewInfo 放在 CameraCache 上。两种布局都支持。
+    FProperty* pov = struct_member(cache, "POV");
+    if (pov != nullptr && pov->IsA<FStructProperty>()) {
+        void* pov_base = struct_member_base(pov, cache_base);
+        if (pov_base == nullptr) return false;
+        out.pov = pov;
+        out.base = pov_base;
+        out.layout = "FCameraCacheEntry.POV";
+    } else {
+        out.pov = cache;
+        out.base = cache_base;
+        out.layout = "CameraCache(FMinimalViewInfo)";
+    }
+    return pov_fov_property(out.pov) != nullptr;
+}
+
+bool Ue4ssPort::verify_takeover_pov() {
+    if (!takeover_active_ || !takeover_pose_known_) return true;
+
+    PovView pv;
+    if (!resolve_pov_view(pv)) return true;  // 暂时读不到：先不判失败，避免误伤
+    FProperty* location = struct_member(pv.pov, "Location");
+    FProperty* rotation = struct_member(pv.pov, "Rotation");
+    FProperty* fov_property = pov_fov_property(pv.pov);
+    if (location == nullptr || rotation == nullptr || fov_property == nullptr) return true;
+
+    double x = 0.0, y = 0.0, z = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0, fov = 0.0;
+    const bool readable =
+        read_struct_number(location, pv.base, "X", x) && read_struct_number(location, pv.base, "Y", y) &&
+        read_struct_number(location, pv.base, "Z", z) && read_struct_number(rotation, pv.base, "Pitch", pitch) &&
+        read_struct_number(rotation, pv.base, "Yaw", yaw) && read_struct_number(rotation, pv.base, "Roll", roll) &&
+        read_number(fov_property, pov_fov_base(pv.pov, pv.base), fov);
+    if (!readable) return true;
+
+    const bool matches =
+        std::abs(x - takeover_pose_.loc.x) <= kTakeoverPovLocationTolerance &&
+        std::abs(y - takeover_pose_.loc.y) <= kTakeoverPovLocationTolerance &&
+        std::abs(z - takeover_pose_.loc.z) <= kTakeoverPovLocationTolerance &&
+        std::abs(pitch - takeover_pose_.rot.pitch) <= kTakeoverPovRotationToleranceDeg &&
+        std::abs(yaw - takeover_pose_.rot.yaw) <= kTakeoverPovRotationToleranceDeg &&
+        std::abs(roll - takeover_pose_.rot.roll) <= kTakeoverPovRotationToleranceDeg &&
+        std::abs(fov - takeover_fov_) <= kTakeoverPovFovTolerance;
+    if (matches) {
+        takeover_pov_mismatch_streak_ = 0;
+        return true;
+    }
+
+    ++takeover_pov_mismatch_streak_;
+    if (takeover_pov_mismatch_streak_ >= kTakeoverPovMismatchLimit && !takeover_render_lost_) {
+        takeover_render_lost_ = true;
+        log(LogLevel::Warn,
+            "接管当前相机未生效：本帧渲染前的 CameraCache.POV 仍是游戏自己的位姿（连续 " +
+                std::to_string(takeover_pov_mismatch_streak_) +
+                " 帧被覆盖），说明写点没有赶在 RedrawViewports 之前；请把 config.ini [camera] 的 "
+                "takeover_current_camera 设为 false，本次将自动回退独立相机");
+    }
+    return false;
+}
+
+void Ue4ssPort::probe_camera_backends() {
+    if (camera_backend_probed_) return;
+    camera_backend_probed_ = true;
+
+    auto class_path = [](const char* path) -> UClass* {
+        return RC::Unreal::UObjectGlobals::StaticFindObject<UClass*>(nullptr, nullptr, widen(path).c_str());
+    };
+
+    auto* cine_actor_class = class_path("/Script/CinematicCamera.CineCameraActor");
+    auto* cine_component_class = class_path("/Script/CinematicCamera.CineCameraComponent");
+    auto* cine_capture_class = class_path("/Script/CineCameraSceneCapture.CineCaptureComponent2D");
+    auto* engine_capture_class = class_path("/Script/Engine.SceneCaptureComponent2D");
+
+    std::string report;
+    report += "CineCameraActor=";
+    report += cine_actor_class != nullptr ? "yes" : "no";
+    report += " CineCameraComponent=";
+    report += cine_component_class != nullptr ? "yes" : "no";
+
+    // Cine 组件的真实字段（CurrentFocalLength / Filmback.SensorWidth）是否存在，决定②能否联动。
+    if (cine_component_class != nullptr) {
+        const bool has_focal =
+            find_property(static_cast<UStruct*>(cine_component_class), widen("CurrentFocalLength")) != nullptr;
+        const bool has_filmback = find_property(static_cast<UStruct*>(cine_component_class), widen("Filmback")) != nullptr;
+        report += " CurrentFocalLength=";
+        report += has_focal ? "yes" : "no";
+        report += " Filmback=";
+        report += has_filmback ? "yes" : "no";
+    }
+
+    // CineCameraSceneCapture 插件：优先按类路径判定；路径不对时再扫全量 UClass，
+    // 区分「插件在包里但类名不同」与「插件根本没打进 Shipping」。
+    bool plugin_classes_present = false;
+    std::string plugin_class_sample;
+    if (cine_capture_class == nullptr) {
+        std::vector<UObject*> classes;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("Class"), classes);
+        int scanned = 0;
+        for (UObject* candidate : classes) {
+            if (candidate == nullptr || !is_ok(candidate)) continue;
+            if (++scanned > 200000) break;
+            const std::string full = narrow(candidate->GetFullName());
+            if (full.find("CineCameraSceneCapture") == std::string::npos) continue;
+            plugin_classes_present = true;
+            if (plugin_class_sample.empty()) plugin_class_sample = narrow(candidate->GetName());
+        }
+    }
+
+    report += " | CineCaptureComponent2D=";
+    report += cine_capture_class != nullptr ? "yes" : "no";
+    if (cine_capture_class != nullptr) {
+        report += "(a: 类存在可用)";
+    } else if (plugin_classes_present) {
+        report += "(b: 插件已打进包但类名不同, 同类=" + plugin_class_sample + ")";
+    } else {
+        report += "(c: 插件 CineCameraSceneCapture 未打进 Shipping)";
+    }
+    report += " | SceneCaptureComponent2D=";
+    report += engine_capture_class != nullptr ? "yes" : "no";
+
+    // 只在首次进入时打一条，不做常驻刷屏。
+    log(LogLevel::Info, "相机后端探测：" + report);
+}
+
+// ----------------------------------------------------------------- 自建后处理体积
+//
+// 「画面效果」写在这个体积的 Settings 上（见下面的 ensure_post_volume / set_look）。
+// 为什么需要自建：UE 的最终后处理是「相机/POV 的 PostProcessSettings 打底，再按优先级把场上
+// 每个 APostProcessVolume 的 bOverride_* 字段盖上」。相机 PP 只是基座、没有优先级，关卡里的
+// 体积只要覆盖了同名项就会把我们写的值吃掉；自建体积无界且 Priority 很高，能压过它们。
+
+bool Ue4ssPort::takeover_current_camera(const CameraPose& pose) {
+    if (takeover_active_) return true;
+    probe_camera_backends();
+
+    PovView pv;
+    if (!resolve_pov_view(pv)) {
+        log(LogLevel::Warn,
+            "接管当前相机失败：读不到 APlayerCameraManager.CameraCache 或 POV 布局不认识");
+        return false;
+    }
+    FProperty* location = struct_member(pv.pov, "Location");
+    FProperty* rotation = struct_member(pv.pov, "Rotation");
+    if (location == nullptr || rotation == nullptr) {
+        log(LogLevel::Warn, "接管当前相机失败：POV 上找不到 Location/Rotation 字段");
+        return false;
+    }
+
+
+    takeover_pose_ = pose;
+    takeover_pose_known_ = true;
+    takeover_fov_ = pose.fov;
+    takeover_active_ = true;
+
+    // 自检：先把当前位姿写进 POV 再立刻读回。写不进（属性是只读/内存不可写/管理器换代）
+    // 就在这里判定失败，由 core 在同一次 enter 内回退到独立相机。
+    if (!write_takeover_pov()) {
+        takeover_active_ = false;
+        takeover_pose_known_ = false;
+        log(LogLevel::Warn, "接管当前相机失败：CameraCache.POV 的位姿/FOV 写入失败");
+        return false;
+    }
+    double x = 0.0, y = 0.0, z = 0.0, pitch = 0.0, yaw = 0.0, roll = 0.0, fov = 0.0;
+    FProperty* read_loc = struct_member(pv.pov, "Location");
+    FProperty* read_rot = struct_member(pv.pov, "Rotation");
+    const bool readable = read_struct_number(read_loc, pv.base, "X", x) &&
+                          read_struct_number(read_loc, pv.base, "Y", y) &&
+                          read_struct_number(read_loc, pv.base, "Z", z) &&
+                          read_struct_number(read_rot, pv.base, "Pitch", pitch) &&
+                          read_struct_number(read_rot, pv.base, "Yaw", yaw) &&
+                          read_struct_number(read_rot, pv.base, "Roll", roll) &&
+                          read_number(pov_fov_property(pv.pov), pov_fov_base(pv.pov, pv.base), fov);
+    const bool matches =
+        readable && std::abs(x - pose.loc.x) <= kViewPoseLocationTolerance &&
+        std::abs(y - pose.loc.y) <= kViewPoseLocationTolerance && std::abs(z - pose.loc.z) <= kViewPoseLocationTolerance &&
+        std::abs(pitch - pose.rot.pitch) <= kViewPoseRotationToleranceDeg &&
+        std::abs(yaw - pose.rot.yaw) <= kViewPoseRotationToleranceDeg &&
+        std::abs(roll - pose.rot.roll) <= kViewPoseRotationToleranceDeg && std::abs(fov - pose.fov) <= 0.1;
+    if (!matches) {
+        takeover_active_ = false;
+        takeover_pose_known_ = false;
+        log(LogLevel::Warn, "接管当前相机失败：POV 写入后回读不一致（位姿/FOV 实际不可控）");
+        return false;
+    }
+
+    takeover_write_fail_streak_ = 0;
+    takeover_write_fail_logged_ = false;
+    takeover_write_point_logged_ = false;
+    takeover_pov_mismatch_streak_ = 0;
+    takeover_render_lost_ = false;
+    log(LogLevel::Info, "已接管当前相机：POV 布局=" + pv.layout +
+                            "，在 GameViewportClient Tick 之后覆盖位姿/FOV（不 spawn、不换 ViewTarget）");
+    return true;
+}
+
+bool Ue4ssPort::write_takeover_pov() {
+    if (!takeover_active_) return true;
+    // 运行中写失败只做诊断（连续多次告警一次），不在此处断开接管：是否回退由进入时自检决定，
+    // 中途丢接管需要退出重进才能重建，避免在游戏相机逻辑运行中再 spawn 一台相机。
+    auto note_fail = [&]() {
+        if (++takeover_write_fail_streak_ >= 3 && !takeover_write_fail_logged_) {
+            takeover_write_fail_logged_ = true;
+            log(LogLevel::Warn,
+                "接管当前相机运行中连续写 POV 失败（画面可能不再跟随输入）；退出重进摄影模式可重建接管，"
+                "或在 config.ini [camera] 关闭 takeover_current_camera 改用独立相机");
+        }
+        return false;
+    };
+    if (!takeover_pose_known_) return note_fail();
+    PovView pv;
+    if (!resolve_pov_view(pv)) return note_fail();
+
+    FProperty* location = struct_member(pv.pov, "Location");
+    FProperty* rotation = struct_member(pv.pov, "Rotation");
+    FProperty* fov_property = pov_fov_property(pv.pov);
+    if (location == nullptr || rotation == nullptr || fov_property == nullptr) return note_fail();
+
+    const bool pose_ok = write_struct_number(location, pv.base, "X", takeover_pose_.loc.x) &&
+                         write_struct_number(location, pv.base, "Y", takeover_pose_.loc.y) &&
+                         write_struct_number(location, pv.base, "Z", takeover_pose_.loc.z) &&
+                         write_struct_number(rotation, pv.base, "Pitch", takeover_pose_.rot.pitch) &&
+                         write_struct_number(rotation, pv.base, "Yaw", takeover_pose_.rot.yaw) &&
+                         write_struct_number(rotation, pv.base, "Roll", takeover_pose_.rot.roll) &&
+                         write_pov_fov(pv.pov, pv.base, takeover_fov_);
+
+    if (!pose_ok) return note_fail();
+    takeover_write_fail_streak_ = 0;
+    return true;
+}
+
+
+// 列出 PostProcessSettings 里符合关键字的真实字段名。实机反复「写了没反应」，必须先确认
+// 属性名在这个 build 里到底叫什么（UE5.7 可能把某些分组重命名/移进子结构）。
+auto collect_pp_member_names(FProperty* pp_property, const char* const* keywords, std::string& out) -> void {
+    if (pp_property == nullptr || !pp_property->IsA<FStructProperty>()) {
+        out = "<不可读>";
+        return;
+    }
+    UStruct* owner = static_cast<FStructProperty*>(pp_property)->GetStruct();
+    int count = 0;
+    std::string names;
+    for (TFieldIterator<FProperty> it(owner); it; ++it) {
+        FProperty* property = *it;
+        if (property == nullptr) continue;
+        const std::string name = narrow(property->GetName());
+        const std::string lower = lower_ascii(name);
+        bool keep = false;
+        for (const char* const* keyword = keywords; *keyword != nullptr; ++keyword) {
+            if (lower.find(*keyword) != std::string::npos) {
+                keep = true;
+                break;
+            }
+        }
+        if (!keep) continue;
+        if (!names.empty()) names += ",";
+        names += name;
+        if (++count >= 32) {
+            names += ",…";
+            break;
+        }
+    }
+    out = names.empty() ? "<无>" : names;
+}
+
+// ----------------------------------------------------------------- 自建后处理体积
+//
+// 「画面效果」（暗角/色差/胶片颗粒/饱和/对比/泛光/冷暖）就写在这个体积的 Settings 上。
+// 为什么需要自建：UE 的最终后处理是「相机/POV 的 Settings 打底，再按优先级把场上每个
+// APostProcessVolume 的 bOverride_* 字段盖上」。相机 PP 只是基座、没有优先级，关卡里的体积
+// 只要覆盖了同名项就会把我们写的值吃掉；自建体积无界且 Priority 很高，能压过它们。
+// 实测：本作 gameplay 视图里只有这条体积通道会被采纳（写相机 POV 的 PP 无效）。
+// 体积是本 Mod 生成的：关画面效果 / 退出摄影模式时销毁；世界换代时引擎已随关卡销毁它，只清指针。
+bool Ue4ssPort::ensure_post_volume() {
+    if (is_ok(post_volume_)) return true;
+    post_volume_ = nullptr;
+    UObject* scene = world();
+    if (!is_ok(scene)) return false;
+
+    UClass* volume_class = RC::Unreal::UObjectGlobals::StaticFindObject<UClass*>(
+        nullptr, nullptr, STR("/Script/Engine.PostProcessVolume"));
+    if (volume_class == nullptr) {
+        if (!post_volume_fail_logged_) {
+            post_volume_fail_logged_ = true;
+            log(LogLevel::Warn, "画面效果：包内没有 PostProcessVolume 类，后处理效果无法生效");
+        }
+        return false;
+    }
+
+    FVector location(0.0, 0.0, 0.0);
+    FRotator rotation(0.0, 0.0, 0.0);
+    auto* as_world = static_cast<UWorld*>(scene);
+    AActor* actor = as_world->SpawnActor(volume_class, &location, &rotation);
+    if (actor == nullptr) {
+        if (!post_volume_fail_logged_) {
+            post_volume_fail_logged_ = true;
+            log(LogLevel::Warn, "画面效果：SpawnActor(PostProcessVolume) 返回空，后处理效果无法生效");
+        }
+        return false;
+    }
+
+    post_volume_ = actor;
+    // 无界 + 极高优先级 + 全权重：覆盖整张画面并压过关卡自带的体积。
+    (void)write_bool(find_property(actor, "bEnabled"), actor, true);
+    (void)write_bool(find_property(actor, "bUnbound"), actor, true);
+    (void)write_number(find_property(actor, "Priority"), actor, 10000.0);
+    (void)write_number(find_property(actor, "BlendWeight"), actor, 1.0);
+    if (!post_volume_diag_logged_) {
+        post_volume_diag_logged_ = true;
+        log(LogLevel::Info, "画面效果：已生成高优先级无界后处理体积（priority=10000），退出摄影模式时销毁");
+    }
+    return true;
+}
+
+void Ue4ssPort::destroy_post_volume() {
+    if (!is_ok(post_volume_)) {
+        post_volume_ = nullptr;
+        return;
+    }
+    static_cast<AActor*>(post_volume_)->K2_DestroyActor();
+    post_volume_ = nullptr;
+    log(LogLevel::Debug, "画面效果：后处理体积已销毁");
+}
+
+bool Ue4ssPort::set_look(const LookOptions& options) {
+    if (!options.any_active() && !look_active_) return true;
+    // 复用景深那个自建后处理体积：本作 gameplay 视图里体积通道是唯一被证实能出画面的后处理路径
+    // （探针第 2 段往它写 VignetteIntensity=3，用户看到「四周变暗」）。
+    if (!ensure_post_volume()) return false;
+    FProperty* settings = find_property(post_volume_, "Settings");
+    void* base = struct_member_base(settings, post_volume_);
+    if (settings == nullptr || base == nullptr) return false;
+
+    std::string missing;
+    auto note_missing = [&](const char* name) {
+        if (!missing.empty()) missing += ",";
+        missing += name;
+    };
+
+    auto set_scalar = [&](const char* override_name, const char* value_name, bool on, double value) {
+        FProperty* override_prop = struct_member(settings, override_name);
+        FProperty* value_prop = struct_member(settings, value_name);
+        if (override_prop == nullptr || value_prop == nullptr) {
+            note_missing(value_name);
+            return;
+        }
+        (void)write_bool(override_prop, base, on);
+        (void)write_number(value_prop, base, on ? value : 0.0);
+    };
+
+    // ColorSaturation / ColorContrast 在 UE5 里是 FVector4 = TVector4<double>，成员名是 X/Y/Z/W；
+    // FLinearColor（SceneColorTint）才是 R/G/B/A。hotfix29~31 一直按 R/G/B/A 找，三项全是 nullptr，
+    // 这两项从头到尾一个字节都没写进去（hotfix31 日志「回读 饱和=<读不到>」就是它）。
+    auto vector_channels = [&](FProperty* value_prop, const char* (&names)[4]) {
+        const bool rgba = struct_member(value_prop, "R") != nullptr;
+        if (!rgba && !look_vector_named_logged_) {
+            look_vector_named_logged_ = true;
+            log(LogLevel::Info,
+                "画面效果：ColorSaturation/ColorContrast 的成员名是 X/Y/Z/W（UE5 的 FVector4），按这个写");
+        }
+        names[0] = rgba ? "R" : "X";
+        names[1] = rgba ? "G" : "Y";
+        names[2] = rgba ? "B" : "Z";
+        names[3] = rgba ? "A" : "W";
+    };
+    auto set_vector = [&](const char* override_name, const char* value_name, bool on, double value) {
+        FProperty* override_prop = struct_member(settings, override_name);
+        FProperty* value_prop = struct_member(settings, value_name);
+        if (override_prop == nullptr || value_prop == nullptr) {
+            note_missing(value_name);
+            return;
+        }
+        void* vector_base = struct_member_base(value_prop, base);
+        const char* channels[4]{};
+        vector_channels(value_prop, channels);
+        (void)write_bool(override_prop, base, on);
+        const double channel_value = on ? value : 1.0;
+        for (int i = 0; i < 3; ++i) {
+            (void)write_number(struct_member(value_prop, channels[i]), vector_base, channel_value);
+        }
+        (void)write_number(struct_member(value_prop, channels[3]), vector_base, 1.0);
+    };
+
+    set_scalar("bOverride_VignetteIntensity", "VignetteIntensity", options.vignette_active(), options.vignette);
+    set_scalar("bOverride_BloomIntensity", "BloomIntensity", options.bloom_active(), options.bloom);
+    set_vector("bOverride_ColorSaturation", "ColorSaturation", options.saturation_active(), options.saturation);
+    set_vector("bOverride_ColorContrast", "ColorContrast", options.contrast_active(), options.contrast);
+
+    // 冷暖：SceneColorTint（FLinearColor 乘算）。t>0 偏暖（压蓝），t<0 偏冷（压红）。
+    {
+        FProperty* override_prop = struct_member(settings, "bOverride_SceneColorTint");
+        FProperty* tint_prop = struct_member(settings, "SceneColorTint");
+        if (override_prop == nullptr || tint_prop == nullptr) {
+            note_missing("SceneColorTint");
+        } else {
+            const bool on = options.temperature_active();
+            (void)write_bool(override_prop, base, on);
+            void* tint_base = struct_member_base(tint_prop, base);
+            const double t = on ? options.temperature : 0.0;
+            (void)write_number(struct_member(tint_prop, "R"), tint_base, 1.0 + 0.18 * t);
+            (void)write_number(struct_member(tint_prop, "G"), tint_base, 1.0 - 0.02 * t);
+            (void)write_number(struct_member(tint_prop, "B"), tint_base, 1.0 - 0.22 * t);
+            (void)write_number(struct_member(tint_prop, "A"), tint_base, 1.0);
+        }
+    }
+
+    // 颜色分级（饱和度/对比度）由引擎的「颜色分级 LUT」承载：本作若把 ColorGradingIntensity 压成 0，
+    // LUT 整个不参与合成，饱和/对比写得再准也不会进画面。只在用户真动这两项时把强度钉成 1
+    //（LUT 内容仍由引擎按当前设置生成，不是外挂一张自己的 LUT）。
+    if (options.saturation_active() || options.contrast_active()) {
+        FProperty* override_prop = struct_member(settings, "bOverride_ColorGradingIntensity");
+        FProperty* value_prop = struct_member(settings, "ColorGradingIntensity");
+        if (override_prop == nullptr || value_prop == nullptr) {
+            note_missing("ColorGradingIntensity");
+        } else {
+            (void)write_bool(override_prop, base, true);
+            (void)write_number(value_prop, base, 1.0);
+        }
+    }
+
+    if (!missing.empty() && !look_missing_logged_) {
+        look_missing_logged_ = true;
+        log(LogLevel::Warn, "画面效果：这些字段在本 build 里不存在，对应项不会生效 → " + missing);
+    }
+
+    look_active_ = options.any_active();
+    if (look_active_ && !look_logged_) {
+        look_logged_ = true;
+        char buf[256]{};
+        std::snprintf(buf, sizeof(buf),
+                      "画面效果：已写进自建后处理体积（暗角=%.2f 饱和=%.2f 对比=%.2f 泛光=%.2f "
+                      "冷暖=%.2f），退出摄影模式还原",
+                      options.vignette, options.saturation, options.contrast, options.bloom,
+                      options.temperature);
+        log(LogLevel::Info, buf);
+    }
+
+    // 值每次都真的下发，但「写进去」不等于「引擎肯画」：hotfix31 实机里饱和度/对比度曾因
+    // FVector4 成员名写错（R/G/B/A 而非 X/Y/Z/W）而一个字节都没进体积，日志却只显示「下发成功」。
+    // 所以每次值变化都回读一遍体积里的实际值，把「没写进去」和「写进去了引擎不画」分开。
+    if (!look_written_valid_ || !look_options_equal(look_written_last_, options)) {
+        look_written_valid_ = true;
+        look_written_last_ = options;
+        char buf[320]{};
+        std::snprintf(buf, sizeof(buf),
+                      "画面效果：下发 暗角=%.2f 饱和=%.2f 对比=%.2f 泛光=%.2f 冷暖=%.2f",
+                      options.vignette, options.saturation, options.contrast, options.bloom,
+                      options.temperature);
+        log(LogLevel::Info, buf);
+
+        auto pair_text = [](const char* label, double flag, double value) {
+            char part[64]{};
+            if (flag < 0.0) {
+                std::snprintf(part, sizeof(part), " %s=<读不到>", label);
+            } else {
+                std::snprintf(part, sizeof(part), " %s=%.2f(覆盖%d)", label, value, flag > 0.5 ? 1 : 0);
+            }
+            return std::string(part);
+        };
+        std::string text = "画面效果：回读";
+        double flag = -1.0;
+        double value = -1.0;
+        // 标量项：bOverride_* + 浮点值
+        auto read_scalar = [&](const char* label, const char* override_name, const char* value_name) {
+            flag = -1.0;
+            value = -1.0;
+            double o = 0.0;
+            double v = 0.0;
+            if (read_number(struct_member(settings, override_name), base, o) &&
+                read_number(struct_member(settings, value_name), base, v)) {
+                flag = o;
+                value = v;
+            }
+            text += pair_text(label, flag, value);
+        };
+        // 向量项：bOverride_* + R 通道（R=G=B，A 恒 1）
+        auto read_vector = [&](const char* label, const char* override_name, const char* value_name) {
+            flag = -1.0;
+            value = -1.0;
+            FProperty* vector_prop = struct_member(settings, value_name);
+            double o = 0.0;
+            double r = 0.0;
+            if (vector_prop != nullptr && read_number(struct_member(settings, override_name), base, o)) {
+                void* vector_base = struct_member_base(vector_prop, base);
+                const char* channels[4]{};
+                vector_channels(vector_prop, channels);
+                if (read_number(struct_member(vector_prop, channels[0]), vector_base, r)) {
+                    flag = o;
+                    value = r;
+                }
+            }
+            text += pair_text(label, flag, value);
+        };
+        read_scalar("暗角", "bOverride_VignetteIntensity", "VignetteIntensity");
+        read_scalar("泛光", "bOverride_BloomIntensity", "BloomIntensity");
+        read_vector("饱和", "bOverride_ColorSaturation", "ColorSaturation");
+        read_vector("对比", "bOverride_ColorContrast", "ColorContrast");
+        read_scalar("颜色分级", "bOverride_ColorGradingIntensity", "ColorGradingIntensity");
+        log(LogLevel::Info, text);
+    }
+
+    return true;
+}
+
+bool Ue4ssPort::leave_camera_takeover() {
+    if (!takeover_active_) return true;
+    takeover_active_ = false;
+    takeover_pose_known_ = false;
+    takeover_fov_ = 90.0;
+    takeover_write_fail_streak_ = 0;
+    takeover_write_fail_logged_ = false;
+    takeover_write_point_logged_ = false;
+    takeover_pov_mismatch_streak_ = 0;
+    takeover_render_lost_ = false;
+    log(LogLevel::Info, "已退出接管当前相机：停止每帧覆盖 POV，游戏相机恢复自身逻辑");
+    return true;
 }
 
 bool Ue4ssPort::set_ignore_move_input(bool ignore) {
@@ -627,6 +1255,10 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
     }
 
     bool touched = false;
+    bool fallback_any = false;
+    // bBlockInput 直写失败的项先收集，等兜底结果出来再决定日志级别：
+    // 兜底成功只是“换了一条路”，不该按 Error/Warn 刷屏；兜底也失败才是真问题。
+    std::vector<std::string> direct_failures;
 
     // 1) 输入栈中断：PC / Pawn 上的 InputComponent 打 bBlockInput。
     //    动作类绑定（攻击、交互、技能）挂在 Pawn 的 InputComponent 上，
@@ -646,7 +1278,7 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
             touched = true;
             remember_blocked_object(*slot.owner_record, owner, owner, 0x1);
         } else {
-            log(LogLevel::Warn, std::string("屏蔽输入：") + slot.label + " 的 bBlockInput 写入失败");
+            direct_failures.push_back(std::string(slot.label) + " 的 bBlockInput");
         }
 
         UObject* component = nullptr;
@@ -655,7 +1287,7 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
                 touched = true;
                 remember_blocked_object(*slot.component_record, component, owner, 0x1);
             } else {
-                log(LogLevel::Warn, std::string("屏蔽输入：") + slot.label + " 的 InputComponent 写入失败");
+                direct_failures.push_back(std::string(slot.label) + " 的 InputComponent");
             }
         }
     }
@@ -668,6 +1300,7 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
                        params.set_bool("NewLookInput", true);
             })) {
             touched = true;
+            fallback_any = true;
             remember_blocked_object(input_block_pc_, pc, pc, 0x4);
         }
 
@@ -676,13 +1309,30 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
         //    DisableInput 是官方语义上的“这个 Actor 不再接收输入”。
         if (invoke(pc, "DisableInput", [&](ParamBlock& params) { return params.set_object("PlayerController", pc); })) {
             touched = true;
+            fallback_any = true;
             remember_blocked_object(input_block_pc_, pc, pc, 0x8);
         }
         UObject* pawn = player_pawn();
         if (is_ok(pawn) &&
             invoke(pawn, "DisableInput", [&](ParamBlock& params) { return params.set_object("PlayerController", pc); })) {
             touched = true;
+            fallback_any = true;
             remember_blocked_object(input_block_pawn_, pawn, pawn, 0x8);
+        }
+    }
+
+    // 直写失败汇总：兜底成功 → Info（只报一条，不再每次进入两条 Warn）；
+    // 兜底也全部失败 → Warn（此时输入栈可能真的没被屏蔽）。
+    if (!direct_failures.empty()) {
+        std::string joined;
+        for (const std::string& item : direct_failures) {
+            if (!joined.empty()) joined += "、";
+            joined += item;
+        }
+        if (fallback_any) {
+            log(LogLevel::Info, "屏蔽输入：" + joined + " 写入失败，已由 SetIgnoreLookInput/DisableInput 兜底");
+        } else {
+            log(LogLevel::Warn, "屏蔽输入：" + joined + " 写入失败，且兜底全部失败：游戏键鼠输入可能仍在生效");
         }
     }
     return touched;

@@ -24,6 +24,9 @@ struct PbzfmField {
     const char* label;   // 菜单里显示的文本
     double mn{0.0}, mx{0.0}, step{1.0};
     const char* fmt{"%.3f"};
+    // Float：滑条是否走对数刻度。跨 3 个数量级以上的字段（对焦距离 1..100000cm、
+    // 对焦步进 1..5000cm）必须开，否则线性滑条上 1 像素 ≈ 500cm，根本拖不到可用的 300~1500cm。
+    bool logarithmic{false};
     const char* const* options{nullptr};  // Enum：选项文本（存储值为下标）
     int option_count{0};
     // Bool / Float / Enum 的取值与写值

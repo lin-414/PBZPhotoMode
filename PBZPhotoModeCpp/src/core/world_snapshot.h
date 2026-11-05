@@ -97,8 +97,9 @@ inline auto plan_time_freeze_fields(const TimeSettingsSnapshot& snapshot, double
 }
 
 // ---- 暂停字段快照 ----
-// 两项分开记账：bShouldPerformFullTickWhenPaused 在 PlayerController 上，
-// bPauseable 在 GameMode 上；读不到原值就完全不写，恢复也只写确实写过的项。
+// 三项分开记账：bShouldPerformFullTickWhenPaused 在 PlayerController 上，
+// bPauseable 在 GameMode 上，bIsCameraMoveableWhenPaused 在 UWorld 上；
+// 读不到原值就完全不写，恢复也只写确实写过的项。
 struct PauseSnapshot {
     std::uint64_t generation{0};
     bool full_tick_read{false};
@@ -107,10 +108,15 @@ struct PauseSnapshot {
     bool game_mode_read{false};
     bool game_mode_original{true};
     bool game_mode_written{false};
+    // UWorld.bIsCameraMoveableWhenPaused：暂停时相机仍可动的第二个标准 flag。
+    // 只把它当 A/B 实验项：读不到/写失败不影响暂停本身，日志会明确标出。
+    bool camera_moveable_read{false};
+    bool camera_moveable_original{false};
+    bool camera_moveable_written{false};
 
     bool belongs_to(std::uint64_t world_generation) const { return generation == world_generation; }
     void adopt(std::uint64_t world_generation) { generation = world_generation; }
-    bool any_written() const { return full_tick_written || game_mode_written; }
+    bool any_written() const { return full_tick_written || game_mode_written || camera_moveable_written; }
 
     void reset() {
         generation = 0;
@@ -120,6 +126,9 @@ struct PauseSnapshot {
         game_mode_read = false;
         game_mode_original = true;
         game_mode_written = false;
+        camera_moveable_read = false;
+        camera_moveable_original = false;
+        camera_moveable_written = false;
     }
 };
 

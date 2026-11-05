@@ -45,6 +45,80 @@ void PhotoMode::log(LogLevel level, const std::string& message) {
     log_.log(level, std::string("[PhotoMode] ") + message);
 }
 
+void PhotoMode::set_config(const Config& cfg) {
+    // 运行期改动由 tick/enter 读取 cfg_ 生效（画面效果由 apply_look_if_needed 比较后下发）。
+    cfg_ = cfg;
+}
+
+// 运行时换相机后端（PBZFM 菜单热切换）。
+// 两条后端都是 enter() 时建立的，所以改这一项不能只改配置：必须把旧后端完整拆掉再建新的，
+// 中途任何一步失败都回滚到原后端——绝不能让用户点了开关之后没有相机可用。
+bool PhotoMode::set_camera_backend_live(bool use_takeover) {
+    cfg_.takeover_current_camera = use_takeover;
+    if (!active_) return true;                          // 未激活：下次 enter() 按新配置建立
+    if (use_takeover == takeover_active_) return true;  // 已经是目标后端（含 enter 时回退过的情况）
+
+    if (use_takeover) {
+        // 独立相机 → 接管：先让游戏拿回视角（失败就保持现状，否则会对着已销毁的相机渲染），
+        // 再销毁我们建的 Actor，最后接管当前 POV。
+        if (!camera_.restore_view()) {
+            log(LogLevel::Warn, "切换到接管失败：无法还原游戏视角，保持独立相机");
+            cfg_.takeover_current_camera = takeover_active_;  // 失败回滚：配置必须跟实际后端一致
+            return false;
+        }
+        camera_.destroy_camera();
+        spawned_ = false;
+        view_attached_ = false;
+
+        if (!camera_.takeover_current_camera(pose_)) {
+            log(LogLevel::Warn, "切换到接管失败：回退到独立相机");
+            if (camera_.spawn_camera(pose_)) {
+                spawned_ = true;
+                view_attached_ = camera_.attach_view();
+            }
+            cfg_.takeover_current_camera = takeover_active_;  // 失败回滚：配置必须跟实际后端一致
+            reapply_visuals_live();
+            return false;
+        }
+        takeover_active_ = true;
+        log(LogLevel::Info, "已切换相机后端：接管当前相机（UUU 式，不 spawn、不换 ViewTarget）");
+    } else {
+        // 接管 → 独立相机：退出接管会顺手把 POV 上的后处理快照还原，再 spawn 新相机。
+        if (!camera_.leave_camera_takeover()) {
+            log(LogLevel::Warn, "退出接管时后处理快照未完全还原，继续切换相机后端");
+        }
+        takeover_active_ = false;
+
+        if (!camera_.spawn_camera(pose_)) {
+            log(LogLevel::Warn, "切换到独立相机失败：回退到接管当前相机");
+            if (camera_.takeover_current_camera(pose_)) takeover_active_ = true;
+            cfg_.takeover_current_camera = takeover_active_;  // 失败回滚：配置必须跟实际后端一致
+            reapply_visuals_live();
+            return false;
+        }
+        spawned_ = true;
+        if (!camera_.attach_view()) {
+            camera_.destroy_camera();
+            spawned_ = false;
+            log(LogLevel::Warn, "切换后设置 ViewTarget 失败：回退到接管当前相机");
+            if (camera_.takeover_current_camera(pose_)) takeover_active_ = true;
+            cfg_.takeover_current_camera = takeover_active_;  // 失败回滚：配置必须跟实际后端一致
+            reapply_visuals_live();
+            return false;
+        }
+        view_attached_ = true;
+        log(LogLevel::Info, "已切换相机后端：独立相机（CineCameraActor，FOV 会同步真实焦距）");
+    }
+
+    // 新后端要重新吃到当前 FOV：旧后端上的 FOV 不会跟着搬家。
+    reapply_visuals_live();
+    return true;
+}
+
+void PhotoMode::reapply_visuals_live() {
+    (void)camera_.apply_fov(fov_);
+}
+
 bool PhotoMode::enter() {
     if (active_) {
         log(LogLevel::Warn, "已经在摄影模式中，忽略重复进入");
@@ -91,21 +165,40 @@ bool PhotoMode::enter() {
     reset_fov_ = fov_;
     has_reset_pose_ = true;
 
-    if (!camera_.spawn_camera(pose_)) {
-        last_error_ = "创建 CameraActor 失败";
-        log(LogLevel::Error, last_error_);
-        return false;
+    // 默认先尝试 UUU 式「接管当前相机」：不 spawn、不换 ViewTarget，直接每帧覆盖当前相机 POV。
+    // 接管失败必须在同一次 enter 内自动回退到独立相机——绝不能让「无法进入摄影模式」重现。
+    bool takeover_failed = false;
+    if (cfg_.takeover_current_camera) {
+        if (camera_.takeover_current_camera(pose_)) {
+            takeover_active_ = true;
+            log(LogLevel::Info, "已接管当前相机（不生成独立 CameraActor、不切换 ViewTarget）");
+        } else {
+            takeover_failed = true;
+            log(LogLevel::Warn,
+                "接管当前相机失败（拿不到当前相机 POV 或写不进变换），本次进入自动回退到独立相机"
+                "（spawn + SetViewTargetWithBlend）");
+        }
     }
-    spawned_ = true;
 
-    if (!camera_.attach_view()) {
-        last_error_ = "设置 ViewTarget 失败";
-        log(LogLevel::Error, last_error_);
-        camera_.destroy_camera();
-        spawned_ = false;
-        return false;
+    if (!takeover_active_) {
+        if (!camera_.spawn_camera(pose_)) {
+            last_error_ = takeover_failed ? "接管当前相机失败，且独立 CameraActor 创建也失败"
+                                          : "创建 CameraActor 失败";
+            log(LogLevel::Error, last_error_);
+            return false;
+        }
+        spawned_ = true;
+
+        if (!camera_.attach_view()) {
+            last_error_ = takeover_failed ? "接管当前相机失败，且独立相机的 ViewTarget 设置也失败"
+                                          : "设置 ViewTarget 失败";
+            log(LogLevel::Error, last_error_);
+            camera_.destroy_camera();
+            spawned_ = false;
+            return false;
+        }
+        view_attached_ = true;
     }
-    view_attached_ = true;
 
     // 以下步骤失败都不致命：记 warning，继续进模式
     if (cfg_.block_game_input) {
@@ -166,6 +259,15 @@ bool PhotoMode::enter() {
     shakes_frozen_ = false;
     wind_frozen_ = false;
     mpc_hold_active_ = false;
+    cloth_frozen_ = false;
+    custom_cloth_frozen_ = false;
+    wpo_frozen_ = false;
+    animation_frozen_ = false;
+    motion_blur_frozen_ = false;
+    render_tuning_active_ = false;
+    lighting_tuning_active_ = false;
+    lighting_ab_cycle_active_ = false;
+    shadow_tuning_active_ = false;
     freeze_check_accum_ = 0.0;
     freeze_reassert_count_ = 0;
     freeze_reassert_gave_up_ = false;
@@ -199,10 +301,14 @@ bool PhotoMode::enter() {
 bool PhotoMode::has_pending_restore() const {
     // 幂等判断必须覆盖所有“进入时可能改动过”的标志（旧版漏了 frozen_ / sequences_paused_ /
     // shakes_frozen_ / wind_frozen_ / mpc_hold_active_，导致这些状态下 leave 早退不还原）
-    return active_ || spawned_ || view_attached_ || ignore_move_set_ || game_input_blocked_ || player_hidden_ ||
+    return active_ || spawned_ || view_attached_ || takeover_active_ || ignore_move_set_ ||
+           game_input_blocked_ || player_hidden_ ||
            hud_hidden_ || prompt_hidden_ || bars_hidden_ || lockon_hidden_ || subtitles_hidden_ || aspect_unlocked_ ||
            frozen_ || sequences_paused_ || flow_dialog_frozen_ || wwise_paused_ ||
-           wwise_engine_suspended_ || shakes_frozen_ || wind_frozen_ || mpc_hold_active_ || recovery_pending_;
+           wwise_engine_suspended_ || shakes_frozen_ || wind_frozen_ || mpc_hold_active_ || cloth_frozen_ ||
+           custom_cloth_frozen_ || wpo_frozen_ || animation_frozen_ || motion_blur_frozen_ || render_tuning_active_ ||
+           lighting_tuning_active_ ||
+           lighting_ab_cycle_active_ || shadow_tuning_active_ || recovery_pending_;
 }
 
 bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
@@ -210,8 +316,75 @@ bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
         if (failed_items != nullptr) failed_items->push_back(what);
     };
 
-    // 冻结期压住的变化源：严格逆序释放（MPC → 风 → 相机），再恢复时间/剧情/音频。
+    if (takeover_active_) {
+        if (camera_.leave_camera_takeover()) {
+            takeover_active_ = false;
+        } else {
+            fail("接管当前相机未退出（游戏相机仍被每帧覆盖）");
+        }
+    }
+
+    // 冻结期压住的变化源：严格逆序释放（阴影对照 → 光照对照 → 渲染对照 → 动态模糊 → 骨骼动画 → 布料 → MPC → 风 → 相机），再恢复时间/剧情/音频。
     // 每一项成功才清对应标志；失败保留，由 tick 退避重试，不在同一帧连打。
+    if (shadow_tuning_active_) {
+        const RenderTuningReport shadow_report = freeze_motion_.freeze_shadow_ab(false);
+        if (shadow_report.ok) {
+            shadow_tuning_active_ = false;
+        } else {
+            fail("阴影/后处理对照 CVar 未还原");
+        }
+    }
+    if (lighting_tuning_active_) {
+        const RenderTuningReport lighting_report = freeze_motion_.freeze_lighting(false, LightingTuningOptions{});
+        if (lighting_report.ok) {
+            lighting_tuning_active_ = false;
+            lighting_ab_cycle_active_ = false;
+        } else {
+            fail("光照对照 CVar 未还原（Lumen/屏幕空间光照可能保持关闭）");
+        }
+    }
+    if (render_tuning_active_) {
+        if (freeze_motion_.freeze_render_tuning(false, false, false, false, false).ok) {
+            render_tuning_active_ = false;
+        } else {
+            fail("渲染对照 CVar 未还原（AA/速度输出/FG 可能保持关闭）");
+        }
+    }
+    if (motion_blur_frozen_) {
+        if (freeze_motion_.freeze_motion_blur(false)) {
+            motion_blur_frozen_ = false;
+        } else {
+            fail("动态模糊未恢复");
+        }
+    }
+    if (animation_frozen_) {
+        if (freeze_motion_.freeze_skeletal_animation(false).ok) {
+            animation_frozen_ = false;
+        } else {
+            fail("骨骼动画未恢复（角色可能保持静止）");
+        }
+    }
+    if (wpo_frozen_) {
+        if (freeze_motion_.freeze_wpo(false).ok) {
+            wpo_frozen_ = false;
+        } else {
+            fail("WPO 评估未恢复（材质顶点动画可能保持关闭）");
+        }
+    }
+    if (custom_cloth_frozen_) {
+        if (freeze_motion_.freeze_custom_cloth(false).ok) {
+            custom_cloth_frozen_ = false;
+        } else {
+            fail("自定义布料/摆动未恢复（Sway/全局 Cloth 可能保持冻结）");
+        }
+    }
+    if (cloth_frozen_) {
+        if (freeze_motion_.freeze_cloth(false).ok) {
+            cloth_frozen_ = false;
+        } else {
+            fail("布料模拟未恢复（裙摆/披风可能保持冻结姿态）");
+        }
+    }
     if (mpc_hold_active_) {
         freeze_motion_.mpc_release_snapshot();  // 无返回值：释放是幂等的
         mpc_hold_active_ = false;
@@ -352,6 +525,8 @@ bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
 }
 
 void PhotoMode::leave(const char* reason) {
+    (void)camera_.set_look(LookOptions{});
+    look_applied_valid_ = false;
     if (!has_pending_restore()) {
         return;  // 幂等：没进过模式、也没有残留改动
     }
@@ -468,19 +643,87 @@ void PhotoMode::toggle_freeze() {
     freeze_diag_seconds_ = 0.0;
     freeze_diag_has_last_ = false;
 
-    // 冻结期残余微动治理：世界暂停拦不住的“每帧变化源”。冻结顺序 = 相机 → 风 → MPC，
-    // 解冻严格逆序（MPC → 风 → 相机），与 leave() 的还原顺序一致。
+    // 冻结期残余微动治理：世界暂停拦不住的“每帧变化源”。冻结顺序 = 相机 → 风 → MPC → 布料 → 骨骼动画 → 动态模糊 → 渲染对照 → 光照对照 → 阴影对照，
+    // 解冻严格逆序（阴影对照 → 光照对照 → 渲染对照 → 动态模糊 → 骨骼动画 → 布料 → MPC → 风 → 相机），与 leave() 的还原顺序一致。
+    if (shadow_tuning_active_) {
+        const RenderTuningReport shadow_report = freeze_motion_.freeze_shadow_ab(false);
+        if (shadow_report.ok) {
+            shadow_tuning_active_ = false;
+        } else {
+            log(LogLevel::Warn, "阴影/后处理对照 CVar 还原失败，退出摄影模式时会重试");
+        }
+    }
+    if (lighting_tuning_active_) {
+        const RenderTuningReport lighting_report = freeze_motion_.freeze_lighting(false, LightingTuningOptions{});
+        if (lighting_report.ok) {
+            lighting_tuning_active_ = false;
+            lighting_ab_cycle_active_ = false;
+        } else {
+            log(LogLevel::Warn, "光照对照 CVar 还原失败，退出摄影模式时会重试");
+        }
+    }
+    if (render_tuning_active_) {
+        if (freeze_motion_.freeze_render_tuning(false, false, false, false, false).ok) {
+            render_tuning_active_ = false;
+        } else {
+            log(LogLevel::Warn, "渲染对照 CVar 还原失败，退出摄影模式时会重试");
+        }
+    }
+    if (motion_blur_frozen_) {
+        if (freeze_motion_.freeze_motion_blur(false)) {
+            motion_blur_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "动态模糊恢复失败，退出摄影模式时会重试");
+        }
+    }
+    if (animation_frozen_) {
+        if (freeze_motion_.freeze_skeletal_animation(false).ok) {
+            animation_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "骨骼动画恢复失败，退出摄影模式时会重试");
+        }
+    }
+    if (wpo_frozen_) {
+        if (freeze_motion_.freeze_wpo(false).ok) {
+            wpo_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "WPO 评估恢复失败，退出摄影模式时会重试");
+        }
+    }
+    if (custom_cloth_frozen_) {
+        if (freeze_motion_.freeze_custom_cloth(false).ok) {
+            custom_cloth_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "自定义布料/摆动恢复失败，退出摄影模式时会重试");
+        }
+    }
+    if (cloth_frozen_) {
+        if (freeze_motion_.freeze_cloth(false).ok) {
+            cloth_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "布料模拟恢复失败，退出摄影模式时会重试");
+        }
+    }
     if (mpc_hold_active_) {
         freeze_motion_.mpc_release_snapshot();
         mpc_hold_active_ = false;
     }
+    // 恢复失败必须保留标志：退出摄影模式时的级联还会再试一次。
+    // 这里曾经无条件清标志（与上面 wpo/cloth 三段不一致），导致恢复失败后永不重试、
+    // 布料/植被永久停在冻结态。
     if (wind_frozen_) {
-        freeze_motion_.freeze_wind(false);
-        wind_frozen_ = false;
+        if (freeze_motion_.freeze_wind(false).ok) {
+            wind_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "风源恢复失败，退出摄影模式时会重试");
+        }
     }
     if (shakes_frozen_) {
-        freeze_motion_.freeze_camera_shakes(false);
-        shakes_frozen_ = false;
+        if (freeze_motion_.freeze_camera_shakes(false).ok) {
+            shakes_frozen_ = false;
+        } else {
+            log(LogLevel::Warn, "相机晃动恢复失败，退出摄影模式时会重试");
+        }
     }
     if (want && cfg_.stop_camera_shakes_on_freeze) {
         // shake/修饰器用真实时间驱动，暂停期间照常推视角：冻结画面边缘抖动（脸部阴影爬动）的主变化源
@@ -495,6 +738,61 @@ void PhotoMode::toggle_freeze() {
     if (want && cfg_.freeze_mpc) {
         const int held = freeze_motion_.mpc_take_snapshot();
         mpc_hold_active_ = held > 0;
+    }
+    if (want && cfg_.freeze_cloth) {
+        // 布料/裙摆/披风模拟有独立 tick，世界暂停与 TimeDilation 都拦不住；
+        // 冻结时挂起并保留最后姿态，解冻恢复。
+        const ClothFreezeReport report = freeze_motion_.freeze_cloth(true);
+        cloth_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_custom_cloth) {
+        // PBZ 自己的 SwayComponent / 全局 Cloth 开关：引擎 Cloth.Enable 与组件 Suspend 之外的第三条路径。
+        const CustomClothFreezeReport report = freeze_motion_.freeze_custom_cloth(true);
+        custom_cloth_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_wpo) {
+        // 材质顶点动画（WPO）在暂停/TimeDilation 下仍可能求值：逐 SkeletalMesh 关闭评估，解冻恢复。
+        const WpoFreezeReport report = freeze_motion_.freeze_wpo(true);
+        wpo_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_skeletal_animation) {
+        // 部分角色/敌人的 SkeletalMesh 会在暂停下继续跑 AnimBP；骨骼驱动的 cape 会继续动。
+        const SkeletalAnimationFreezeReport report = freeze_motion_.freeze_skeletal_animation(true);
+        animation_frozen_ = report.ok;
+    }
+    if (want && cfg_.freeze_motion_blur_off) {
+        // 残留速度缓冲 + motion blur 会把布料细纹理抹成“流动式”拖影。
+        motion_blur_frozen_ = freeze_motion_.freeze_motion_blur(true);
+    }
+    if (want) {
+        // A/B 渲染对照：默认两项都 false，只读取并记录当前渲染状态；
+        // 需要定位 TSR/TAA 或 WPO 假速度时再在 config.ini 开启。
+        const RenderTuningReport render_report = freeze_motion_.freeze_render_tuning(
+            true, cfg_.freeze_aa_off, cfg_.freeze_wpo_velocity_off, cfg_.freeze_framegen_off, cfg_.freeze_dlss_off,
+            cfg_.freeze_tonemapper_dither_off);
+        render_tuning_active_ = render_report.applied > 0;
+
+        // 光照 A/B（Lumen/屏幕空间光照）：单项开关或自动轮换任一开启就进入本阶段。
+        LightingTuningOptions lighting_options{};
+        lighting_options.screen_traces_off = cfg_.freeze_lumen_screen_traces_off;
+        lighting_options.short_range_ao_off = cfg_.freeze_lumen_short_range_ao_off;
+        lighting_options.radiance_cache_off = cfg_.freeze_lumen_radiance_cache_off;
+        lighting_options.fixed_jitter = cfg_.freeze_lumen_fixed_jitter;
+        lighting_options.lumen_off = cfg_.freeze_lumen_off;
+        const bool any_lighting = lighting_options.screen_traces_off || lighting_options.short_range_ao_off ||
+                                  lighting_options.radiance_cache_off || lighting_options.fixed_jitter ||
+                                  lighting_options.lumen_off;
+        if (any_lighting || cfg_.freeze_lighting_ab_cycle) {
+            const RenderTuningReport lighting_report = freeze_motion_.freeze_lighting(true, lighting_options);
+            lighting_tuning_active_ = lighting_report.ok;
+            lighting_ab_cycle_active_ = cfg_.freeze_lighting_ab_cycle;
+        }
+
+        // 阴影/后处理 A/B：Lumen 六档全部无效后的第二层诊断（VSM/SMRT/接触阴影/体积雾/后处理）。
+        if (cfg_.freeze_shadow_ab_cycle) {
+            const RenderTuningReport shadow_report = freeze_motion_.freeze_shadow_ab(true);
+            shadow_tuning_active_ = shadow_report.ok;
+        }
     }
 
     // 剧情播放器一并处理：剧情系统常绕过世界暂停与时间缩放（画面像冻住、动作声音还在走）
@@ -560,6 +858,21 @@ void PhotoMode::toggle_freeze() {
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
 }
 
+void PhotoMode::reassert_time_dilation_if_needed() {
+    if (!active_ || !frozen_ || frozen_with_pause_) return;
+    time_pause_.reassert_time_dilation(cfg_.freeze_dilation);
+}
+
+void PhotoMode::reassert_render_tuning_if_needed() {
+    if (!active_ || !frozen_ || !render_tuning_active_) return;
+    freeze_motion_.render_reassert_tick();
+}
+
+void PhotoMode::reassert_mpc_hold_if_needed() {
+    if (!active_ || !frozen_ || !mpc_hold_active_) return;
+    freeze_motion_.mpc_hold_snapshot();
+}
+
 // ---- 图形菜单实时开关：改配置 + 立即生效，内部记账与 enter()/leave() 共用 ----
 
 void PhotoMode::set_hide_player_live(bool visible) {
@@ -604,6 +917,39 @@ void PhotoMode::set_hide_game_hud_live(bool hidden) {
     }
 }
 
+
+void PhotoMode::apply_look_if_needed() {
+    LookOptions want{};
+    want.vignette = cfg_.vignette > 0.0 ? cfg_.vignette : 0.0;
+    want.saturation = cfg_.saturation;
+    want.contrast = cfg_.contrast;
+    want.bloom = cfg_.bloom > 0.0 ? cfg_.bloom : 0.0;
+    want.temperature = cfg_.temperature;
+
+    if (look_applied_valid_ && look_options_equal(want, look_applied_)) return;
+    if (!camera_.set_look(want)) {
+        // 失败不锁死：下一帧还会再试（体积要等世界就绪），日志只告警一次
+        look_applied_valid_ = false;
+        if (!look_warn_logged_) {
+            look_warn_logged_ = true;
+            log(LogLevel::Warn, "画面效果：自建后处理体积不可用，暗角/饱和/对比/泛光/冷暖未生效（其余摄影功能不受影响）");
+        }
+        return;
+    }
+    look_applied_ = want;
+    look_applied_valid_ = true;
+    if (want.any_active() && !look_logged_) {
+        look_logged_ = true;
+        char buf[220]{};
+        std::snprintf(buf, sizeof(buf),
+                      "画面效果：暗角=%.2f 饱和=%.2f 对比=%.2f 泛光=%.2f 冷暖=%.2f"
+                      "（写进自建后处理体积，退出还原）",
+                      want.vignette, want.saturation, want.contrast, want.bloom, want.temperature);
+        log(LogLevel::Info, buf);
+    }
+}
+
+
 bool PhotoMode::apply_pose_if_dirty() {
     if (!pose_dirty_) return true;
     pose_.fov = fov_;
@@ -614,7 +960,41 @@ bool PhotoMode::apply_pose_if_dirty() {
     return true;
 }
 
+bool PhotoMode::fallback_from_takeover() {
+    log(LogLevel::Warn,
+        "接管当前相机未生效（写入的 POV 没有赶上本帧渲染，镜头不会跟随输入），"
+        "已自动回退到独立相机（spawn + SetViewTargetWithBlend）");
+
+    const bool restored = camera_.leave_camera_takeover();
+    takeover_active_ = false;
+    if (!restored) {
+        log(LogLevel::Warn, "回退独立相机：退出接管未完全成功（游戏相机状态可能残留）");
+    }
+
+    if (!camera_.spawn_camera(pose_)) {
+        log(LogLevel::Error, "接管失效后回退独立相机失败：创建 CameraActor 失败");
+        return false;
+    }
+    spawned_ = true;
+
+    if (!camera_.attach_view()) {
+        log(LogLevel::Error, "接管失效后回退独立相机失败：设置 ViewTarget 失败");
+        camera_.destroy_camera();
+        spawned_ = false;
+        return false;
+    }
+    view_attached_ = true;
+
+    pose_dirty_ = false;
+    if (!camera_.apply_fov(fov_)) log(LogLevel::Warn, "回退独立相机后应用 FOV 失败");
+    if (!camera_.apply_pose(pose_)) log(LogLevel::Warn, "回退独立相机后应用相机位姿失败");
+
+    log(LogLevel::Info, "已回退到独立相机：WASD/鼠标应恢复移动");
+    return true;
+}
+
 void PhotoMode::tick(const Intent& intent, double dt) {
+    apply_look_if_needed();
     if (!active_) {
         // 退出后恢复未完成：仍然需要引擎 tick 驱动退避重试
         tick_recovery(dt);
@@ -627,6 +1007,16 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     if (!world_.world_valid()) {
         leave("世界失效");
         return;
+    }
+
+    // 引擎层在渲染结束后回读确认：写进去的 POV 没赶上当帧渲染（连续多帧被游戏覆盖）。
+    // 这时镜头完全不会跟随输入，必须立刻回退独立相机；回退也失败才退出摄影模式，
+    // 绝不能让玩家停留在「能进模式但动不了」的状态。
+    if (takeover_active_ && camera_.takeover_view_lost()) {
+        if (!fallback_from_takeover()) {
+            leave("接管当前相机未生效，且自动回退独立相机也失败");
+            return;
+        }
     }
 
     if (intent.toggle_freeze) toggle_freeze();
@@ -685,9 +1075,11 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         pose_dirty_ = true;
     }
 
-    if (intent.wheel != 0.0) {
-        // Intent.wheel 正值 = 滚轮向上：向上应是缩小 FOV（拉近），向下放大 FOV。
-        set_fov(fov_ - intent.wheel * cfg_.fov_step);
+    if (intent.wheel != 0.0 && cfg_.wheel_fov) {
+        // Intent.wheel 正值 = 滚轮向上：默认向上缩小 FOV（拉近）、向下放大；
+        // wheel_fov_invert=true 时方向互换。滚轮是否参与由 [control] wheel_fov 控制。
+        const double direction = cfg_.wheel_fov_invert ? -1.0 : 1.0;
+        set_fov(fov_ - direction * intent.wheel * cfg_.fov_step);
     }
 
     // FOV 键/手柄十字键：按下沿走一格，按住时 InputLogic 连发（延迟后按固定节奏补格）；正值 = 增大 FOV（拉远）
@@ -695,7 +1087,9 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         set_fov(fov_ + intent.fov_nudge * cfg_.fov_step);
     }
 
+    // Shift/Ctrl 变速对「步进类」操作同样生效：Shift 粗调、Ctrl 微调（与移动/滚转同规则）。
     const double mult = (intent.boost ? cfg_.boost_mult : 1.0) * (intent.slow ? cfg_.slow_mult : 1.0);
+
     const double step = cfg_.move_speed * mult * dt;
 
     const double fwd_in = intent.move_forward;
@@ -822,8 +1216,9 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     // M-1：ProcessEvent 成功不代表真的接管成功，但“回读暂未生效”（同帧 Target=null/
     // 属性不可读）也不能算失效——只有回读确凿证明视角被抢或相机位姿被搬走，
     // 连续多次才 leave。重试本身由 attach_view 幂等发出。
+    // 接管模式没有 ViewTarget 可确认：位姿覆盖由引擎侧在 post tick 每帧重写，不做回读判死。
     reassert_accum_ += dt;
-    if (reassert_accum_ >= 1.0) {
+    if (!takeover_active_ && reassert_accum_ >= 1.0) {
         reassert_accum_ = 0.0;
         camera_.attach_view();
         if (camera_.view_confirmation_failed()) {
@@ -842,6 +1237,14 @@ void PhotoMode::tick(const Intent& intent, double dt) {
         // POV 微动监测：冻结期每帧采样相机管理器最终 POV（诊断用，受 freeze_diag 门控；
         // 只统计没人动相机的帧，用户转相机时清样本不累计）
         if (cfg_.freeze_diag) freeze_motion_.pov_watch_tick(!camera_moved);
+        // 光照 A/B 自动轮换：每 phase_seconds 切一档，日志带阶段名（诊断用）
+        if (lighting_ab_cycle_active_) {
+            freeze_motion_.lighting_ab_tick(dt, true, cfg_.freeze_lighting_ab_phase_seconds);
+        }
+        // 阴影/后处理 A/B 自动轮换（与光照轮换二选一；预设包只开这个）
+        if (shadow_tuning_active_) {
+            freeze_motion_.shadow_ab_tick(dt, true, cfg_.freeze_shadow_ab_phase_seconds);
+        }
         freeze_check_accum_ += dt;
         if (freeze_check_accum_ >= 1.0) {
             freeze_check_accum_ = 0.0;

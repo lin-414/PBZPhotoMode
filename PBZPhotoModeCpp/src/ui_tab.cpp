@@ -10,12 +10,16 @@
 #include "core/version.h"
 #include "pbzfm_client_lang.h"
 
+// 本面板只读诊断：状态行 / 位姿 / 键位速查 / 冻结与恢复 / Reload / 退出。
+// 可写设置的唯一入口是 PBZFM 页（src/pbzfm_client.cpp 自绘页）。这里曾有同一批 11 个
+// 设置项的第二份可写实现，且提交语义不同（本地立刻 set_config，PBZFM 页走排队写盘 +
+// submit_config），已删除——避免同一项在两个界面行为不同（审查报告 R-B-03）。
 namespace pbzpm {
 
 void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, bool& request_reload_config,
                            UiCommands& commands, PbzmI18n& lang) {
     ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
-    if (!ImGui::Begin(PBZPM_DISPLAY_NAME " " PBZPM_VERSION, nullptr,
+    if (!ImGui::Begin(PBZPM_DISPLAY_NAME " " PBZPM_VERSION_FULL, nullptr,
                       ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
         ImGui::End();
         return;
@@ -33,49 +37,6 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
     }
 
     ImGui::Separator();
-
-    // FOV：滑块 + 直接输入
-    float fov = static_cast<float>(mode.fov());
-    if (ImGui::SliderFloat("FOV", &fov, static_cast<float>(cfg.fov_min), static_cast<float>(cfg.fov_max), "%.1f")) {
-        commands.apply_fov = true;
-        commands.new_fov = static_cast<double>(fov);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", lang.T("#console_fov_tip").c_str());
-    }
-
-    // 以下滑条与 PBZFM 菜单是同一批设置项，label 复用同一批键（#move_speed 等）
-    float speed = static_cast<float>(cfg.move_speed);
-    if (ImGui::SliderFloat(lang.T("#move_speed").c_str(), &speed, 50.0f, 2000.0f, "%.0f")) {
-        cfg.move_speed = static_cast<double>(speed);
-        mode.set_config(cfg);
-    }
-
-    float sens = static_cast<float>(cfg.look_sensitivity);
-    if (ImGui::SliderFloat(lang.T("#look_sensitivity").c_str(), &sens, 0.01f, 1.0f, "%.2f")) {
-        cfg.look_sensitivity = static_cast<double>(sens);
-        mode.set_config(cfg);
-    }
-
-    float slow_look = static_cast<float>(cfg.slow_look_mult);
-    if (ImGui::SliderFloat(lang.T("#slow_look_mult").c_str(), &slow_look, 0.01f, 1.0f, "%.2f")) {
-        cfg.slow_look_mult = static_cast<double>(slow_look);
-        mode.set_config(cfg);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", lang.T("#console_ctrl_look_tip").c_str());
-    }
-
-    float yaw_speed = static_cast<float>(cfg.yaw_speed);
-    if (ImGui::SliderFloat(lang.T("#yaw_speed").c_str(), &yaw_speed, 5.0f, 270.0f, "%.0f")) {
-        cfg.yaw_speed = static_cast<double>(yaw_speed);
-        mode.set_config(cfg);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("%s", lang.T("#console_yaw_speed_tip").c_str());
-    }
-
-    ImGui::Separator();
     ImGui::Text(lang.T("#console_pos_fmt").c_str(), mode.pose().loc.x, mode.pose().loc.y, mode.pose().loc.z);
     ImGui::Text(lang.T("#console_rot_fmt").c_str(), mode.pose().rot.pitch, mode.pose().rot.yaw, mode.pose().rot.roll);
 
@@ -88,70 +49,26 @@ void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, boo
 
     ImGui::Separator();
 
-    bool hide_player = cfg.hide_player;
-    if (ImGui::Checkbox(lang.T("#hide_player").c_str(), &hide_player)) {
-        cfg.hide_player = hide_player;
-        mode.set_config(cfg);
-    }
-    ImGui::SameLine();
-    bool block_input = cfg.block_game_input;
-    if (ImGui::Checkbox(lang.T("#console_block_input").c_str(), &block_input)) {
-        cfg.block_game_input = block_input;
-        mode.set_config(cfg);
-    }
-    ImGui::SameLine();
-    bool hide_hud = cfg.hide_game_hud;
-    if (ImGui::Checkbox(lang.T("#console_hide_hud").c_str(), &hide_hud)) {
-        cfg.hide_game_hud = hide_hud;
-        mode.set_config(cfg);
-    }
-    ImGui::SameLine();
-    bool auto_pause = cfg.auto_pause_time;
-    if (ImGui::Checkbox(lang.T("#console_auto_pause").c_str(), &auto_pause)) {
-        cfg.auto_pause_time = auto_pause;
-        mode.set_config(cfg);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(lang.T("#console_auto_pause_tip").c_str(), vk_to_name(keys.freeze).c_str());
-    }
-
-    ImGui::Separator();
-
-    bool pad_enabled = cfg.pad_enabled;
-    if (ImGui::Checkbox(lang.T("#pad_enabled").c_str(), &pad_enabled)) {
-        cfg.pad_enabled = pad_enabled;
-        mode.set_config(cfg);
-    }
-    if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(lang.T("#console_pad_tip").c_str(), pad_combo_name(keys.pad_toggle).c_str());
-    }
-    ImGui::SameLine();
-    float pad_look = static_cast<float>(cfg.pad_look_speed);
-    if (ImGui::SliderFloat(lang.T("#pad_look_speed").c_str(), &pad_look, 30.0f, 540.0f, "%.0f")) {
-        cfg.pad_look_speed = static_cast<double>(pad_look);
-        mode.set_config(cfg);
-    }
-    ImGui::SameLine();
-    float pad_deadzone = static_cast<float>(cfg.pad_deadzone);
-    if (ImGui::SliderFloat(lang.T("#pad_deadzone").c_str(), &pad_deadzone, 0.0f, 0.5f, "%.2f")) {
-        cfg.pad_deadzone = static_cast<double>(pad_deadzone);
-        mode.set_config(cfg);
-    }
-
-    ImGui::Separator();
-
-    // 键位提示（游戏内无菜单，这里就是唯一的操作速查）
-    ImGui::TextUnformatted(lang.T("#console_help_look").c_str());
-    ImGui::TextDisabled(lang.T("#console_help_move").c_str(), vk_to_name(keys.roll_left).c_str(),
-                        vk_to_name(keys.roll_right).c_str());
-    ImGui::TextUnformatted(lang.T("#console_help_wheel").c_str());
+    // 键位提示（游戏内无菜单，这里就是唯一的操作速查）。cfg 只被读取：
+    // pad_enabled 决定是否列出「手柄」那几行，本面板不修改它。
+    ImGui::TextDisabled(lang.T("#console_help_look").c_str(), vk_to_name(keys.free_look).c_str());
+    ImGui::TextDisabled(lang.T("#console_help_move").c_str(), vk_to_name(keys.move_forward).c_str(),
+                        vk_to_name(keys.move_back).c_str(), vk_to_name(keys.move_left).c_str(),
+                        vk_to_name(keys.move_right).c_str(), vk_to_name(keys.roll_left).c_str(),
+                        vk_to_name(keys.roll_right).c_str(), vk_to_name(keys.boost).c_str(),
+                        vk_to_name(keys.slow).c_str());
+    if (cfg.wheel_fov) ImGui::TextUnformatted(lang.T("#console_help_wheel").c_str());
+    ImGui::TextDisabled(lang.T("#console_help_vertical").c_str(), vk_to_name(keys.vertical_up).c_str(),
+                        vk_to_name(keys.vertical_down).c_str());
     ImGui::TextDisabled(lang.T("#console_help_reset").c_str(), vk_to_name(keys.reset).c_str());
     ImGui::TextDisabled(lang.T("#console_help_roll").c_str(), vk_to_name(keys.roll_reset).c_str());
     ImGui::TextDisabled(lang.T("#console_help_keys").c_str(), vk_to_name(keys.freeze).c_str(),
                         vk_to_name(keys.toggle).c_str());
     if (cfg.pad_enabled) {
         ImGui::TextDisabled(lang.T("#console_help_pad1").c_str(), pad_combo_name(keys.pad_toggle).c_str());
-        ImGui::TextDisabled(lang.T("#console_help_pad2").c_str(), pad_combo_name(keys.pad_pitch_up).c_str(),
+        ImGui::TextDisabled(lang.T("#console_help_pad2").c_str(), pad_combo_name(keys.pad_vertical_up).c_str(),
+                            pad_combo_name(keys.pad_vertical_down).c_str(), pad_combo_name(keys.pad_boost).c_str(),
+                            pad_combo_name(keys.pad_slow).c_str(), pad_combo_name(keys.pad_pitch_up).c_str(),
                             pad_combo_name(keys.pad_pitch_down).c_str(), pad_combo_name(keys.pad_yaw_left).c_str(),
                             pad_combo_name(keys.pad_yaw_right).c_str());
         ImGui::TextDisabled(lang.T("#console_help_pad3").c_str(), pad_combo_name(keys.pad_fov_up).c_str(),

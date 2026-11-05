@@ -1,5 +1,9 @@
 #include "pbzfm_schema_map.h"
 
+#include "core/tuning.h"
+
+// 本表的 min/max/step 与 src/core/config.cpp 的 schema() 是两份真源（菜单侧与解析侧各一份），
+// 改范围必须两边同步（配置解析与菜单共用 core/tuning.h 里的常量，不各写一份）。
 namespace pbzpm {
 namespace {
 
@@ -26,7 +30,8 @@ PbzfmField Bool(const char* group, const char* key, const char* label,
 }
 
 PbzfmField Float(const char* group, const char* key, const char* label, double mn, double mx, double step,
-                 const char* fmt, double (*get)(const Config&), void (*set)(Config&, double)) {
+                 const char* fmt, double (*get)(const Config&), void (*set)(Config&, double),
+                 bool logarithmic = false) {
     PbzfmField f;
     f.kind = PbzfmFieldKind::Float;
     f.group = group;
@@ -36,6 +41,7 @@ PbzfmField Float(const char* group, const char* key, const char* label, double m
     f.mx = mx;
     f.step = step;
     f.fmt = fmt;
+    f.logarithmic = logarithmic;
     f.get_num = get;
     f.set_num = set;
     return f;
@@ -72,6 +78,7 @@ constexpr const char* kBehaviorGroup = "#group_behavior";
 constexpr const char* kHideGroup = "#group_hide";
 constexpr const char* kFreezeGroup = "#group_freeze";
 constexpr const char* kCamGroup = "#group_camera";
+constexpr const char* kLookGroup = "#group_look";
 constexpr const char* kPadGroup = "#group_pad";
 
 }  // namespace
@@ -83,6 +90,8 @@ const std::vector<PbzfmField>& pbzfm_fields() {
             [](const KeyMap& k) { return k.toggle; }),
         Key(kKeysGroup, "key_freeze", "#key_freeze", &Config::key_freeze,
             [](const KeyMap& k) { return k.freeze; }),
+        Key(kKeysGroup, "key_frame_freeze", "#key_frame_freeze", &Config::key_frame_freeze,
+            [](const KeyMap& k) { return k.frame_freeze; }),
         Key(kKeysGroup, "key_reset", "#key_reset", &Config::key_reset,
             [](const KeyMap& k) { return k.reset; }),
         Key(kKeysGroup, "key_roll_reset", "#key_roll_reset", &Config::key_roll_reset,
@@ -107,6 +116,20 @@ const std::vector<PbzfmField>& pbzfm_fields() {
             [](const KeyMap& k) { return k.vertical_up; }),
         Key(kKeysGroup, "key_vertical_down", "#key_vertical_down", &Config::key_vertical_down,
             [](const KeyMap& k) { return k.vertical_down; }),
+        Key(kKeysGroup, "key_move_forward", "#key_move_forward", &Config::key_move_forward,
+            [](const KeyMap& k) { return k.move_forward; }),
+        Key(kKeysGroup, "key_move_back", "#key_move_back", &Config::key_move_back,
+            [](const KeyMap& k) { return k.move_back; }),
+        Key(kKeysGroup, "key_move_left", "#key_move_left", &Config::key_move_left,
+            [](const KeyMap& k) { return k.move_left; }),
+        Key(kKeysGroup, "key_move_right", "#key_move_right", &Config::key_move_right,
+            [](const KeyMap& k) { return k.move_right; }),
+        Key(kKeysGroup, "key_boost", "#key_boost", &Config::key_boost,
+            [](const KeyMap& k) { return k.boost; }),
+        Key(kKeysGroup, "key_slow", "#key_slow", &Config::key_slow,
+            [](const KeyMap& k) { return k.slow; }),
+        Key(kKeysGroup, "key_free_look", "#key_free_look", &Config::key_free_look,
+            [](const KeyMap& k) { return k.free_look; }),
 
         // ---- 行为 ----
         Bool(kBehaviorGroup, "auto_pause_time", "#auto_pause_time",
@@ -122,6 +145,12 @@ const std::vector<PbzfmField>& pbzfm_fields() {
         Bool(kBehaviorGroup, "block_game_input", "#block_game_input",
              [](const Config& c) { return c.block_game_input; },
              [](Config& c, bool v) { c.block_game_input = v; }),
+        Bool(kBehaviorGroup, "wheel_fov", "#wheel_fov",
+             [](const Config& c) { return c.wheel_fov; },
+             [](Config& c, bool v) { c.wheel_fov = v; }),
+        Bool(kBehaviorGroup, "wheel_fov_invert", "#wheel_fov_invert",
+             [](const Config& c) { return c.wheel_fov_invert; },
+             [](Config& c, bool v) { c.wheel_fov_invert = v; }),
         Bool(kBehaviorGroup, "ultrawide_unlock", "#ultrawide_unlock",
              [](const Config& c) { return c.ultrawide_unlock; },
              [](Config& c, bool v) { c.ultrawide_unlock = v; }),
@@ -171,12 +200,21 @@ const std::vector<PbzfmField>& pbzfm_fields() {
         Bool(kFreezeGroup, "freeze_mpc", "#freeze_mpc",
              [](const Config& c) { return c.freeze_mpc; },
              [](Config& c, bool v) { c.freeze_mpc = v; }),
+        Bool(kFreezeGroup, "freeze_cloth", "#freeze_cloth",
+             [](const Config& c) { return c.freeze_cloth; },
+             [](Config& c, bool v) { c.freeze_cloth = v; }),
+        Bool(kFreezeGroup, "freeze_skeletal_animation", "#freeze_skeletal_animation",
+             [](const Config& c) { return c.freeze_skeletal_animation; },
+             [](Config& c, bool v) { c.freeze_skeletal_animation = v; }),
+        Bool(kFreezeGroup, "freeze_motion_blur_off", "#freeze_motion_blur_off",
+             [](const Config& c) { return c.freeze_motion_blur_off; },
+             [](Config& c, bool v) { c.freeze_motion_blur_off = v; }),
         Bool(kFreezeGroup, "freeze_diag", "#freeze_diag",
              [](const Config& c) { return c.freeze_diag; },
              [](Config& c, bool v) { c.freeze_diag = v; }),
 
         // ---- 相机与移动 ----
-        Float(kCamGroup, "fov_default", "#fov_default", 15.0, 150.0, 1.0, "%.0f",
+        Float(kCamGroup, "fov_default", "#fov_default", 1.0, 179.0, 1.0, "%.0f",
               [](const Config& c) { return c.fov_default; },
               [](Config& c, double v) { c.fov_default = v; }),
         Float(kCamGroup, "fov_step", "#fov_step", 0.5, 10.0, 0.5, "%.1f",
@@ -220,8 +258,30 @@ const std::vector<PbzfmField>& pbzfm_fields() {
                  c.mouse_vertical_mode = static_cast<MouseVerticalMode>(v);
              }),
 
+        // ---- 相机后端（可热切换：改这一项立刻拆旧后端、建新后端，不用退出重进）----
+        Bool(kCamGroup, "takeover_current_camera", "#takeover_current_camera",
+             [](const Config& c) { return c.takeover_current_camera; },
+             [](Config& c, bool v) { c.takeover_current_camera = v; }),
+
+        // ---- [look] 暗角：走后处理体积通道（本作 gameplay 视图里实测生效） ----
+        Float(kLookGroup, "vignette", "#vignette", tuning::kVignetteMin, tuning::kVignetteMax, 0.1, "%.2f",
+              [](const Config& c) { return c.vignette; },
+              [](Config& c, double v) { c.vignette = v; }),
+        Float(kLookGroup, "saturation", "#saturation", 0.0, 2.0, 0.05, "%.2f",
+              [](const Config& c) { return c.saturation; },
+              [](Config& c, double v) { c.saturation = v; }),
+        Float(kLookGroup, "contrast", "#contrast", 0.0, 2.0, 0.05, "%.2f",
+              [](const Config& c) { return c.contrast; },
+              [](Config& c, double v) { c.contrast = v; }),
+        Float(kLookGroup, "bloom", "#bloom", 0.0, 20.0, 0.5, "%.1f",
+              [](const Config& c) { return c.bloom; },
+              [](Config& c, double v) { c.bloom = v; }),
+        Float(kLookGroup, "temperature", "#temperature", -1.0, 1.0, 0.05, "%.2f",
+              [](const Config& c) { return c.temperature; },
+              [](Config& c, double v) { c.temperature = v; }),
+
         // ---- 手柄（组合键绑定仍留在 config.ini 的 [gamepad]） ----
-        Float(kPadGroup, "pad_look_speed", "#pad_look_speed", 30.0, 540.0, 5.0, "%.0f",
+        Float(kPadGroup, "pad_look_speed", "#pad_look_speed", 10.0, 720.0, 5.0, "%.0f",
               [](const Config& c) { return c.pad_look_speed; },
               [](Config& c, double v) { c.pad_look_speed = v; }),
         Float(kPadGroup, "pad_move_scale", "#pad_move_scale", 0.1, 2.0, 0.05, "%.2f",

@@ -70,6 +70,14 @@ constexpr int kViewVerificationFailLimit = 3;
 constexpr double kViewPoseLocationTolerance = 10.0;
 constexpr double kViewPoseRotationToleranceDeg = 2.0;
 
+// 接管写点生效性验证：写进去的 POV 一旦被游戏 UpdateCamera 覆盖，位置会明显偏离（相机输入
+// 每帧至少移动数单位）。这里比对的是“我们刚写进去、随后被渲染读取”的值，容差可以很严；
+// 连续 15 帧（约 0.25 秒）不一致才判定接管失效，避免切图/瞬时抖动误判。
+constexpr double kTakeoverPovLocationTolerance = 1.0;
+constexpr double kTakeoverPovRotationToleranceDeg = 0.5;
+constexpr double kTakeoverPovFovTolerance = 0.1;
+constexpr int kTakeoverPovMismatchLimit = 15;
+
 // ------------------------------------------------------------------ 基础工具
 
 inline auto widen(const std::string& text) -> RC::StringType {
@@ -374,24 +382,71 @@ inline auto read_struct_object_raw(FProperty* struct_property, void* container, 
 // 避免用户设 log_level=error 时仍被 M-7 的一次性告警打扰。
 inline std::atomic<int> g_param_warn_threshold{static_cast<int>(LogLevel::Info)};
 
+// 枚举 UFUNCTION 参数名（诊断用）。TFieldIterator 会沿字段链读属性数组，
+// 过期 UFunction 可能触发访问违例，所以读取放在 helper 里、外面再包一层 SEH；
+// 包 SEH 的 wrapper 不持有带析构的局部对象，避免 /EHsc 下触发 C2712。
+inline auto copy_param_names(UFunction* function, std::string* out, int capacity) -> int {
+    int count = 0;
+    for (TFieldIterator<FProperty> it(function); it; ++it) {
+        FProperty* property = *it;
+        if (property == nullptr) continue;
+        if (out != nullptr && count < capacity) out[count] = narrow(property->GetName());
+        ++count;
+    }
+    return count;
+}
+
+inline auto seh_copy_param_names(UFunction* function, std::string* out, int capacity) -> int {
+    if (function == nullptr) return -1;
+    __try {
+        return copy_param_names(function, out, capacity);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
+    }
+}
+
+inline auto function_owner_name(UFunction* function) -> std::string {
+    if (function == nullptr) return "<未知函数>";
+    UObject* outer = function->GetOuterPrivate();
+    const std::string class_name = is_ok(outer) ? narrow(outer->GetName()) : "<未知类>";
+    return class_name + "." + narrow(function->GetName());
+}
+
+inline auto describe_param_names(UFunction* function) -> std::string {
+    std::string names[8];
+    const int count = seh_copy_param_names(function, names, 8);
+    if (count < 0) return "<不可枚举>";
+    std::string out;
+    for (int i = 0; i < count && i < 8; ++i) {
+        if (!out.empty()) out += "|";
+        out += names[i];
+    }
+    if (count > 8) out += "|...";
+    return out.empty() ? "<无参数>" : out;
+}
+
 // M-7：参数名未命中时不再按声明位置退化（相邻参数类型常常相同、语义却不同）。
-// 同一组候选名只告警一次，避免每秒调用把日志刷爆。
-inline void warn_param_name_miss(std::initializer_list<const char*> names) {
+// 同一函数 + 同一组候选名只告警一次；文案带类名、函数名与实际参数名，
+// 否则真机日志里只看到“候选: Value”无法定位是哪个 UFUNCTION。
+inline void warn_param_name_miss(UFunction* function, std::initializer_list<const char*> names) {
     if (!log_level_enabled(static_cast<LogLevel>(g_param_warn_threshold.load()), LogLevel::Warn)) return;
     static std::mutex warn_mutex;
     static std::set<std::string> warned_groups;
-    std::string key;
+    std::string candidates;
     for (const char* name : names) {
         if (name == nullptr) continue;
-        if (!key.empty()) key += "|";
-        key += name;
+        if (!candidates.empty()) candidates += "|";
+        candidates += name;
     }
+    const std::string function_name = function_owner_name(function);
+    const std::string key = function_name + "::" + candidates;
     {
         std::lock_guard<std::mutex> lock(warn_mutex);
         if (!warned_groups.insert(key).second) return;
     }
-    std::string text = "UFUNCTION 参数名未命中（候选: ";
-    text += key.empty() ? "<空>" : key;
+    std::string text = "UFUNCTION 参数名未命中：" + function_name + "（候选: ";
+    text += candidates.empty() ? "<空>" : candidates;
+    text += "；实际参数: " + describe_param_names(function);
     text += "），按 M-7 不再按声明位置退化；若功能异常请把日志反馈给作者\n";
     emit(LogLevel::Warn, widen(text));
 }
@@ -420,7 +475,7 @@ public:
             return property(name) != nullptr;
         });
         if (hit < 0) {
-            warn_param_name_miss(names);
+            warn_param_name_miss(function_, names);
             return nullptr;
         }
         return property(names.begin()[hit]);
@@ -495,6 +550,36 @@ inline auto invoke_bool(UObject* object, const char* function_name, Fn&& fill, b
     return true;
 }
 
+// 调一个返回结构体的无参 UFUNCTION（例如 GetCameraLocation / GetCameraRotation），
+// 按字段名读 3 个 double（FVector 用 X/Y/Z，FRotator 用 Pitch/Yaw/Roll）。
+// 相机回读与诊断打印共用这一份取址流程：两处各写一遍等于把“ReturnValue 结构体取字段”
+// 的细节复制成两份，将来加字段/改字段名要改两处。
+inline auto read_return_vector(UObject* object, const char* function_name, const char* a_name,
+                               const char* b_name, const char* c_name, double& a, double& b, double& c) -> bool {
+    if (!is_ok(object)) return false;
+    UFunction* function = find_function(object, function_name);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    object->ProcessEvent(function, params.data());
+    FProperty* result = params.prop({"ReturnValue"});
+    if (result == nullptr) return false;
+    return read_struct_number(result, params.data(), a_name, a) &&
+           read_struct_number(result, params.data(), b_name, b) &&
+           read_struct_number(result, params.data(), c_name, c);
+}
+
+// 调一个返回数值的无参 UFUNCTION（例如 PlayerCameraManager::GetFOVAngle），读 ReturnValue。
+inline auto read_return_number(UObject* object, const char* function_name, double& out) -> bool {
+    if (!is_ok(object)) return false;
+    UFunction* function = find_function(object, function_name);
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    object->ProcessEvent(function, params.data());
+    return params.get_number("ReturnValue", out);
+}
+
 // AActor::K2_SetActorRotation 是 UEPseudo 手写的包装，内部把 FRotator 的
 // Pitch/Yaw/Roll 当成 float 写（UE5 里 FRotator 是 3 个 double，24 字节）。
 // 结果只能写进 double 的低 4 字节，实际角度变成约 1e-315，等价于 0：
@@ -534,55 +619,6 @@ inline auto lower_ascii(std::string text) -> std::string {
         c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
     }
     return text;
-}
-
-// Wwise 集成类都以 Ak 开头；游戏自己的音频/语音/对话类从名字里认
-inline auto is_audio_related_name(const std::string& name) -> bool {
-    if (name.rfind("Ak", 0) == 0) return true;
-    const std::string lower = lower_ascii(name);
-    return lower.find("audio") != std::string::npos || lower.find("sound") != std::string::npos ||
-           lower.find("voice") != std::string::npos || lower.find("dialog") != std::string::npos ||
-           lower.find("wwise") != std::string::npos;
-}
-
-// 把一个类里可疑的音频控制函数列出来（Stop/Pause/Mute/Volume/Voice/Dialog…）
-inline auto list_audio_functions(UObject* sample) -> std::string {
-    std::string out;
-    int listed = 0;
-    for (TFieldIterator<UFunction> it(sample->GetClassPrivate()); it; ++it) {
-        const std::string name = narrow(it->GetName());
-        const std::string lower = lower_ascii(name);
-        const bool interesting =
-            lower.find("stop") != std::string::npos || lower.find("pause") != std::string::npos ||
-            lower.find("mute") != std::string::npos || lower.find("silence") != std::string::npos ||
-            lower.find("volume") != std::string::npos || lower.find("suspend") != std::string::npos ||
-            lower.find("resume") != std::string::npos || lower.find("voice") != std::string::npos ||
-            lower.find("dialog") != std::string::npos || lower.find("talk") != std::string::npos ||
-            lower.find("audio") != std::string::npos || lower.find("sound") != std::string::npos;
-        if (!interesting) continue;
-        if (!out.empty()) out += ",";
-        out += name;
-        if (++listed >= 20) {
-            out += ",…";
-            break;
-        }
-    }
-    return out.empty() ? "无可疑控制函数" : out;
-}
-
-// 全量函数名（不筛关键词）：用于 AkGameplayStatics 这类“BP 入口”类
-inline auto list_all_functions(UObject* sample, int cap) -> std::string {
-    std::string out;
-    int listed = 0;
-    for (TFieldIterator<UFunction> it(sample->GetClassPrivate()); it; ++it) {
-        if (!out.empty()) out += ",";
-        out += narrow(it->GetName());
-        if (++listed >= cap) {
-            out += ",…";
-            break;
-        }
-    }
-    return out.empty() ? "无函数" : out;
 }
 
 // 带签名校验的单数值参数调用（如 AkComponent.SetOutputBusVolume(volume)、
@@ -759,7 +795,6 @@ inline auto invoke_set_bool(UObject* target, const char* fn, bool value) -> bool
 // 会把玩家设置永久写坏。这里统一：getter 优先读、setter + pending + 属性三路写、
 // 写完由调用方用 getter 回读校验并把结果写日志。
 struct BoolSettingSpec {
-    const char* label;
     const char* const* getters;          // 以 nullptr 结尾
     const char* const* setters;          // 以 nullptr 结尾
     const char* const* pending_setters;  // 以 nullptr 结尾
@@ -818,14 +853,14 @@ inline const char* const kPromptSettingGetters[] = {"GetSceneInteractPromptVisib
 inline const char* const kPromptSettingSetters[] = {"SetSceneInteractPromptVisible", nullptr};
 inline const char* const kPromptSettingPending[] = {"SetPendingSceneInteractPromptVisible", nullptr};
 inline const char* const kPromptSettingProps[] = {"bSceneInteractPromptVisible", nullptr};
-inline const BoolSettingSpec kPromptSettingSpec{"场景交互提示开关", kPromptSettingGetters, kPromptSettingSetters,
+inline const BoolSettingSpec kPromptSettingSpec{kPromptSettingGetters, kPromptSettingSetters,
                                                 kPromptSettingPending, kPromptSettingProps};
 
 inline const char* const kSubtitleSettingGetters[] = {"GetSubtitlesEnabled", "AreSubtitlesEnabled", nullptr};
 inline const char* const kSubtitleSettingSetters[] = {"SetSubtitlesEnabled", nullptr};
 inline const char* const kSubtitleSettingPending[] = {"SetPendingSubtitlesEnabled", nullptr};
 inline const char* const kSubtitleSettingProps[] = {"bEnableSubtitles", "bSubtitlesEnabled", nullptr};
-inline const BoolSettingSpec kSubtitleSettingSpec{"字幕开关", kSubtitleSettingGetters, kSubtitleSettingSetters,
+inline const BoolSettingSpec kSubtitleSettingSpec{kSubtitleSettingGetters, kSubtitleSettingSetters,
                                                   kSubtitleSettingPending, kSubtitleSettingProps};
 
 inline auto kismet_material_library() -> UObject* {
@@ -903,14 +938,27 @@ inline auto mpc_is_collection_class(UClass* cls) -> bool {
 
 // Kismet 的 Set* 签名核对：ParameterName 必须是 FName，Value 必须是（标量=数值 / 向量=结构体）。
 // 签名不符（换版本/换函数）就整条不写，避免把值写进错误参数位。
-inline auto mpc_value_property(UFunction* function) -> FProperty* {
-    if (function == nullptr) return nullptr;
-    if (FProperty* by_name = find_property(function, widen("Value")); by_name != nullptr) return by_name;
+// 值参数在标准引擎里叫 ParameterValue（本作实测也不是 Value，1.0.49 曾因此按位置兜底）；
+// 这里先按名找，找不到再用第 4 个参数（索引 3）兜底，类型校验仍由调用方把关。
+// TFieldIterator 同样走 SEH：函数对象失效时不能裸读字段链。
+inline auto mpc_value_property_iterate(UFunction* function) -> FProperty* {
+    for (const char* name : {"Value", "ParameterValue"}) {
+        if (FProperty* by_name = find_property(function, widen(name)); by_name != nullptr) return by_name;
+    }
     int index = 0;
     for (TFieldIterator<FProperty> it(function); it; ++it, ++index) {
         if (index == 3) return *it;
     }
     return nullptr;
+}
+
+inline auto mpc_value_property(UFunction* function) -> FProperty* {
+    if (!is_plausible_pointer(function)) return nullptr;
+    __try {
+        return mpc_value_property_iterate(function);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
 }
 
 inline auto mpc_set_signature_ok(UFunction* function, bool want_vector) -> bool {
@@ -923,6 +971,38 @@ inline auto mpc_set_signature_ok(UFunction* function, bool want_vector) -> bool 
     return value_prop->IsA<FFloatProperty>() || value_prop->IsA<FDoubleProperty>() ||
            value_prop->IsA<FIntProperty>() || value_prop->IsA<FByteProperty>() ||
            value_prop->IsA<FUInt32Property>();
+}
+
+// describe_params 会构造 std::string，不能直接放进 __try；拆成两层，
+// SEH wrapper 只调用 helper，自身不持有带析构的局部对象。
+inline auto copy_describe_params(UFunction* function, std::string& out) -> bool {
+    out = describe_params(function);
+    return true;
+}
+
+inline auto seh_describe_params(UFunction* function, std::string& out) -> bool {
+    if (function == nullptr) return false;
+    __try {
+        return copy_describe_params(function, out);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+}
+
+// 首次调用 setter 时打印真实签名（类型:参数名），便于换版本后核对；
+// 按函数名去重，只打一次，不刷日志。
+inline auto mpc_log_signature_once(const char* function_name, UFunction* function) -> void {
+    if (!log_level_enabled(static_cast<LogLevel>(g_param_warn_threshold.load()), LogLevel::Info)) return;
+    static std::mutex once_mutex;
+    static std::set<std::string> logged;
+    {
+        std::lock_guard<std::mutex> lock(once_mutex);
+        if (!logged.insert(function_name).second) return;
+    }
+    std::string signature;
+    if (!seh_describe_params(function, signature)) signature = "<不可枚举>";
+    emit(LogLevel::Info,
+         widen("MPC 签名诊断：KismetMaterialLibrary." + std::string(function_name) + " 参数=" + signature));
 }
 
 // KismetMaterialLibrary 的 MPC 读写：走世界的 CollectionInstance，材质 uniforms 同步更新，
@@ -949,13 +1029,17 @@ inline auto mpc_set_scalar(UObject* statics, UObject* world, UObject* collection
     UFunction* function = find_function(statics, "SetScalarParameterValue");
     if (function == nullptr) return false;
     if (!mpc_set_signature_ok(function, false)) return false;
+    mpc_log_signature_once("SetScalarParameterValue", function);
     ParamBlock params(function);
     if (!params.valid()) return false;
     if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
         !params.set_name("ParameterName", name.c_str())) {
         return false;
     }
-    if (!params.set_number("Value", value)) return false;
+    // 值参数不按名字写：本作/标准引擎的参数名都可能是 ParameterValue 而不是 Value，
+    // 直接用签名校验时定位到的第 4 个参数，避免名字不匹配时静默跳过。
+    FProperty* value_prop = mpc_value_property(function);
+    if (value_prop == nullptr || !write_number(value_prop, params.data(), value)) return false;
     if (!seh_process_event(statics, function, params.data())) {
         faulted = true;
         return false;
@@ -992,13 +1076,15 @@ inline auto mpc_set_vector(UObject* statics, UObject* world, UObject* collection
     UFunction* function = find_function(statics, "SetVectorParameterValue");
     if (function == nullptr) return false;
     if (!mpc_set_signature_ok(function, true)) return false;
+    mpc_log_signature_once("SetVectorParameterValue", function);
     ParamBlock params(function);
     if (!params.valid()) return false;
     if (!params.set_object("WorldContextObject", world) || !params.set_object("Collection", collection) ||
         !params.set_name("ParameterName", name.c_str())) {
         return false;
     }
-    FProperty* value_prop = params.prop({"Value"});
+    // 同标量：值参数按签名定位（第 4 个），不依赖硬编码的 "Value"。
+    FProperty* value_prop = mpc_value_property(function);
     if (value_prop == nullptr) return false;
     static const char* kMembers[4] = {"R", "G", "B", "A"};
     for (int i = 0; i < 4; ++i) {
@@ -1070,6 +1156,88 @@ inline auto find_hud_layout_widgets(std::vector<UObject*>& out) -> void {
         // 最后的 UMG 兜底：整个 CommonUI 根布局（包含所有 Layer 栈）。
         RC::Unreal::UObjectGlobals::FindAllOf(STR("WB_OverLayerOut_C"), out);
     }
+}
+
+// ---- CVar 读写（KismetSystemLibrary 的静态包装）----
+// 微动/渲染对照与相机后端都要读引擎 CVar（r.DepthOfFieldQuality 等）。参数名按候选名找，
+// 与 M-7 一致：不按声明位置退化，全部未命中就失败。
+inline auto cvar_param_or_null(ParamBlock& params, std::initializer_list<const char*> names) -> FProperty* {
+    for (const char* name : names) {
+        if (FProperty* property = params.property(name); property != nullptr) return property;
+    }
+    return nullptr;
+}
+
+inline auto kismet_system_library() -> UObject* {
+    return find_object("/Script/Engine.Default__KismetSystemLibrary");
+}
+
+// 读整数 CVar。CVar 不存在时引擎返回 0（无法与真实值 0 区分），调用方按“不确定”处理即可。
+// 直接调用 APlayerController::ConsoleCommand：不经过 Kismet 的世界上下文解析。
+// 实机出现过「Kismet 的 ExecuteConsoleCommand 返回成功、但 cvar 完全不变」的情况，
+// 这条是备用通道，是否真的生效由调用方回读验证。
+inline auto exec_via_player_controller(const std::string& command, UObject* player_controller) -> bool {
+    if (!is_ok(player_controller)) return false;
+    UFunction* function = find_function(player_controller, "ConsoleCommand");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* command_property = cvar_param_or_null(params, {"Command"});
+    if (!write_text(command_property, params.data(), command)) return false;
+    FProperty* log_property = cvar_param_or_null(params, {"bWriteToLog"});
+    if (log_property != nullptr) (void)write_bool(log_property, params.data(), true);
+    player_controller->ProcessEvent(function, params.data());
+    return true;
+}
+
+inline auto get_cvar_int(const std::string& name, int& out) -> bool {
+    UObject* library = kismet_system_library();
+    if (!is_ok(library)) return false;
+    UFunction* function = find_function(library, "GetConsoleVariableIntValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* name_property = cvar_param_or_null(params, {"VariableName", "InVariableName", "Name"});
+    if (!write_text(name_property, params.data(), name)) return false;
+    library->ProcessEvent(function, params.data());
+    double value = 0.0;
+    if (!params.get_number("ReturnValue", value)) return false;
+    out = static_cast<int>(value);
+    return true;
+}
+
+// 读浮点 CVar（r.DOF.Kernel.* 这类）。CVar 不存在时引擎返回 0。
+inline auto get_cvar_float(const std::string& name, double& out) -> bool {
+    UObject* library = kismet_system_library();
+    if (!is_ok(library)) return false;
+    UFunction* function = find_function(library, "GetConsoleVariableFloatValue");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* name_property = cvar_param_or_null(params, {"VariableName", "InVariableName", "Name"});
+    if (!write_text(name_property, params.data(), name)) return false;
+    library->ProcessEvent(function, params.data());
+    double value = 0.0;
+    if (!params.get_number("ReturnValue", value)) return false;
+    out = value;
+    return true;
+}
+
+// 执行一条控制台命令（改 CVar 用）。WorldContextObject 用当前世界，SpecificPlayer 留空。
+inline auto exec_console_command(const std::string& command, UObject* world) -> bool {
+    if (!is_ok(world)) return false;
+    UObject* library = kismet_system_library();
+    if (!is_ok(library)) return false;
+    UFunction* function = find_function(library, "ExecuteConsoleCommand");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* world_property = cvar_param_or_null(params, {"WorldContextObject", "WorldContext"});
+    if (!write_object(world_property, params.data(), world)) return false;
+    FProperty* command_property = cvar_param_or_null(params, {"Command", "Cmd"});
+    if (!write_text(command_property, params.data(), command)) return false;
+    library->ProcessEvent(function, params.data());
+    return true;
 }
 
 }  // namespace detail

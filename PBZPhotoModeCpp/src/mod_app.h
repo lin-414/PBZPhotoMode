@@ -3,8 +3,10 @@
 // 只在真正编译 DLL 时需要 UE4SS 头文件；核心层测试不包含这个文件。
 #include <Mod/CppUserModBase.hpp>
 
+#include <atomic>
 #include <memory>
 #include <mutex>
+#include <thread>
 #include <vector>
 
 #include "core/config.h"
@@ -17,6 +19,7 @@ namespace pbzpm {
 
 class Ue4ssPort;
 class Win32InputSource;
+class ProcessFreezer;
 
 // UE4SS mod 本体：把输入/引擎事件翻译成 core 层 Intent，再把结果交给 PhotoMode。
 // 游戏内无任何菜单界面（v1.8.0 起纯快捷键）；UI 只有 UE4SS 控制台里的诊断面板。
@@ -49,10 +52,17 @@ private:
     void bind_engine_tick();
     void on_engine_tick(double delta_seconds);
     void on_engine_tick_post();
+    void on_game_viewport_tick_post();
     void retry_view_attach(double dt);
     void ensure_axis_hook();
     void handle_intent(const Intent& intent, double dt);
     void handle_toggle();
+    // 帧定格（F7）：独立 Win32 线程轮询快捷键；定格时挂起本进程除自己外的所有线程，
+    // 画面停在最后一帧，再按一次恢复。线程不碰任何 UE 对象/锁，只用 Win32 API。
+    void frame_freeze_watch_loop();
+    // 画面定格准备/恢复：在引擎 Tick 线程处理 watcher 的请求，负责与摄影模式已有的
+    // Wwise 状态协调（watcher 不能碰 UE 对象，也不能在挂起线程时打印日志）。
+    void handle_frame_freeze_request(const Config& cfg, bool mode_active);
     void pbzfm_apply_pending();  // 消化 PBZFM 菜单提交的配置与动作（引擎 Tick，持 mutex_）
     void log_input_diagnostics(const Intent& intent, double dt);
     auto mod_directory() -> std::string;
@@ -66,11 +76,30 @@ private:
     std::unique_ptr<ModRuntime> runtime_;
     InputLogic input_{};
     Win32InputSource* input_source_{nullptr};
+    // 帧定格状态：watcher 线程只读写原子量；allowed 由引擎 Tick 根据摄影模式 active 设置
+    std::thread frame_freeze_thread_;
+    std::atomic<bool> frame_freeze_stop_{false};
+    std::atomic<bool> frame_freeze_allowed_{false};
+    std::atomic<int> frame_freeze_vk_{0x76};  // VK_F7，reload_config 时按配置文件更新
+    std::atomic<unsigned long long> frame_freeze_timeout_ms_{60000};
+    // watcher ↔ 引擎 Tick 的握手：1=请求定格准备，2=请求恢复音频，3=拒绝（已退出摄影模式）。
+    std::atomic<int> frame_freeze_request_{0};
+    std::atomic<int> frame_freeze_ack_{0};
+    std::atomic<bool> frame_freeze_wwise_owned_{false};  // 本次定格是否由 F7 挂了 Wwise（退出/恢复时只还原自己挂的）
+    // 恢复报告：引擎 Tick 恢复后打一条日志（watcher 在定格期间不能安全写日志）。
+    std::atomic<bool> frame_freeze_resume_report_{false};
+    std::atomic<int> frame_freeze_resume_threads_{0};
+    std::atomic<int> frame_freeze_resume_skipped_{0};
+    std::atomic<unsigned long long> frame_freeze_resume_duration_ms_{0};
+    std::unique_ptr<ProcessFreezer> process_freezer_;
 
     // 保护 cfg_ / keys_ / input_ / mode_ 与诊断字段：引擎 Tick 线程是主写者，
     // PBZFM 控制台渲染线程与 mod 卸载路径会读/偶尔写；持锁期间不做全对象扫描等重活。
     std::mutex mutex_{};
     bool tick_hook_installed_{false};
+    // GameViewportClientTickPost 是否注册成功：接管模式的 POV 只能写在这个点之后。
+    // 默认 true（尚未探测）；注册失败置 false，并让 takeover_current_camera 在本会话内失效。
+    bool gvc_tick_hook_ok_{true};
     double attach_retry_timer_{0.0};
 
     // 引擎侧鼠标增量（InputAxis 钩子喂进来，引擎 Tick 里取走）。

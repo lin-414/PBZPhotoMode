@@ -44,42 +44,11 @@ std::string Ue4ssPort::freeze_diag_sample() {
         UObject* scene = world();
         std::vector<MpcCollectionSnapshot> current;
         if (is_ok(statics) && is_ok(scene)) {
-            std::vector<UObject*> collections;
-            RC::Unreal::UObjectGlobals::FindAllOf(STR("MaterialParameterCollection"), collections);
-            int total_params = 0;
+            // 采集段与冻结快照共用 scan_mpc_collections（同一份 FindAllOf + 逐参数取值），
+            // 诊断侧只多做与上一拍的 diff。
+            const int total_params = scan_mpc_collections(statics, scene, current);
             std::string changes;
             int change_count = 0;
-            for (UObject* collection : collections) {
-                if (!is_ok(collection)) continue;
-                if (narrow(collection->GetFullName()).find("Default__") != std::string::npos) continue;
-                MpcCollectionSnapshot snapshot;
-                snapshot.collection = collection;
-                snapshot.name = narrow(collection->GetName());
-                std::vector<std::string> scalar_names;
-                mpc_read_param_names(collection, "ScalarParameters", scalar_names);
-                for (const std::string& name : scalar_names) {
-                    double value = 0.0;
-                    if (!mpc_get_scalar(statics, scene, collection, name, value)) continue;
-                    MpcParamValue param;
-                    param.name = name;
-                    param.value[0] = static_cast<float>(value);
-                    snapshot.params.push_back(param);
-                    ++total_params;
-                }
-                std::vector<std::string> vector_names;
-                mpc_read_param_names(collection, "VectorParameters", vector_names);
-                for (const std::string& name : vector_names) {
-                    float rgba[4]{};
-                    if (!mpc_get_vector(statics, scene, collection, name, rgba)) continue;
-                    MpcParamValue param;
-                    param.name = name;
-                    param.is_vector = true;
-                    for (int k = 0; k < 4; ++k) param.value[k] = rgba[k];
-                    snapshot.params.push_back(param);
-                    ++total_params;
-                }
-                current.push_back(std::move(snapshot));
-            }
             if (mpc_diag_has_last_) {
                 for (const MpcCollectionSnapshot& snapshot : current) {
                     const MpcCollectionSnapshot* last = nullptr;
@@ -132,7 +101,17 @@ std::string Ue4ssPort::freeze_diag_sample() {
         mpc_diag_has_last_ = true;
     }
 
-    // ③ 相机修饰器与活动 shake
+    // ③ 布料模拟/骨骼动画挂起状态（生效时应 >0；=0 表示没扫到或未执行）
+    out += " 布料=" + std::to_string(cloth_states_.size()) + "挂起";
+    out += " 动画=" + std::to_string(skeletal_anim_states_.size()) + "暂停";
+    out += " 毛发=" + std::to_string(groom_states_.size()) + "暂停";
+    out += " 粒子=" + std::to_string(niagara_states_.size()) + "暂停";
+    out += " WPO图元=" + std::to_string(wpo_primitive_states_.size()) + "关";
+    // 渲染运行时值：若 FG/DLSS/AA 被游戏每帧改回去，这里会显示非目标值
+    const std::string runtime = render_runtime_text();
+    if (!runtime.empty()) out += " 渲染=" + runtime;
+
+    // ④ 相机修饰器与活动 shake
     {
         UObject* manager = camera_manager();
         if (is_ok(manager)) {
@@ -186,47 +165,27 @@ std::string Ue4ssPort::freeze_diag_sample() {
     return out;
 }
 
-// ------------------------------------------------------------------ 游戏内文字菜单
-
 std::string Ue4ssPort::camera_state_summary() {
     std::string out;
 
     // 相机管理器真正在用的视角：不是我们的相机就说明 ViewTarget 没切过去
     if (UObject* manager = camera_manager(); is_ok(manager)) {
-        if (UFunction* get_location = find_function(manager, "GetCameraLocation"); get_location != nullptr) {
-            ParamBlock params(get_location);
-            if (params.valid()) {
-                manager->ProcessEvent(get_location, params.data());
-                FProperty* result = params.prop({"ReturnValue"});
-                double x = 0.0;
-                double y = 0.0;
-                double z = 0.0;
-                if (read_struct_number(result, params.data(), "X", x) &&
-                    read_struct_number(result, params.data(), "Y", y) &&
-                    read_struct_number(result, params.data(), "Z", z)) {
-                    char buf[96]{};
-                    std::snprintf(buf, sizeof(buf), "管理器视角=(%.0f,%.0f,%.0f) ", x, y, z);
-                    out += buf;
-                }
-            }
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        if (read_return_vector(manager, "GetCameraLocation", "X", "Y", "Z", x, y, z)) {
+            char buf[96]{};
+            std::snprintf(buf, sizeof(buf), "管理器视角=(%.0f,%.0f,%.0f) ", x, y, z);
+            out += buf;
         }
         // 管理器这一帧算出来的朝向：它跟着我们的相机走，说明相机变换真的生效了
-        if (UFunction* get_rotation = find_function(manager, "GetCameraRotation"); get_rotation != nullptr) {
-            ParamBlock params(get_rotation);
-            if (params.valid()) {
-                manager->ProcessEvent(get_rotation, params.data());
-                FProperty* result = params.prop({"ReturnValue"});
-                double pitch = 0.0;
-                double yaw = 0.0;
-                double roll = 0.0;
-                if (read_struct_number(result, params.data(), "Pitch", pitch) &&
-                    read_struct_number(result, params.data(), "Yaw", yaw) &&
-                    read_struct_number(result, params.data(), "Roll", roll)) {
-                    char buf[96]{};
-                    std::snprintf(buf, sizeof(buf), "管理器朝向=(%.1f,%.1f) ", pitch, yaw);
-                    out += buf;
-                }
-            }
+        double pitch = 0.0;
+        double yaw = 0.0;
+        double roll = 0.0;
+        if (read_return_vector(manager, "GetCameraRotation", "Pitch", "Yaw", "Roll", pitch, yaw, roll)) {
+            char buf[96]{};
+            std::snprintf(buf, sizeof(buf), "管理器朝向=(%.1f,%.1f) ", pitch, yaw);
+            out += buf;
         }
         // 画幅锁状态：真机验证超宽屏解锁（1.5.0）
         {

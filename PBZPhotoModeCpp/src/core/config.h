@@ -3,6 +3,8 @@
 #include <string>
 #include <vector>
 
+#include "core/tuning.h"
+
 namespace pbzpm {
 
 enum class LogLevel { Error, Warn, Info, Debug };
@@ -18,6 +20,7 @@ struct Config {
     // ---- [keys] 快捷键名，写法与默认键名一致：F2 / F / R / ADD / SUBTRACT / OEM_PLUS ----
     std::string key_toggle{"F2"};
     std::string key_freeze{"F"};
+    std::string key_frame_freeze{"F7"};  // 画面定格：挂起本进程渲染/游戏线程，再按恢复
     std::string key_reset{"R"};
     std::string key_roll_reset{"Z"};  // 滚转归零（水平校正）：只把滚转回 0，位置/朝向/FOV 不动
     std::string key_fov_up{"ADD"};
@@ -32,18 +35,29 @@ struct Config {
     // 也可写键盘键名（如 PAGE_UP/PAGE_DOWN）或其它鼠标键（MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2）
     std::string key_vertical_up{"MOUSE_LEFT"};
     std::string key_vertical_down{"MOUSE_RIGHT"};
+    // 移动/变速/自由视角门控（2.0 起可配；默认值与旧版写死的键一致）
+    std::string key_move_forward{"W"};
+    std::string key_move_back{"S"};
+    std::string key_move_left{"A"};
+    std::string key_move_right{"D"};
+    std::string key_boost{"SHIFT"};    // 加速（原写死 Shift）
+    std::string key_slow{"CONTROL"};   // 减速（原写死 Ctrl；也决定 slow_look_mult 是否生效）
+    std::string key_free_look{"ALT"};  // 自由转视角门控键（原写死 Alt；free_look_requires_alt=false 时不使用）
+    // 景深/对焦（仅摄影模式内生效）：[ 开大光圈（F 值减小、更虚化）、] 收小光圈（更实）
 
     // ---- [control] ----
     double move_speed{400.0};        // 单位/秒
-    double boost_mult{4.0};          // Shift
-    double slow_mult{0.3};           // Ctrl
-    double slow_look_mult{0.1};      // 按住 Ctrl（手柄为按下右摇杆 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细
+    double boost_mult{4.0};          // 加速倍率（key_boost，默认 Shift）
+    double slow_mult{0.3};           // 减速倍率（key_slow，默认 Ctrl）
+    double slow_look_mult{0.1};      // 按住减速键（默认 Ctrl；手柄 pad_slow，默认 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细
     double look_sensitivity{0.10};   // 每单位鼠标位移转多少度
     double pitch_limit{89.0};
     bool invert_y{false};
     bool free_look_requires_alt{true};
     bool block_game_input{true};
     MouseVerticalMode mouse_vertical_mode{MouseVerticalMode::Translate};
+    bool wheel_fov{true};           // 鼠标滚轮调整 FOV（原写死；false = 滚轮不参与 FOV）
+    bool wheel_fov_invert{false};   // 滚轮方向反转：默认向上缩小 FOV（拉近），false 保持该方向
     double vertical_speed{200.0};    // 升降键上下平移速度
     double roll_speed{60.0};         // 滚转速度（度/秒）：默认 E 顺时针，Q 逆时针（键位见 [keys] key_roll_left/right）
     double pitch_speed{30.0};        // 方向键上/下与十字键上/下俯仰速度（度/秒）：正方向 = 仰视
@@ -61,6 +75,15 @@ struct Config {
     std::string pad_pitch_down{"DOWN"};  // 十字键下 = 俯视
     std::string pad_yaw_left{"LEFT"};    // 十字键左 = 左转视角（1.0.46 起从左右平移改来）
     std::string pad_yaw_right{"RIGHT"};  // 十字键右 = 右转视角
+    // 以下原为写死键（2.0 起可配）；RT/LT 单键绑定保留模拟量行程
+    std::string pad_roll_left{"LB"};          // 滚转逆时针（原写死 LB）
+    std::string pad_roll_right{"RB"};         // 滚转顺时针（原写死 RB）
+    std::string pad_boost{"LS"};              // 加速（原写死 LS=左摇杆按下）
+    std::string pad_slow{"RS"};               // 减速（原写死 RS=右摇杆按下）
+    std::string pad_vertical_up{"RT"};        // 升降上（原写死 RT，模拟量）
+    std::string pad_vertical_down{"LT"};      // 升降下（原写死 LT，模拟量）
+    // 景深/对焦（必须带肩键的组合，避免单按 BACK/START 误触）：
+    // LB+BACK 拉近 / LB+START 拉远；RB+BACK 开光圈 / RB+START 收光圈
     double pad_look_speed{60.0};      // 右摇杆满行程的转速（度/秒）
     double pad_move_scale{1.0};       // 左摇杆移动占 move_speed 的比例
     double pad_deadzone{0.15};        // 摇杆死区（0~0.5）
@@ -71,6 +94,16 @@ struct Config {
     double fov_max{150.0};
     double fov_step{2.0};
     bool ultrawide_unlock{true};  // 超宽屏（21:9/32:9）：进入摄影模式时解除 16:9 画幅锁（两侧黑边），退出还原
+    // UUU 式「接管当前相机」：默认开启；不 spawn、不切 ViewTarget，每帧（post tick）写相机 POV。
+    // 进入时接管失败会在同一次 enter 内自动回退到独立相机。设 false 可强制走旧路径做对比。
+    bool takeover_current_camera{true};
+
+    // 画面效果（[look] 段）：全部走自建后处理体积，本作 gameplay 视图里实测只有这条通道能出画面
+    double vignette = tuning::kVignetteDefault;           // 暗角 0~4（0=关闭）
+    double saturation = 1.0;                              // 饱和度倍率（1=原样）
+    double contrast = 1.0;                                // 对比度倍率（1=原样）
+    double bloom = 0.0;                                   // 泛光强度（0=不覆盖）
+    double temperature = 0.0;                             // 冷暖 -1~1（0=不覆盖）
 
     // ---- [effects] ----
     bool hide_player{false};
@@ -90,18 +123,42 @@ struct Config {
     bool stop_camera_shakes_on_freeze{true};  // 冻结时停用相机修饰器并立即结束 shake（真实时间驱动的残余微动，冻结画面边缘抖动/脸部阴影爬动的主变化源），解冻按原状态还原
     bool freeze_wind{true};  // 冻结时把风源（WindDirectionalSource）风强/风速归零：材质顶点摆动（布料/植被）的幅度源，暂停拦不住；解冻还原
     bool freeze_mpc{true};   // 冻结时钉住材质参数集合（MPC）当前值：冻结期每帧写回快照，压制实时驱动参数继续推布料/植被摆动；解冻释放
+    bool freeze_cloth{true}; // 冻结时挂起角色/敌人的布料模拟（SkeletalMeshComponent clothing + ChaosClothComponent），保留最后姿态；解冻恢复
+    bool freeze_custom_cloth{false}; // 冻结时额外处理 PBZ 自定义布料/摆动 + 毛发/粒子：Sway 组件 tick（全对象扫描按类名找）、r.Cloth.Enable、Groom 模拟、Niagara 暂停（1.0.76 起不再写 pbz.Sway.SkipSkeletalKinematicBoneUpdate）
+    bool freeze_wpo{false}; // 冻结时关闭 WPO 评估（SkeletalMesh + StaticMesh/植被/地形图元），排查材质顶点动画造成的布料/植被闪烁
+    bool freeze_tonemapper_dither_off{false}; // 冻结时把 r.Tonemapper.Quality 从 5 降到 4（去掉 GrainJitter 逐帧抖动）并关 Backbuffer 量化抖动
+    bool freeze_skeletal_animation{true}; // 冻结时暂停全部 SkeletalMesh 的 AnimBP/骨骼 pose（bPauseAnims/bNoSkeletonUpdate），防止骨骼驱动的 cape 继续流动；解冻恢复
+    bool freeze_motion_blur_off{true};    // 冻结时 r.MotionBlurQuality=0，消除残留速度缓冲造成的流动拖影；解冻还原
+    bool freeze_aa_off{false};           // 冻结时关 AA：cvar r.AntiAliasingMethod=0，同时直接改 PPV/相机 POV 的 FPostProcessSettings（AA/动态模糊/Lumen/反射），解冻还原
+    bool freeze_wpo_velocity_off{false}; // 冻结时临时关闭 WPO/Nanite WPO/植被/毛发的速度输出（r.Velocity.EnableVertexDeformation 等），解冻/退出还原；用于判断假运动向量
+    bool freeze_framegen_off{true};      // 冻结时抑制帧生成（r.PBZ.SuppressFrameGen=1 + 显式关 DLSSG/FSR-FI），解冻/退出还原；静止拍照不需要插帧，且 FG 可能放大/制造闪烁
+    bool freeze_dlss_off{false};         // 冻结时临时关闭 DLSS 超分（r.NGX.DLSS.Enable=0），解冻/退出还原；用于判断闪烁是否来自 DLSS SR（默认 false，保留画质）
+    // ---- 光照 A/B（Lumen / 屏幕空间光照）：冻结时临时改光照 CVar，解冻/退出还原 ----
+    // 每个子项独立，默认全关；freeze_lighting_ab_cycle=true 时按阶段自动轮换（见 README hotfix11）。
+    bool freeze_lumen_screen_traces_off{false}; // 关 Lumen 屏幕空间追踪：GI/反射的 ScreenTraces=0（保留 Lumen 距离场追踪）
+    bool freeze_lumen_short_range_ao_off{false};// 关 Lumen 短距屏幕空间 AO（ShortRangeAO / DiffuseIndirect.SSAO / r.AmbientOcclusionLevels）
+    bool freeze_lumen_radiance_cache_off{false};// 关 Lumen 屏幕探针辐射缓存（r.Lumen.ScreenProbeGather.RadianceCache=0）
+    bool freeze_lumen_fixed_jitter{false};      // 固定 Lumen 抖动/状态帧（FixedJitterIndex/FixedStateFrameIndex=0），判断逐帧随机采样
+    bool freeze_lumen_off{false};               // 关 Lumen GI/反射总开关（DiffuseIndirect.Allow / Reflections.Allow / 方法 CVar）
+    bool freeze_lighting_ab_cycle{false};       // 冻结期自动轮换光照阶段（原始→屏幕追踪→短距AO→辐射缓存→固定抖动→Lumen全关）
+    double freeze_lighting_ab_phase_seconds{8.0}; // 自动轮换每阶段持续秒数（1..120）
+    // ---- 阴影/后处理 A/B（Lumen 之外的第二层）：自动轮换 SMRT/VSM/接触阴影/体积雾/后处理 ----
+    bool freeze_shadow_ab_cycle{false};         // 冻结期自动轮换阴影/后处理阶段（见 README hotfix12）
+    double freeze_shadow_ab_phase_seconds{8.0}; // 阴影/后处理轮换每阶段持续秒数（1..120）
     bool freeze_diag{false}; // 冻结诊断默认关闭（诊断本身要做反射扫描）；开启后只在状态翻转或每 10 秒输出一条
-    bool restore_fov_on_exit{true};
-    bool restore_view_on_exit{true};
+    // ---- F7 画面定格（全线程冻结，独立于上面的引擎暂停冻结）----
+    bool frame_freeze_time_compensation{true};  // F7 定格期间冻结时间 API，恢复时扣掉定格时长；只在“连渲染线程一起停”时成立
+    bool frame_freeze_audio_suspend{true};      // F7 定格前若摄影模式没挂 Wwise，则由 F7 整引擎 Suspend(true,false)，恢复时唤醒
+    double frame_freeze_timeout_seconds{60.0};  // F7 定格安全阀：超时自动恢复，避免永久卡死（5~300 秒）；60 秒够一次截图框选
 
     // ---- [ui] ----
-    bool imgui_tab{true};        // UE4SS 控制台里的 ImGui 诊断面板（游戏内无任何菜单，v1.8.0 起纯快捷键）
+    bool imgui_tab{true};        // UE4SS 控制台里的只读诊断面板（游戏内无菜单，v1.8.0 起纯快捷键）；
+                                 // false 时不注册 UE4SS tab，可写设置的唯一入口是 PBZFM 菜单页
     std::string menu_language{"auto"};  // PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id
                                         //（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）
 
     // ---- [misc] ----
     LogLevel log_level{LogLevel::Info};
-    bool dry_run{false};         // 只打日志不改游戏状态（排障用）
 };
 
 struct ConfigLoadResult {
@@ -113,6 +170,9 @@ struct ConfigLoadResult {
     bool ok{true};
     bool file_missing{false};
     bool read_error{false};
+    // 命中已废弃的键（[dof] 段、色差/胶片颗粒）时按原样记下来：解析照常成功，调用方据此
+    // **一次性重写 config.ini**，把这些键从文件里物理删掉（只告警不清理会一直留着，见 hotfix35）。
+    std::vector<std::string> legacy_keys{};
 };
 
 // 解析 INI 文本。未知键 / 非法值只累积 warning，保留对应默认值。

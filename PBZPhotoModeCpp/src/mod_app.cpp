@@ -19,9 +19,13 @@
 #include <mutex>
 #include <string>
 
+#include <windows.h>
+#include <tlhelp32.h>
+
 #include "core/tuning.h"
 #include "core/retry_policy.h"
 #include "core/version.h"
+#include "engine/process_freeze.h"
 #include "engine/ue4ss_port.h"
 #include "ui_tab.h"
 #include "win_input.h"
@@ -53,7 +57,8 @@ auto monotonic_seconds() -> double {
 // 原子指针：卸载路径先注销回调再把这里置空，晚到的派发只会看到 nullptr（H-5）。
 std::atomic<PhotoModeMod*> g_mod{nullptr};
 
-// STR() 是 L##x 拼接，参数必须已经是字符串字面量；PBZPM_VERSION 是宏，需要两级展开
+// STR() 是 L##x 拼接，参数必须已经是字符串字面量；PBZPM_VERSION_FULL 是宏，
+// 且可能由多段字面量拼成，所以同样需要两级展开
 #define PBZPM_WIDEN_IMPL(x) L##x
 #define PBZPM_WIDEN(x) PBZPM_WIDEN_IMPL(x)
 
@@ -61,13 +66,21 @@ std::atomic<PhotoModeMod*> g_mod{nullptr};
 
 PhotoModeMod::PhotoModeMod() {
     ModName = STR("PBZPhotoModeCpp");
-    ModVersion = PBZPM_WIDEN(PBZPM_VERSION);
+    ModVersion = PBZPM_WIDEN(PBZPM_VERSION_FULL);
     ModDescription = STR("Photo mode: free camera / FOV / auto-pause time / ImGui tab");
     ModAuthors = STR("PBZPhotoMode");
     g_mod.store(this, std::memory_order_release);
 }
 
 PhotoModeMod::~PhotoModeMod() {
+    // 先停画面定格 watcher（若它还挂着暂停，会在退出前恢复所有线程）。
+    frame_freeze_stop_.store(true, std::memory_order_relaxed);
+    if (frame_freeze_thread_.joinable()) frame_freeze_thread_.join();
+    // watcher 退出时可能没等到引擎 Tick 处理“恢复音频”请求（例如游戏退出/模组卸载）：
+    // 这里兜底唤醒只由 F7 挂起的 Wwise，避免卸载后整局静音。
+    if (frame_freeze_wwise_owned_.exchange(false, std::memory_order_relaxed) && port_) {
+        port_->suspend_wwise_engine(false);
+    }
     // 卸载顺序（H-5，顺序不能改）：
     //   1) 先注销 UE4SS 钩子与 Engine Tick 回调：此后引擎不再派发新回调，避免回调进入正在
     //      拆卸的成员；注销失败会在这里打 Error 并说明残留后果。
@@ -96,17 +109,253 @@ auto PhotoModeMod::mod_directory() -> std::string {
     return directory.string();
 }
 
+void PhotoModeMod::frame_freeze_watch_loop() {
+    bool was_down = false;
+    bool frozen = false;
+    ULONGLONG frozen_since = 0;
+    int registered_vk = 0;
+    MSG msg{};
+    // 先建立本线程的消息队列：RegisterHotKey 要求注册线程自己取消息。
+    ::PeekMessage(&msg, nullptr, 0, 0, PM_NOREMOVE);
+
+    auto ensure_hotkey = [&](int vk) {
+        if (vk == 0 || vk == registered_vk) return;
+        if (registered_vk != 0) {
+            ::UnregisterHotKey(nullptr, 1);
+            ::UnregisterHotKey(nullptr, 2);
+        }
+        registered_vk = 0;
+        if (::RegisterHotKey(nullptr, 1, MOD_NOREPEAT, vk)) {
+            registered_vk = vk;
+        } else if (::RegisterHotKey(nullptr, 2, MOD_CONTROL | MOD_NOREPEAT, vk)) {
+            registered_vk = vk;
+        }
+    };
+
+    // 与引擎 Tick 握手：预制时间钩子/Wwise 挂起必须在游戏线程完成；这里只等结果。
+    // 500ms 超时后仍然继续挂线程（时间补偿可能没装上，但不影响“画面定格”本身）。
+    auto request_engine = [&](int request) -> int {
+        frame_freeze_ack_.store(0, std::memory_order_relaxed);
+        frame_freeze_request_.store(request, std::memory_order_release);
+        const ULONGLONG deadline = ::GetTickCount64() + 500;
+        while (!frame_freeze_stop_.load(std::memory_order_relaxed) && ::GetTickCount64() < deadline) {
+            const int ack = frame_freeze_ack_.load(std::memory_order_acquire);
+            if (ack != 0) return ack;
+            ::Sleep(1);
+        }
+        return frame_freeze_ack_.load(std::memory_order_acquire);
+    };
+
+    auto resume_all = [&]() {
+        const int threads = process_freezer_ ? process_freezer_->suspended_count() : 0;
+        const int skipped = process_freezer_ ? process_freezer_->skipped_count() : 0;
+        const unsigned long long duration =
+            (frozen && frozen_since != 0) ? static_cast<unsigned long long>(::GetTickCount64() - frozen_since) : 0;
+        if (process_freezer_) {
+            // PBZ Pause 的顺序：先把本次定格时长累加进时间偏移，再 ResumeThread。
+            process_freezer_->end_time_freeze();
+            // 冻结期间低级鼠标钩子线程没停，用户为截图移动/框选的鼠标位移会累积；
+            // 这里在恢复线程前清掉，避免恢复后相机按截图轨迹瞬移。
+            if (input_source_) input_source_->discard_pending();
+            process_freezer_->resume_all_threads();
+        }
+        if (frozen) {
+            // 线程恢复后再让引擎 Tick 唤醒 Wwise（与 PBZ Pause 的 ResumeAllThreads -> WakeupFromSuspend 同序）。
+            request_engine(2);
+            frame_freeze_resume_threads_.store(threads, std::memory_order_relaxed);
+            frame_freeze_resume_skipped_.store(skipped, std::memory_order_relaxed);
+            frame_freeze_resume_duration_ms_.store(duration, std::memory_order_relaxed);
+            frame_freeze_resume_report_.store(true, std::memory_order_release);
+        }
+        frozen = false;
+        frozen_since = 0;
+    };
+
+    while (!frame_freeze_stop_.load(std::memory_order_relaxed)) {
+        const int vk = frame_freeze_vk_.load(std::memory_order_relaxed);
+        ensure_hotkey(vk);
+
+        bool hotkey_pressed = false;
+        while (::PeekMessage(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == WM_HOTKEY && (msg.wParam == 1 || msg.wParam == 2)) hotkey_pressed = true;
+            ::TranslateMessage(&msg);
+            ::DispatchMessage(&msg);
+        }
+        const bool down = vk != 0 && (::GetAsyncKeyState(vk) & 0x8000) != 0;
+        const bool trigger = hotkey_pressed || (down && !was_down);
+
+        if (trigger) {
+            if (!frozen) {
+                if (frame_freeze_allowed_.load(std::memory_order_relaxed)) {
+                    // 1) 让引擎 Tick 先做 Wwise Suspend（若摄影模式没挂）并安装时间补偿钩子。
+                    // 2) 再挂起本进程除 watcher 外的所有线程：渲染线程停住后屏幕保持最后一帧。
+                    // RegisterHotKey 保证即使其他线程全停，第二次 F7 也能通过 watcher 消息队列收到。
+                    const int ack = request_engine(1);
+                    if (ack == 1 && process_freezer_ != nullptr) {
+                        // 只挂游戏引擎模块（PBZ.exe / MRTCEngine / Wwise）内的线程：
+                        // 不碰 PBZFM、Steam/NVIDIA 覆盖层、本模组输入钩子等第三方线程。
+                        // 否则 WH_KEYBOARD_LL/WH_MOUSE_LL 的安装线程被挂起，整个桌面的键鼠
+                        // 输入会等 LowLevelHooksTimeout：Ctrl+P 截图和 F7 恢复都会卡。
+                        process_freezer_->clear_suspend_modules();  // 保持“除跳过名单外全部挂起”
+                        process_freezer_->clear_skip_targets();
+                        if (input_source_) process_freezer_->add_skip_thread(input_source_->raw_thread_id());
+                        if (HMODULE self_module = ::GetModuleHandleW(L"PBZPhotoModeCpp.dll")) {
+                            process_freezer_->add_skip_module(self_module);
+                        }
+                        HMODULE pbzfm = ::GetModuleHandleW(L"PBZFM.dll");
+                        if (pbzfm == nullptr) pbzfm = ::GetModuleHandleW(L"PBZFM");
+                        if (pbzfm != nullptr) process_freezer_->add_skip_module(pbzfm);
+                        // 其他已知的桌面覆盖层/输入钩子模块：它们的线程也绝不能挂起。
+                        static const wchar_t* const kOtherHookModules[] = {
+                            L"GameOverlayRenderer64.dll", L"GameOverlayRenderer.dll",
+                            L"nvspcap64.dll", L"DiscordHook64.dll", L"RTSSHooks64.dll",
+                            L"RivaTuner64.dll", L"MSIAfterburner.dll",
+                        };
+                        for (const wchar_t* name : kOtherHookModules) {
+                            if (HMODULE module = ::GetModuleHandleW(name)) {
+                                process_freezer_->add_skip_module(module);
+                            }
+                        }
+                        const int count = process_freezer_->suspend_all_threads();
+                        if (count > 0) {
+                            process_freezer_->begin_time_freeze();
+                            frozen = true;
+                            frozen_since = ::GetTickCount64();
+                        } else {
+                            // 挂起失败（枚举不到线程/权限问题）：把 F7 可能挂起的 Wwise 还回去。
+                            request_engine(2);
+                        }
+                    } else if (ack == 3) {
+                        // 引擎 Tick 判定已退出摄影模式：不冻结。
+                    } else {
+                        // 准备超时/未确认：不冻结，并清掉可能已排队的准备请求，
+                        // 避免引擎 Tick 在定格结束后才处理它、把 Wwise 挂在错误的时间。
+                        request_engine(2);
+                    }
+                }
+            } else {
+                resume_all();
+            }
+        }
+        // 安全阀：即使按键消息因系统/其他热键冲突完全收不到，也最多定格 N 秒后自动恢复，
+        // 避免整机卡死在定格状态只能结束进程（默认 20 秒，可配置）。
+        const unsigned long long timeout_ms = frame_freeze_timeout_ms_.load(std::memory_order_relaxed);
+        if (frozen && frozen_since != 0 && timeout_ms > 0 &&
+            static_cast<unsigned long long>(::GetTickCount64() - frozen_since) > timeout_ms) {
+            resume_all();
+        }
+        was_down = down;
+        ::Sleep(16);
+    }
+    // 退出线程前必须把还挂着暂停的线程恢复，否则 DLL 卸载后游戏会永远停住。
+    resume_all();
+}
+
+void PhotoModeMod::handle_frame_freeze_request(const Config& cfg, bool mode_active) {
+    const int request = frame_freeze_request_.exchange(0, std::memory_order_acq_rel);
+    if (request == 0) return;
+
+    // 恢复请求：只唤回“F7 自己挂起”的 Wwise；摄影模式自己挂的由 PhotoMode 的恢复路径处理。
+    if (request == 2) {
+        if (frame_freeze_wwise_owned_.exchange(false, std::memory_order_acq_rel) && port_) {
+            if (!port_->suspend_wwise_engine(false)) {
+                port_->log(LogLevel::Warn, "画面定格恢复：Wwise 音频引擎唤醒失败，保持挂起标记以便退出时重试");
+            }
+        }
+        frame_freeze_ack_.store(2, std::memory_order_release);
+        return;
+    }
+    if (request != 1) return;
+    frame_freeze_wwise_owned_.store(false, std::memory_order_release);
+
+    // 请求到达时若已退出摄影模式：让 watcher 不要挂线程（否则会把游戏永久停住）。
+    if (!mode_active) {
+        frame_freeze_ack_.store(3, std::memory_order_release);
+        return;
+    }
+
+    // 时间补偿：只在 F7 全线程定格时启用。1.0.64~1.0.66 的教训是摄影模式
+    // 保留渲染/相机线程时绝不能冻结 QPC，否则移动视角会规律性卡顿。
+    ProcessFreezer::TimeHookReport hook_report{};
+    if (cfg.frame_freeze_time_compensation && process_freezer_) {
+        hook_report = process_freezer_->install_time_hooks();
+    }
+
+    bool wwise_owned = false;
+    bool wwise_already = false;
+    if (port_) {
+        wwise_already = port_->wwise_engine_suspended();
+        if (cfg.frame_freeze_audio_suspend && !wwise_already) {
+            // render-anyway=true：只静音不毁语音状态；F7 结束后再由本函数唤醒。
+            wwise_owned = port_->suspend_wwise_engine(true);
+        }
+    }
+    frame_freeze_wwise_owned_.store(wwise_owned, std::memory_order_release);
+
+    if (port_) {
+        std::string message = "画面定格准备：";
+        if (!cfg.frame_freeze_time_compensation) {
+            message += "时间补偿=关闭（游戏恢复时可能有时间跳变）；";
+        } else if (hook_report.installed) {
+            message += "时间补偿=已安装（模块 " + std::to_string(hook_report.modules_patched) +
+                       "，IAT 槽 " + std::to_string(hook_report.slots_patched) + "）；";
+        } else {
+            message += "时间补偿=不可用（找不到可改写的时间 API 导入）；";
+        }
+        if (wwise_owned) {
+            message += "Wwise=已整引擎挂起；";
+        } else if (wwise_already) {
+            message += "Wwise=沿用摄影模式挂起；";
+        } else {
+            message += "Wwise=未挂起（音频线程将被直接停住）；";
+        }
+        port_->log(LogLevel::Info, message);
+    }
+    frame_freeze_ack_.store(1, std::memory_order_release);
+}
+
 void PhotoModeMod::reload_config() {
     const std::filesystem::path path = std::filesystem::path(mod_directory()) / "config.ini";
     const ConfigLoadResult result = load_config_file(path.string());
     cfg_ = result.cfg;
+    // 渲染前写点不可用时不允许再启用接管（见 bind_engine_tick）：否则 F2 重载配置会把它翻回 true，
+    // 又把摄影模式变成“镜头不动”。
+    if (!gvc_tick_hook_ok_) cfg_.takeover_current_camera = false;
     keys_ = build_keymap(cfg_, nullptr);
+    {
+        const int frame_freeze_vk = vk_from_name(cfg_.key_frame_freeze);
+        if (frame_freeze_vk != 0) frame_freeze_vk_.store(frame_freeze_vk, std::memory_order_relaxed);
+        const double timeout_seconds = std::clamp(cfg_.frame_freeze_timeout_seconds, 5.0, 300.0);
+        frame_freeze_timeout_ms_.store(static_cast<unsigned long long>(timeout_seconds * 1000.0),
+                                       std::memory_order_relaxed);
+    }
 
     if (port_) {
         for (const std::string& warning : result.warnings) {
             port_->log(LogLevel::Warn, "配置：" + warning);
         }
         port_->log(LogLevel::Info, "配置来源：" + result.source);
+    }
+
+    // 已废弃的键（[dof] 段、色差/胶片颗粒）不从文件里删掉就会一直留在用户机器上：
+    // 解析时收集到 legacy_keys 后，这里按当前格式原子重写一次 config.ini，把它们物理清掉。
+    if (!result.legacy_keys.empty()) {
+        std::string names;
+        const std::size_t shown = std::min<std::size_t>(result.legacy_keys.size(), 8);
+        for (std::size_t i = 0; i < shown; ++i) {
+            if (!names.empty()) names += ", ";
+            names += result.legacy_keys[i];
+        }
+        if (result.legacy_keys.size() > shown) {
+            names += " 等 " + std::to_string(result.legacy_keys.size()) + " 项";
+        }
+        std::string error;
+        if (save_config_file(path.string(), cfg_, &error)) {
+            port_->log(LogLevel::Info, "配置清理：已从 config.ini 删除 " + std::to_string(result.legacy_keys.size()) +
+                                           " 个已废弃键并重写文件（" + names + "）");
+        } else if (port_) {
+            port_->log(LogLevel::Warn, "配置清理：删除已废弃键后重写 config.ini 失败：" + error);
+        }
     }
     if (mode_) {
         mode_->set_config(cfg_);
@@ -160,6 +409,51 @@ void PhotoModeMod::bind_engine_tick() {
         port_->track_global_callback("UE4SS.EngineTickPost", post_id);
     }
 
+    // UE 帧顺序：World->Tick（所有 actor tick）→ PlayerController->UpdateCameraManager
+    // （游戏重算 CameraCache.POV）→ GameViewportClient->Tick → RedrawViewports（画这一帧）。
+    // 所以接管模式的 POV 只能写在 GVC Tick 之后、RedrawViewports 之前：
+    // EngineTickPost 已在 RedrawViewports 之后（1.0.75 镜头完全不动就是写在这里导致的）。
+    RC::Unreal::Hook::FCallbackOptions gvc_options{};
+    gvc_options.OwnerModName = STR("PBZPhotoModeCpp");
+    gvc_options.HookName = STR("GameViewportClientTickPost");
+    RC::Unreal::Hook::GlobalCallbackId gvc_id = RC::Unreal::Hook::ERROR_ID;
+    try {
+        gvc_id = RC::Unreal::Hook::RegisterGameViewportClientTickPostCallback(
+            [](RC::Unreal::Hook::TCallbackIterationData<void>&, RC::Unreal::UGameViewportClient*, float) {
+                PhotoModeMod* mod = g_mod.load(std::memory_order_acquire);
+                if (mod != nullptr) mod->on_game_viewport_tick_post();
+            },
+            gvc_options);
+    } catch (...) {
+        // UE4SS 在 detour 元数据缺失/被配置禁用时会抛异常；不能让整个 Mod 初始化失败。
+        gvc_id = RC::Unreal::Hook::ERROR_ID;
+    }
+    if (gvc_id == RC::Unreal::Hook::ERROR_ID) {
+        if (port_) {
+            port_->track_global_failure("UE4SS.GameViewportClientTickPost");
+            port_->log(LogLevel::Error,
+                       "GameViewportClient Tick Post 回调注册失败：接管模式无法在渲染前写入 POV，"
+                       "镜头将完全无法移动；请在 config.ini [camera] 把 takeover_current_camera 设为 false");
+        }
+    } else if (port_) {
+        port_->track_global_callback("UE4SS.GameViewportClientTickPost", gvc_id);
+    }
+
+    // 接管模式全部依赖上面这个回调：没有它，POV 只能写在 EngineTickPost（RedrawViewports 之后），
+    // 赶不上当帧渲染 → 表现就是“镜头完全不动”。以前这里只记一条 Error 让用户自己去改 config.ini，
+    // 一旦钩子真的不可用，摄影模式等于废掉。现在本会话直接降级到独立相机，保证还能用。
+    gvc_tick_hook_ok_ = (gvc_id != RC::Unreal::Hook::ERROR_ID);
+    if (!gvc_tick_hook_ok_ && cfg_.takeover_current_camera) {
+        cfg_.takeover_current_camera = false;
+        if (mode_) mode_->set_config(cfg_);
+        if (port_) {
+            port_->log(LogLevel::Warn,
+                       "接管模式的渲染前写点不可用：本会话已自动降级为独立相机（spawn + SetViewTarget），"
+                       "摄影模式仍可正常使用；要永久走独立相机可把 config.ini [camera] 的 "
+                       "takeover_current_camera 设为 false");
+        }
+    }
+
     tick_hook_installed_ = true;
 }
 
@@ -168,9 +462,27 @@ void PhotoModeMod::on_engine_tick_post() {
     port_->reassert_view_target();
 }
 
+void PhotoModeMod::on_game_viewport_tick_post() {
+    if (!mode_ || !port_) return;
+    // 与引擎 tick 线程同一线程，但 imgui/框架线程可能正在 leave()：加锁避免接管状态竞争。
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!mode_->active()) return;
+    // dilation 模式：游戏会在 World Tick 里把 TimeDilation 写回 1.0，必须在
+    // GameViewportClient Tick 之后、RedrawViewports 之前每帧重申，否则人物会在
+    // 两次每秒重申之间按正常速度移动（实机 19:58 日志：每秒“时间缩放被游戏改写”）。
+    mode_->reassert_time_dilation_if_needed();
+    mode_->reassert_render_tuning_if_needed();
+    // MPC 快照必须在 World Tick 之后写：游戏在 World Tick 里会覆盖参数，写在 pre-tick 会被下一帧盖回去。
+    mode_->reassert_mpc_hold_if_needed();
+    port_->write_takeover_pov_now();
+    // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建，AA/动态模糊/Lumen 覆盖也在这里重申。
+    port_->post_process_override_tick();
+}
+
 void PhotoModeMod::on_unreal_init() {
     reload_config();
     port_ = std::make_unique<Ue4ssPort>(std::filesystem::path(mod_directory()));
+    process_freezer_ = std::make_unique<ProcessFreezer>();
     mode_ = std::make_unique<PhotoMode>(*port_, cfg_);
     runtime_ = std::make_unique<ModRuntime>(*port_, *mode_, cfg_, keys_);
 
@@ -185,9 +497,21 @@ void PhotoModeMod::on_unreal_init() {
     input_diag_enabled_ = std::filesystem::exists(std::filesystem::path(mod_directory()) / "debug_input_diag.txt");
 
     bind_engine_tick();
+    if (!frame_freeze_thread_.joinable()) {
+        try {
+            frame_freeze_thread_ = std::thread(&PhotoModeMod::frame_freeze_watch_loop, this);
+            if (port_) {
+                port_->log(LogLevel::Info,
+                           "画面定格快捷键已启用：" + vk_to_name(frame_freeze_vk_.load(std::memory_order_relaxed)) +
+                               "（摄影模式内按一次定格、再按恢复）");
+            }
+        } catch (...) {
+            if (port_) port_->log(LogLevel::Warn, "画面定格快捷键线程启动失败；F7 画面定格不可用");
+        }
+    }
     last_tick_time_ = monotonic_seconds();
     std::string load_message =
-        std::string("加载完成 v") + PBZPM_VERSION + "，按 " + vk_to_name(keys_.toggle);
+        std::string("加载完成 v") + PBZPM_VERSION_FULL + "，按 " + vk_to_name(keys_.toggle);
     if (cfg_.pad_enabled) {
         load_message += " 或手柄 " + pad_combo_name(keys_.pad_toggle);
         std::string pad_api = input_source_->pad_api_ready()
@@ -212,6 +536,12 @@ void PhotoModeMod::on_unreal_init() {
 void PhotoModeMod::on_ui_init() {
     // 不调用这个宏的话，UI 线程的 imgui context 是空的，一画就崩
     UE4SS_ENABLE_IMGUI();
+    // imgui_tab 之前是一个没人读取的配置项（解析、dump、ini 示例都齐全，唯一缺消费者），
+    // 于是面板永远无条件注册。这里补上唯一的消费点：false 时不注册该 tab。
+    if (!cfg_.imgui_tab) {
+        if (port_) port_->log(LogLevel::Info, "配置 imgui_tab=false：不注册 UE4SS 控制台面板（可写设置仍在 PBZFM 菜单页）");
+        return;
+    }
     register_tab(STR("PBZ Photo Mode"), &PhotoModeMod::render_tab_bridge);
 }
 
@@ -226,8 +556,11 @@ void PhotoModeMod::render_tab_bridge(RC::CppUserModBase* owner) {
 
 void PhotoModeMod::render_tab_impl() {
     if (!mode_ || !port_) {
-        // 初始化窗口期词典尚未扫描：仅此一条保留代码内兜底文案
-        ImGui::TextUnformatted("正在等待游戏引擎初始化…");
+        // 初始化窗口期词典通常还没扫到：T() 在无词典时会原样返回键名，
+        // 所以这里既要用词典键（否则非中文用户首帧看到中文），又要处理"只拿到键名"的情况。
+        const std::string wait = pbzfm_->lang().T("#console_wait_init");
+        const bool translated = !wait.empty() && wait.front() != '#';
+        ImGui::TextUnformatted(translated ? wait.c_str() : "Waiting for the game engine to initialize...");
         return;
     }
 
@@ -327,9 +660,24 @@ void PhotoModeMod::pbzfm_apply_pending() {
     }
 
     if (has_config) {
-        // 三个有实时通道的开关由 ModRuntime 按差异就地生效；其余字段走 set_config
-        // （下一轮冻结/下次进入/每秒重试路径按新配置执行）
+        // 渲染前写点不可用时，菜单也不能把接管打开：接管靠每帧在 GameViewportClient Tick 之后
+        // 写 POV，钩子缺失时写早了会表现为「镜头完全不动」。这里按 false 应用（菜单随即回显为关，
+        // 与实际情况一致），而不是让用户点开一个必然失效的开关。
+        if (!gvc_tick_hook_ok_ && incoming.takeover_current_camera) {
+            incoming.takeover_current_camera = false;
+            port_->log(LogLevel::Warn,
+                       "接管不可用（缺 GameViewportClientTickPost 钩子）：菜单里的接管开关已按关闭处理");
+        }
+        // 需要实时通道的开关由 ModRuntime 按差异就地生效（含相机后端热切换）；
+        // 其余字段走 set_config（下一轮冻结/下次进入/每秒重试路径按新配置执行）
         if (runtime_) runtime_->apply_config(incoming);
+        // 画面定格热键在独立 watcher 线程里，不走 keys_：菜单里改了 key_frame_freeze
+        // 必须同步原子量，否则要等下一次 reload_config 才换键。
+        const int freeze_vk = vk_from_name(incoming.key_frame_freeze);
+        if (freeze_vk != 0) frame_freeze_vk_.store(freeze_vk, std::memory_order_relaxed);
+        frame_freeze_timeout_ms_.store(
+            static_cast<unsigned long long>(std::clamp(incoming.frame_freeze_timeout_seconds, 5.0, 300.0) * 1000.0),
+            std::memory_order_relaxed);
         port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
     }
 
@@ -378,6 +726,16 @@ void PhotoModeMod::pbzfm_apply_pending() {
         s.freeze_key = vk_to_name(keys_.freeze);
         s.reset_key = vk_to_name(keys_.reset);
         s.roll_reset_key = vk_to_name(keys_.roll_reset);
+        s.free_look_key = vk_to_name(keys_.free_look);
+        s.move_forward_key = vk_to_name(keys_.move_forward);
+        s.move_back_key = vk_to_name(keys_.move_back);
+        s.move_left_key = vk_to_name(keys_.move_left);
+        s.move_right_key = vk_to_name(keys_.move_right);
+        s.boost_key = vk_to_name(keys_.boost);
+        s.slow_key = vk_to_name(keys_.slow);
+        s.roll_left_key = vk_to_name(keys_.roll_left);
+        s.roll_right_key = vk_to_name(keys_.roll_right);
+        s.wheel_fov = cfg_.wheel_fov;
         if (input_source_ != nullptr) s.pad_backend = input_source_->pad_backend();
         pbzfm_->publish_snapshot(s);
     }
@@ -447,9 +805,9 @@ void PhotoModeMod::log_input_diagnostics(const Intent& intent, double dt) {
 
     char buf[360]{};
     std::snprintf(buf, sizeof(buf),
-                  "输入诊断 alt=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
+                  "输入诊断 free_look=%d dx=%.1f dy=%.1f 引擎增量峰值=(%.2f,%.2f) 滚轮钩子=%d 滚轮事件=%lu raw=%d/%lu "
                   "手柄槽位=%d 手柄=%s",
-                  input_.alt_down() ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
+                  input_.held(keys_.free_look) ? 1 : 0, intent.look_dx, intent.look_dy, engine_peak_dx_, engine_peak_dy_,
                   input_source_->ll_ready() ? 1 : 0, input_source_->ll_wheel_events(),
                   input_source_->raw_ready() ? 1 : 0, input_source_->mouse_event_count(),
                   input_source_->pad_slot(), input_source_->pad_backend().c_str());
@@ -497,6 +855,23 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     }
     const Config& cfg = cfg_snap;
     const KeyMap& keys = keys_snap;
+    // 画面定格热键只在摄影模式内生效；watcher 线程只读这个原子量。
+    frame_freeze_allowed_.store(mode_active_snap, std::memory_order_relaxed);
+    // F7 画面定格的准备/恢复请求（Wwise 挂起、时间钩子安装）都在本线程执行；
+    // watcher 只负责挂起/恢复线程，绝不能在挂起期间碰 UE/日志对象。
+    handle_frame_freeze_request(cfg, mode_active_snap);
+    if (frame_freeze_resume_report_.exchange(false, std::memory_order_acquire)) {
+        std::string message = "画面定格已恢复：恢复 " +
+                              std::to_string(frame_freeze_resume_threads_.load(std::memory_order_relaxed)) +
+                              " 个线程（跳过 " +
+                              std::to_string(frame_freeze_resume_skipped_.load(std::memory_order_relaxed)) +
+                              " 个非游戏/输入钩子线程），定格 " +
+                              std::to_string(frame_freeze_resume_duration_ms_.load(std::memory_order_relaxed)) + " ms";
+        if (process_freezer_ && process_freezer_->time_hooks_installed()) {
+            message += "（时间轴已扣掉定格时长）";
+        }
+        port_->log(LogLevel::Info, message);
+    }
 
     // 对话语音钩子：游戏加载后尽早挂到 PBZSoundFXSubsystem 的 Post 函数上，
     // 才能截获之后所有 PlayingID（冻结时的真暂停靠这份名单）

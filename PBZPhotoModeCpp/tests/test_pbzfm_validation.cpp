@@ -98,6 +98,25 @@ void test_key_roundtrip_rejects() {
     }
 }
 
+void test_dof_group_isolated() {
+    section("PBZFM 景深配置独立节点");
+    int dof_fields = 0;
+    int misplaced = 0;
+    for (const PbzfmField& f : pbzfm_fields()) {
+        if (f.key == nullptr) continue;
+        const bool is_dof = std::string(f.key).rfind("dof_", 0) == 0;
+        if (is_dof) {
+            ++dof_fields;
+            CHECK_STR(f.group, "#group_dof");
+        } else if (f.group != nullptr && std::string(f.group) == "#group_dof") {
+            ++misplaced;
+        }
+    }
+    // 景深功能已整体移除：菜单里不应再有任何 dof_* 字段，也没有 #group_dof 分组。
+    CHECK_INT(dof_fields, 0);
+    CHECK_INT(misplaced, 0);
+}
+
 void test_malformed_fields_rejected() {
     section("PBZFM 畸形字段拒绝");
     Config cfg;
@@ -130,5 +149,6 @@ void run_pbzfm_validation_tests() {
     test_enum_clamp();
     test_bool_normalize();
     test_key_roundtrip_rejects();
+    test_dof_group_isolated();
     test_malformed_fields_rejected();
 }

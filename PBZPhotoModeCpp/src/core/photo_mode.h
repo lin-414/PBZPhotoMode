@@ -32,11 +32,23 @@ public:
 
     const CameraPose& pose() const { return pose_; }
     double fov() const { return fov_; }
+    // 本次进入是否走了 UUU 式「接管当前相机」（true 时不 spawn、不切 ViewTarget）
+    bool takeover_active() const { return takeover_active_; }
     // 夹紧到 [fov_min, fov_max]；返回是否真的改变了
     bool set_fov(double fov);
     void toggle_freeze();
-    // 应用当前配置（配置文件热重载后用）
-    void set_config(const Config& cfg) { cfg_ = cfg; }
+    // dilation 模式每帧重申：只在 frozen 且非 pause 时有动作（需要引擎 tick 后调用）
+    void reassert_time_dilation_if_needed();
+    // 冻结期每帧重申渲染对照目标值（游戏可能把 FG/DLSS/AA/tonemapper 改回去）
+    void reassert_render_tuning_if_needed();
+    // 冻结期在 World Tick 之后、渲染之前再写一次 MPC 快照（游戏在 World Tick 里会覆盖）
+    void reassert_mpc_hold_if_needed();
+    // 应用当前配置（配置文件热重载/PBZFM 菜单改值后用）。
+    void set_config(const Config& cfg);
+    // 运行时换相机后端（接管当前相机 ↔ 独立相机），供 PBZFM 菜单热切换。
+    // 未激活时只记下配置；激活时拆旧后端、建新后端并重新下发 FOV。
+    // 任何一步失败都会回滚到原后端并返回 false（用户不会落到"没有相机"的状态）。
+    bool set_camera_backend_live(bool use_takeover);
     const Config& config() const { return cfg_; }
 
     // ---- 图形菜单的实时开关：更新配置 + 立即作用于引擎，退出时按最终状态还原 ----
@@ -47,10 +59,18 @@ public:
 
     const std::string& last_error() const { return last_error_; }
     bool pov_fallback_used() const { return pov_fallback_used_; }
-    double reassert_interval() const { return 1.0; }
 
 private:
     bool apply_pose_if_dirty();
+
+    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖，全部走后处理体积通道）：值变化时才下发。
+    void apply_look_if_needed();
+    LookOptions look_applied_{};
+    bool look_applied_valid_{false};
+    bool look_logged_{false};
+    bool look_warn_logged_{false};
+    // 后端热切换/自动回退后重新下发 FOV：成功路径与回滚路径都必须走这里。
+    void reapply_visuals_live();
     void log(LogLevel level, const std::string& message);
     // 退出/重试共用的还原实现：逐项调用、成功才清标志，失败项写进 failed_items
     bool attempt_restore_all(std::vector<std::string>* failed_items);
@@ -58,6 +78,9 @@ private:
     bool has_pending_restore() const;
     // inactive 状态下的恢复重试（有限次数 + 退避）
     void tick_recovery(double dt);
+    // 接管被证实没生效（写入的 POV 没赶上渲染）时，退出接管并原地重建独立相机。
+    // 返回 true 表示已回退成功（spawn + attach 都完成），false 表示回退也失败。
+    bool fallback_from_takeover();
 
     // 只持有实际用到的子接口：构造时从 EnginePort 聚合接口一次性接线，
     // 让状态机看不到与摄影模式无关的引擎细节。
@@ -86,6 +109,8 @@ private:
     // 进入时成功执行了哪些步骤 —— leave 严格按这些标记回滚，不多做也不少做
     bool spawned_{false};
     bool view_attached_{false};
+    // UUU 式接管：不生成独立 CameraActor、不切 ViewTarget；退出时停止写 POV。
+    bool takeover_active_{false};
     bool ignore_move_set_{false};
     bool game_input_blocked_{false};
     bool player_hidden_{false};
@@ -113,6 +138,24 @@ private:
     bool wind_frozen_{false};
     // MPC 快照钉住生效中（冻结期每帧写回，解冻/退出时释放）
     bool mpc_hold_active_{false};
+    // 冻结时挂起了布料模拟（SkeletalMesh/ChaosCloth，解冻/退出时要恢复）
+    bool cloth_frozen_{false};
+    // 冻结时处理了 PBZ 自定义 Sway/Cloth 全局开关（解冻/退出时要恢复）
+    bool custom_cloth_frozen_{false};
+    // 冻结时关闭了 SkeletalMesh 的 WPO 评估（解冻/退出时要恢复）
+    bool wpo_frozen_{false};
+    // 冻结时暂停了骨骼动画（bPauseAnims/bNoSkeletonUpdate）
+    bool animation_frozen_{false};
+    // 冻结时关闭了动态模糊（r.MotionBlurQuality）
+    bool motion_blur_frozen_{false};
+    // 渲染对照 CVar 已被本 Mod 改写（解冻/退出时必须还原）
+    bool render_tuning_active_{false};
+    // 光照 A/B CVar 已被本 Mod 改写（与渲染对照分开记账；解冻/退出时必须还原）
+    bool lighting_tuning_active_{false};
+    // 冻结期光照阶段自动轮换进行中（每 phase_seconds 切一档）
+    bool lighting_ab_cycle_active_{false};
+    // 阴影/后处理 A/B CVar 已被本 Mod 改写（解冻/退出时必须还原）
+    bool shadow_tuning_active_{false};
     // 冻结期每秒校验暂停/时间缩放是否被游戏改写；连续 3 次失守后停止对抗并告警
     double freeze_check_accum_{0.0};
     int freeze_reassert_count_{0};

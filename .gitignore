@@ -37,12 +37,31 @@ __pycache__/
 Thumbs.db
 Desktop.ini
 nul
-dist/
 *.webp
 _inspect*
 
+# ---- 测试运行残留 ----
+pbzpm_i18n_test/
+*_test.ini
+test_err.txt
+test_out.txt
+
 # ---- 会话垃圾 / 本地运行时（不纳入版本库）----
-%SystemDrive%/
 tmp-cns/
 buildtests_out.txt
 PBZPhotoModeCpp/Python/
+
+# ---- 一次性脚本 / 审查脚手架（不入库；1.0.77 清理）----
+_verify*.py
+_prep*.py
+_review_*
+_review/
+*.diff
+scan*_out.txt
+/tools/
+
+# ---- 一次性截图 / 分析图（不入库）----
+.tmp_*
+
+# ---- AI 编码会话工作日志（不入库）----
+.zcode/

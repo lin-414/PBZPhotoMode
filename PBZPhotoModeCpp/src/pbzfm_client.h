@@ -24,6 +24,7 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <map>
 #include <mutex>
 #include <string>
@@ -78,6 +79,17 @@ struct PbzfmSnapshot {
     std::string freeze_key{"F"};
     std::string reset_key{"R"};
     std::string roll_reset_key{"Z"};
+    // 状态页键位速查：移动/变速/自由视角门控（2.0 起可配，显示当前生效键）
+    std::string free_look_key{"ALT"};
+    std::string move_forward_key{"W"};
+    std::string move_back_key{"S"};
+    std::string move_left_key{"A"};
+    std::string move_right_key{"D"};
+    std::string boost_key{"SHIFT"};
+    std::string slow_key{"CONTROL"};
+    std::string roll_left_key{"Q"};
+    std::string roll_right_key{"E"};
+    bool wheel_fov{true};
     std::string pad_backend{"无"};
 };
 
@@ -133,12 +145,18 @@ private:
     void render_settings_page();                       // 0.4.x 回退整页
     void render_language_page();                       // 0.5.0+：设置分类页（语言切换 + 词典）
     void render_group_page(const char* group);         // 0.5.0+：单个分组的字段
-    void render_field_widget(const PbzfmField& f, Config& draft);  // 单个字段的控件 + 提交语义
+    // 单个字段的控件 + 提交语义。keys 只用于 pbzfm_read_field 的 Key 回退（键名解析失败 → 默认键）
+    void render_field_widget(const PbzfmField& f, Config& draft, const KeyMap& keys);
     void render_language_controls(Config& draft);                  // 语言下拉 + 词典重扫（两处共用）
     void rename_tree_for_language();  // 生效语言变化时用 RenameSection 热改名（0.5.0+ 树）
     void render_diag_page();
-    void render_key_field(const PbzfmField& f, Config& draft);
+    void render_key_field(const PbzfmField& f, Config& draft, const KeyMap& keys);
     void commit_settings(const Config& draft, const std::string& what);
+    // 页面每帧从 mirror_ 取一份草案。Float 滑条拖动中只改草案、松手才提交，所以草案
+    // 必须写回 mirror_ 才能跨帧保持——否则每帧重新拷贝会让滑条弹回原位、松手提交旧值。
+    // 写回前校验代次：期间发生过配置重载/其它提交就放弃，避免旧草案覆盖新配置。
+    Config take_draft(std::uint64_t& generation_out);
+    void store_draft(const Config& draft, std::uint64_t generation);
 
     Host* host_{nullptr};
     PBZFM_Api api_{};
@@ -159,6 +177,9 @@ private:
     // 保护 mirror_：引擎 Tick（sync_from_config）与 PBZFM 渲染线程（页面读写/提交）共用。
     std::mutex mirror_mutex_;
     Config mirror_{};                  // 自绘页绑定的当前配置（改动先落这里再提交）
+    // mirror_ 代次：外部重载/提交时自增。页面写回草案前比对，防止「拖动中的旧草案」
+    // 覆盖掉同帧发生的配置重载。
+    std::uint64_t mirror_generation_{0};
     PbzmI18n lang_;                    // 客户端词典（外部 languages/*.json；控制台面板共用）
     bool imgui_checked_{false};        // ensure_imgui 只校验一次
     bool imgui_ok_{false};

@@ -238,22 +238,13 @@ PadState xinput_to_pad(const XINPUT_STATE& st) {
                                st.Gamepad.sThumbRY);
 }
 
-// 需要轮询的键：功能键 + 摄影模式里用到的所有键。
-// 鼠标键也走同一套 GetAsyncKeyState 轮询：VK_LBUTTON/VK_RBUTTON/VK_MBUTTON/VK_XBUTTON1/VK_XBUTTON2，
-// 这样 key_vertical_up/down 就能和普通键位一样由 config.ini 指定。
-constexpr int kPolledKeys[] = {
-    VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2,
-    VK_F1,  VK_F2,  VK_F3,  VK_F4,  VK_F5,  VK_F6,  VK_F7,  VK_F8,  VK_F9,  VK_F10, VK_F11, VK_F12,
-    'A',    'B',    'C',    'D',    'E',    'F',    'G',    'H',    'I',    'J',    'K',    'L',
-    'M',    'N',    'O',    'P',    'Q',    'R',    'S',    'T',    'U',    'V',    'W',    'X',
-    'Y',    'Z',
-    '0',    '1',    '2',    '3',    '4',    '5',    '6',    '7',    '8',    '9',
-    VK_ADD, VK_SUBTRACT, VK_MULTIPLY, VK_DIVIDE, VK_OEM_PLUS, VK_OEM_MINUS, VK_OEM_3,
-    VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_INSERT, VK_DELETE,
-    VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
-    VK_SPACE, VK_TAB, VK_RETURN, VK_ESCAPE, VK_BACK,
-    VK_SHIFT, VK_LSHIFT, VK_RSHIFT, VK_CONTROL, VK_LCONTROL, VK_RCONTROL, VK_MENU, VK_LMENU, VK_RMENU,
-};
+// 键位全部由 config.ini 决定（2.0.0-cpp-hotfix9 起连 WASD/Shift/Ctrl/Alt 也可改），
+// 所以不再维护「需要轮询的键」白名单：白名单一旦漏项，键位会静默失效——1.0.x 的
+// key_aperture_open/close 默认 OEM_4/OEM_6（[ ]）就是例子，能解析、菜单也能捕获，
+// 但不在名单里，按了永远没有按下沿。这里直接轮询 1..255 全部虚拟键：
+// GetAsyncKeyState 只查线程输入状态，255 次/帧的量级远小于本模组已有的反射扫描。
+constexpr int kPolledVkFirst = 1;
+constexpr int kPolledVkLast = 255;
 
 // 只在游戏窗口在前台时上报输入，避免切出去看攻略时相机跟着乱动
 bool foreground_is_ours() {
@@ -374,6 +365,16 @@ unsigned long Win32InputSource::mouse_event_count() const {
     return g_mouse_events.load();
 }
 
+unsigned long Win32InputSource::raw_thread_id() const {
+    return g_raw_thread_id.load();
+}
+
+void Win32InputSource::discard_pending() {
+    g_dx.store(0, std::memory_order_relaxed);
+    g_dy.store(0, std::memory_order_relaxed);
+    g_wheel_delta.store(0, std::memory_order_relaxed);
+}
+
 int Win32InputSource::pad_slot() const {
     return pad_slot_active_;
 }
@@ -426,12 +427,6 @@ void Win32InputSource::dinput_set_diag(std::string text) {
     dinput_last_diag_ = text;
     std::lock_guard<std::mutex> lock(dinput_mutex_);
     dinput_diag_ = std::move(text);
-}
-
-void Win32InputSource::dinput_append_diag(std::string text) {
-    std::lock_guard<std::mutex> lock(dinput_mutex_);
-    if (!dinput_diag_.empty()) dinput_diag_ += "；";
-    dinput_diag_ += std::move(text);
 }
 
 bool Win32InputSource::ensure_dinput_runtime() {
@@ -763,8 +758,8 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
         }
     }
 
-    // 3) 键盘 + 鼠标键：GetAsyncKeyState 轮询，只在状态边沿上报
-    for (const int vk : kPolledKeys) {
+    // 3) 键盘 + 鼠标键：GetAsyncKeyState 轮询，只在状态边沿上报。全量 VK 保证任意可配置键都有效。
+    for (int vk = kPolledVkFirst; vk <= kPolledVkLast; ++vk) {
         const bool down = (::GetAsyncKeyState(vk) & 0x8000) != 0;
         const bool next = active ? down : false;
         if (next == key_state_[vk]) continue;

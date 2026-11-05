@@ -238,7 +238,6 @@ void Ue4ssPort::invalidate_world_scoped_state() {
             write_bool_setting(subtitle_setting_owner_, kSubtitleSettingSpec, subtitle_setting_original_);
         }
         subtitle_setting_touched_ = false;
-        subtitle_setting_saved_ = false;
         subtitle_setting_owner_ = nullptr;
     }
 
@@ -246,6 +245,23 @@ void Ue4ssPort::invalidate_world_scoped_state() {
     // 相机不在这里 DestroyActor：旧世界销毁时引擎已经处理过它。
     camera_actor_ = nullptr;
     camera_component_cache_ = nullptr;
+    // 画面效果体积属于旧世界，已随关卡销毁：只清指针，绝不能再去 K2_DestroyActor。
+    post_volume_ = nullptr;
+    // 接管相机同样是世界级状态：每帧写的是旧世界那份 CameraCache.POV，换代后旧相机已销毁。
+    // 这里直接作废接管，并置 takeover_render_lost_ 让 core 走既有的回退路径
+    // （fallback_from_takeover → spawn 独立相机）。
+    if (takeover_active_) {
+        takeover_active_ = false;
+        takeover_pose_known_ = false;
+        takeover_fov_ = 90.0;
+        takeover_pov_mismatch_streak_ = 0;
+        takeover_render_lost_ = true;
+        log(LogLevel::Warn,
+            "世界换代：接管当前相机已失效（旧相机随旧世界作废），本次将回退独立相机");
+    }
+    // 未在接管中也把残值清掉：上一代可能刚退出接管，位姿留着没有意义。
+    takeover_pose_known_ = false;
+    takeover_pov_mismatch_streak_ = 0;
     original_view_target_ = nullptr;
     original_view_target_saved_ = false;
     view_attached_by_port_ = false;
@@ -275,6 +291,10 @@ void Ue4ssPort::invalidate_world_scoped_state() {
     voice_positions_at_pause_.clear();
     // 冻结期治理的对象/原始值（相机修饰器、风源、MPC）同样是世界级裸指针
     camera_modifier_states_.clear();
+    cloth_states_.clear();
+    skeletal_anim_states_.clear();
+    motion_blur_active_ = false;
+    motion_blur_original_ = 0;
     wind_backups_.clear();
     mpc_snapshots_.clear();
     mpc_diag_last_.clear();

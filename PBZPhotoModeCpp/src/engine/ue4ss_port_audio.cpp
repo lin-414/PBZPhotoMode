@@ -23,9 +23,9 @@ int Ue4ssPort::wwise_component_count() {
 //   第二层 组件音量归零/恢复——盖住没截获到的声音（钩子装好前已在播的、
 //   绕过子系统直接走集成层的）。
 int Ue4ssPort::pause_wwise_voices(bool pause) {
-    if (pause) {
+    if (pause && audio_diag_verbose_) {
         // 对话 Flow 只读诊断（1.0.74）：钩子尽早安装；冻结期记录 ForceFinishAudio/StopAudio 是否被调用。
-        // 只加日志，不改任何播放行为。
+        // 只加日志，不改任何播放行为。默认关（audio_diag_verbose_=false）：不注册这两个脚本钩子。
         install_dialogue_debug_hooks();
         dialogue_flow_diag_active_ = true;
         dialogue_flow_event_count_ = 0;
@@ -58,18 +58,20 @@ int Ue4ssPort::pause_wwise_voices(bool pause) {
             UFunction* fn_ptr = find_function(soundfx, fn);
             int acted = 0;
             if (pause) {
-                // 暂停：清空上一次的记录，逐 ID 暂停后立刻读位置（只读诊断，不改播放行为）
+                // 暂停：逐 ID 真暂停（FadeTime=0 立即暂停）；位置记录只在诊断开关下做
                 voice_positions_at_pause_.clear();
                 UObject* world_ctx = world();
                 for (int32_t id : playing_ids_snapshot) {
-                    if (invoke_pause_id(soundfx, fn, id, 0.0, world_ctx)) ++acted;  // FadeTime=0：立即暂停
+                    if (invoke_pause_id(soundfx, fn, id, 0.0, world_ctx)) ++acted;
+                    // 只读诊断，不改播放行为：不在诊断开关下就不做这次额外 ProcessEvent
+                    if (!audio_diag_verbose_) continue;
                     double position_ms = 0.0;
                     if (read_playing_id_position_ms(soundfx, id, world_ctx, position_ms)) {
                         voice_positions_at_pause_.emplace_back(id, position_ms);
                     }
                 }
                 // 位置接口不可用/签名不符：只提示一次；诊断缺失不影响暂停本身
-                if (voice_positions_at_pause_.empty() && !voice_position_probe_logged_) {
+                if (audio_diag_verbose_ && voice_positions_at_pause_.empty() && !voice_position_probe_logged_) {
                     voice_position_probe_logged_ = true;
                     log(LogLevel::Info,
                         find_function(soundfx, "GetPlayingIDPositionMs") == nullptr
@@ -324,8 +326,8 @@ bool Ue4ssPort::install_voice_hooks() {
     if (UFunction* position_fn = find_function(soundfx, "GetPlayingIDPositionMs")) {
         log(LogLevel::Info, std::string("GetPlayingIDPositionMs 参数签名=") + describe_params(position_fn));
     }
-    // 对话 Flow 诊断钩子尽早可用（1.0.74）；失败不影响语音钩子本身
-    install_dialogue_debug_hooks();
+    // 对话 Flow 诊断钩子尽早可用（1.0.74）；失败不影响语音钩子本身。默认关，见 audio_diag_verbose_。
+    if (audio_diag_verbose_) install_dialogue_debug_hooks();
     return true;
 }
 
@@ -406,7 +408,8 @@ void Ue4ssPort::on_voice_post(void* result_decl) {
 }
 
 void Ue4ssPort::probe_wwise_components(const std::vector<UObject*>& components) {
-    if (wwise_probe_done_) return;
+    // 纯日志探测：默认关（audio_diag_verbose_=false）时一次都不扫
+    if (!audio_diag_verbose_ || wwise_probe_done_) return;
     wwise_probe_done_ = true;
     if (components.empty()) {
         log(LogLevel::Info, "Wwise 组件诊断：当前场景没有 AkComponent 实例（仅探测一次）");
@@ -425,94 +428,6 @@ void Ue4ssPort::probe_wwise_components(const std::vector<UObject*>& components) 
     }
     log(LogLevel::Info, "Wwise 组件诊断：AkComponent=" + std::to_string(components.size()) +
                             "，可用函数=" + (available.empty() ? "无" : available) + "（仅探测一次）");
-    dump_audio_objects_once();
-}
-
-// 一次性音频对象普查：把场景里所有疑似音频/语音/对话相关的类找出来。
-// 背景：AkComponent 上的 Stop 只能拦“挂在组件上”的声音；对话经常是 Wwise 直接
-// post 在游戏对象上（没有组件），那部分要靠游戏自己的管理器类去停——这里把
-// 候选管理器和它们可用的控制函数列出来，给下一版做可恢复的音频暂停定目标。
-void Ue4ssPort::dump_audio_objects_once() {
-    if (audio_dump_done_) return;
-    audio_dump_done_ = true;
-
-    struct AudioClassInfo {
-        int count{0};
-        UObject* sample{nullptr};
-    };
-    std::map<std::string, AudioClassInfo> found;
-    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
-        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
-        UClass* cls = object->GetClassPrivate();
-        if (cls == nullptr) return RC::LoopAction::Continue;
-        const std::string class_name = narrow(cls->GetName());
-        if (!is_audio_related_name(class_name)) return RC::LoopAction::Continue;
-        AudioClassInfo& info = found[class_name];
-        ++info.count;
-        if (info.sample == nullptr) info.sample = object;
-        return RC::LoopAction::Continue;
-    });
-
-    if (found.empty()) {
-        log(LogLevel::Info, "音频对象普查：未发现 Ak/Audio/Sound/Voice/Dialog 相关类（仅一次）");
-        return;
-    }
-    for (const auto& entry : found) {
-        log(LogLevel::Info, "音频对象普查：" + entry.first + " x" + std::to_string(entry.second.count));
-    }
-    // 全局静态库（UAkGameplayStatics）：Wwise 的 BP 入口都在这，直接列全量函数
-    if (UObject* ak_statics = find_object("/Script/AkAudio.Default__AkGameplayStatics")) {
-        if (is_ok(ak_statics)) {
-            log(LogLevel::Info, "AkGameplayStatics 函数：" + list_all_functions(ak_statics, 80));
-        }
-    }
-
-    // 优先看“能管全局”的类：子系统 > 函数库 > 任务/对话图/导演 > 管理器/系统 > 组件形态
-    auto priority_of = [](const std::string& lower) -> int {
-        if (lower.find("subsystem") != std::string::npos) return 0;
-        if (lower.find("statics") != std::string::npos || lower.find("library") != std::string::npos) return 1;
-        if (lower.find("task") != std::string::npos || lower.find("graph") != std::string::npos ||
-            lower.find("director") != std::string::npos) {
-            return 2;
-        }
-        if (lower.find("manager") != std::string::npos || lower.find("controller") != std::string::npos ||
-            lower.find("system") != std::string::npos) {
-            return 3;
-        }
-        if (lower.find("component") != std::string::npos) return 4;
-        return 9;
-    };
-    std::vector<std::pair<int, const std::map<std::string, AudioClassInfo>::value_type*>> ranked;
-    for (const auto& entry : found) {
-        ranked.emplace_back(priority_of(lower_ascii(entry.first)), &entry);
-    }
-    std::stable_sort(ranked.begin(), ranked.end(),
-                     [](const auto& a, const auto& b) { return a.first < b.first; });
-    int dumped_classes = 0;
-    for (const auto& item : ranked) {
-        if (dumped_classes >= 12) break;
-        const AudioClassInfo& info = item.second->second;
-        if (info.sample == nullptr || !is_ok(info.sample)) continue;
-        if (item.first >= 9) continue;  // 形态不像“能管东西”的类（事件资产等）不转储
-        ++dumped_classes;
-        // 子系统/静态库用全量函数表（它们最可能藏着“按 ID 暂停/枚举播放”这类接口），
-        // 其余（任务/对话图/组件）仍按关键词筛
-        const bool full_list = item.first <= 1;
-        const std::string functions = full_list ? list_all_functions(info.sample, 120)
-                                                : list_audio_functions(info.sample);
-        log(LogLevel::Info, "音频类函数：" + item.second->first + " → " + functions);
-    }
-
-    // 1.0.73：对话相关类的一次性函数清单（只加日志）——逐 PlayingID 暂停失效时，从这里
-    // 找游戏自己的对话/语音控制接口。每类最多 20 个（list_audio_functions 已 cap），
-    // 找不到的类跳过，总行数不超过 9 行。
-    for (const char* class_name :
-         {"STTask_PlayDialogue_C", "KeepSeqDialogue_C", "DialogueGraphNew_C", "DialogueGraph_C",
-          "DialogueFlowAsset", "FromActor_Dialogue_C", "PlayAudio_C", "StopAudio_C", "BP_DialogueCameraType_C"}) {
-        UObject* sample = RC::Unreal::UObjectGlobals::FindFirstOf(widen(class_name));
-        if (!is_ok(sample)) continue;
-        log(LogLevel::Info, std::string("对话类函数：") + class_name + " → " + list_audio_functions(sample));
-    }
 }
 
 }  // namespace pbzpm

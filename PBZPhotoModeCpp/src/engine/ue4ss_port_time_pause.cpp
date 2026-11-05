@@ -8,6 +8,44 @@
 namespace pbzpm {
 using namespace detail;
 
+namespace {
+
+// A/B 实验项：UWorld.bIsCameraMoveableWhenPaused。
+// UE5.7 里它是 UWorld 的 bitfield，优先走反射属性（FBoolProperty，write_bool 能处理 bitfield）；
+// 属性列表里没有时退回 UEPseudo 的 UWorld 成员包装（MemberVariableLayout 已提供该字段）。
+// 读不到原值就不写——恢复时不能靠猜默认值。
+auto read_world_camera_moveable(UObject* scene, bool& out) -> bool {
+    if (!is_ok(scene)) return false;
+    if (FProperty* property = find_property(scene, "bIsCameraMoveableWhenPaused"); property != nullptr) {
+        double value = 0.0;
+        if (read_number(property, scene, value)) {
+            out = value != 0.0;
+            return true;
+        }
+    }
+    try {
+        out = static_cast<UWorld*>(scene)->GetbIsCameraMoveableWhenPaused();
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+auto write_world_camera_moveable(UObject* scene, bool value) -> bool {
+    if (!is_ok(scene)) return false;
+    if (FProperty* property = find_property(scene, "bIsCameraMoveableWhenPaused"); property != nullptr) {
+        if (write_bool(property, scene, value)) return true;
+    }
+    try {
+        static_cast<UWorld*>(scene)->GetbIsCameraMoveableWhenPaused() = value;
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+}  // namespace
+
 double Ue4ssPort::get_time_dilation() {
     UObject* statics = gameplay_statics();
     UObject* scene = world();
@@ -157,6 +195,16 @@ bool Ue4ssPort::set_time_dilation(double dilation) {
     return ok;
 }
 
+// dilation 模式的每帧重申：游戏在 World Tick 里会把 TimeDilation 写回 1.0，
+// 这里只写字段、不打日志，供 GameViewportClient Tick 之后、渲染之前调用。
+bool Ue4ssPort::reassert_time_dilation(double dilation) {
+    UObject* settings = world_settings();
+    if (!is_ok(settings)) return false;
+    if (!time_snapshot_.belongs_to(world_generation())) return false;
+    if (!time_snapshot_.was_written(TimeField::Dilation)) return false;
+    return write_number(find_property(settings, "TimeDilation"), settings, dilation);
+}
+
 // 时间冻结的显式恢复（H-2）：只回写 written_mask 里的字段（本 Mod 确实改过的），
 // 不再靠「数值是否接近原值」的启发式去猜。
 // 快照属于旧世界（generation 不一致）时直接当成功：旧世界的字段已随关卡卸载消失，
@@ -243,6 +291,37 @@ bool Ue4ssPort::set_paused(bool paused) {
             }
         }
 
+        // 低风险 A/B：UWorld.bIsCameraMoveableWhenPaused=true。
+        // 它与 bShouldPerformFullTickWhenPaused 是 UE 暂停相机的标准成对设置：
+        // 后者让 PlayerController/相机管理器继续 Tick，前者让渲染侧知道“暂停时相机可动”，
+        // 避免 TAA/TSR/MotionBlur 继续按静止相机的旧视角矩阵重投影。
+        // 读不到原值就不写；写失败也不阻断暂停，只在日志明确标出（便于 A/B 判读）。
+        bool wrote_camera_moveable = false;
+        if (UObject* scene = world(); is_ok(scene)) {
+            if (!snap.camera_moveable_read) {
+                bool original = false;
+                if (read_world_camera_moveable(scene, original)) {
+                    snap.camera_moveable_read = true;
+                    snap.camera_moveable_original = original;
+                } else if (!camera_moveable_probe_logged_) {
+                    camera_moveable_probe_logged_ = true;
+                    log(LogLevel::Warn, "UWorld.bIsCameraMoveableWhenPaused 不可读写，A/B 相机标志跳过（不影响暂停）");
+                }
+            }
+            if (snap.camera_moveable_read) {
+                bool current = false;
+                if (read_world_camera_moveable(scene, current) && !current) {
+                    if (write_world_camera_moveable(scene, true)) {
+                        if (!snap.camera_moveable_written) wrote_camera_moveable = true;
+                        snap.camera_moveable_written = true;
+                    }
+                }
+            }
+        }
+        if (wrote_camera_moveable) {
+            log(LogLevel::Info, "相机可移动标志已写入：UWorld.bIsCameraMoveableWhenPaused=true（A/B，解冻/退出还原）");
+        }
+
         // 有些 GameMode 把 bPauseable 关了，SetPause 会直接返回 false。
         // 同样只在读到原值且原值为 false 时才改成 true（采样一次，重申不覆盖原值）。
         if (UObject* scene = world(); is_ok(scene)) {
@@ -279,20 +358,8 @@ bool Ue4ssPort::set_paused(bool paused) {
 
     // 回读 IsGamePaused，作为最终是否真的暂停的依据
     bool actually_paused = accepted;
-    if (UObject* statics = gameplay_statics(); is_ok(statics)) {
-        if (UObject* scene = world(); is_ok(scene)) {
-            UFunction* function = find_function(statics, "IsGamePaused");
-            if (function != nullptr) {
-                ParamBlock params(function);
-                if (params.valid()) {
-                    params.set_object("WorldContextObject", scene);
-                    statics->ProcessEvent(function, params.data());
-                    double value = 0.0;
-                    if (params.get_number("ReturnValue", value)) actually_paused = value != 0.0;
-                }
-            }
-        }
-    }
+    bool paused_now = false;
+    if (read_is_game_paused(paused_now)) actually_paused = paused_now;
 
     bool ok = paused ? (invoked && accepted && actually_paused) : (invoked || !actually_paused);
 
@@ -322,6 +389,20 @@ bool Ue4ssPort::set_paused(bool paused) {
                 restored = false;
             }
         }
+        if (snap.camera_moveable_written) {
+            UObject* scene = world();
+            bool done = false;
+            if (is_ok(scene)) {
+                done = write_world_camera_moveable(scene, snap.camera_moveable_original);
+            }
+            if (done) {
+                snap.camera_moveable_written = false;
+                log(LogLevel::Info, "相机可移动标志已还原：UWorld.bIsCameraMoveableWhenPaused=" +
+                                        std::string(snap.camera_moveable_original ? "true" : "false"));
+            } else {
+                restored = false;
+            }
+        }
         return restored;
     };
 
@@ -332,15 +413,20 @@ bool Ue4ssPort::set_paused(bool paused) {
         if (!paused) ok = ok && flags_restored;
     }
 
+    const bool camera_moveable_active = pause_snapshot_.camera_moveable_written;
     log(ok ? LogLevel::Info : LogLevel::Warn,
         std::string(ok ? (paused ? "游戏暂停成功" : "游戏暂停已恢复") : (paused ? "游戏暂停失败" : "恢复游戏运行失败")) +
             " | IsGamePaused=" + (actually_paused ? "true" : "false") +
-            (paused ? "（bShouldPerformFullTickWhenPaused=true，相机仍可移动）" : "") +
-            (ok ? "" : "（PC/GameMode 原始值未能全部还原，退出时会重试）"));
+            (paused ? std::string("（bShouldPerformFullTickWhenPaused=true，UWorld.bIsCameraMoveableWhenPaused=") +
+                          (camera_moveable_active ? "true" : "未写入") + "，相机仍可移动）"
+                    : "") +
+            (ok ? "" : "（PC/GameMode/UWorld 原始值未能全部还原，退出时会重试）"));
     return ok;
 }
 
-bool Ue4ssPort::world_paused() {
+// 回读 IsGamePaused：ok=false 表示接口/世界不可达。两处调用方的失败策略不同
+//（set_paused 保持 accepted 的结论、world_paused 视作未暂停），所以这里只回传两值、不判断。
+bool Ue4ssPort::read_is_game_paused(bool& out) {
     UObject* statics = gameplay_statics();
     UObject* scene = world();
     if (!is_ok(statics) || !is_ok(scene)) return false;
@@ -351,7 +437,14 @@ bool Ue4ssPort::world_paused() {
     params.set_object("WorldContextObject", scene);
     statics->ProcessEvent(function, params.data());
     double value = 0.0;
-    return params.get_number("ReturnValue", value) && value != 0.0;
+    if (!params.get_number("ReturnValue", value)) return false;
+    out = value != 0.0;
+    return true;
+}
+
+bool Ue4ssPort::world_paused() {
+    bool paused = false;
+    return read_is_game_paused(paused) && paused;
 }
 
 // 剧情过场（Sequencer）播放器：世界暂停与时间缩放拦不住剧情系统的自主更新

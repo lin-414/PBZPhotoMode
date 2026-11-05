@@ -15,11 +15,13 @@ class PbzmI18n;
 struct UiCommands {
     bool toggle_freeze{false};
     bool exit_mode{false};
+    // apply_fov/new_fov：面板收敛为只读后不再置位，但 mod_app.cpp:547 仍在读这两个字段，
+    // 删除需两侧同步（mod_app.cpp 不归本区改）。
     bool apply_fov{false};
     double new_fov{0.0};
 };
 
-// 画一帧面板。config 的改动会写回 cfg（下次进入生效）并同步给 mode。
+// 画一帧只读诊断面板（不修改 cfg，也不改 mode）。可写设置项的唯一入口是 PBZFM 页。
 // 文案取自 lang（外部 languages/*.json；与 PBZFM 自绘页共用同一份词典实例）。
 void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, bool& request_reload_config,
                            UiCommands& commands, PbzmI18n& lang);

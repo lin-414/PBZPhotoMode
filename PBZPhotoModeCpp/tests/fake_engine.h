@@ -66,6 +66,35 @@ public:
     bool fail_time_dilation{false};
     bool fail_aspect_unlock{false};
 
+    // ---- UUU 式接管当前相机 / 景深模拟（新用例可打开；默认保持旧路径序列不变）----
+    // 默认不支持接管：PhotoMode 会打一条 Warn 并在同一次 enter 内回退到 spawn + attach_view，
+    // 因此所有既有用例的调用序列不受影响。
+    bool takeover_supported{false};
+    bool takeover_active{false};
+    int takeover_attempts{0};
+    // 引擎层回读判定「接管写点没赶上渲染」：core 应自动回退独立相机
+    bool takeover_view_lost_value{false};
+    // 每一帧 apply_pose 记录的位姿（锁死“接管模式下输入位移必须反映到写出的 POV”）
+    std::vector<CameraPose> pose_history;
+    std::string camera_backend{"CineCameraActor=no CineCameraComponent=no"};
+    // 新用例打开后才把接管调用写进 calls，避免旧的严格序列断言变化
+    bool record_camera_extras{false};
+
+    bool takeover_current_camera(const CameraPose& pose) override {
+        ++takeover_attempts;
+        if (!takeover_supported) return false;
+        takeover_active = true;
+        last_pose = pose;
+        if (record_camera_extras) calls.push_back("takeover_camera");
+        return true;
+    }
+    bool is_camera_takeover_active() const override { return takeover_active; }
+    bool takeover_view_lost() const override { return takeover_view_lost_value; }
+    bool leave_camera_takeover() override {
+        if (record_camera_extras) calls.push_back("leave_camera_takeover");
+        takeover_active = false;
+        return true;
+    }
     // 故障注入（还原方向）：只让 leave()/重试里的恢复调用失败，用于验证“失败项不被吞”
     bool fail_view_restore{false};
     bool fail_ignore_move_restore{false};
@@ -133,6 +162,7 @@ public:
         calls.push_back("apply_pose");
         if (fail_apply_pose) return false;
         last_pose = pose;
+        pose_history.push_back(pose);
         return true;
     }
     bool apply_fov(double fov) override {
@@ -267,10 +297,6 @@ public:
     int wwise_components{0};
     // 逐 PlayingID 模拟：pause_wwise_voices 返回实际执行暂停/恢复的 PlayingID 数
     int wwise_playing_ids{0};
-    int wwise_component_count() override {
-        calls.push_back("wwise_count");
-        return wwise_components;
-    }
     int pause_wwise_voices(bool pause) override {
         calls.push_back(pause ? "wwise_pause" : "wwise_resume");
         return wwise_playing_ids;
@@ -299,9 +325,17 @@ public:
     int modifiers_disabled{0};   // 冻结时本次停用的数量
     int wind_sources{0};         // 风源数量（同时是冻结归零/还原成功数）
     int mpc_params{0};           // MPC 快照参数数（>0 才进入每帧写回）
+    int cloth_components{0};     // 带布料的组件数量（SkeletalMesh + ChaosCloth 合计）
+    int anim_components{0};      // SkeletalMesh 数量（动画冻结）
     bool fail_camera_shakes{false};
     bool fail_wind{false};
     bool fail_mpc{false};
+    bool fail_cloth{false};
+    bool fail_cloth_restore{false};
+    bool fail_anim{false};
+    bool fail_anim_restore{false};
+    bool fail_motion_blur{false};
+    bool fail_motion_blur_restore{false};
     int mpc_snapshot_calls{0};
     int mpc_hold_calls{0};
     int mpc_release_calls{0};
@@ -335,6 +369,80 @@ public:
         calls.push_back("mpc_release");
         ++mpc_release_calls;
     }
+    ClothFreezeReport freeze_cloth(bool frozen) override {
+        calls.push_back(frozen ? "cloth_freeze" : "cloth_restore");
+        ClothFreezeReport report{};
+        report.ok = frozen ? !fail_cloth : !fail_cloth_restore;
+        report.found = cloth_components;
+        report.acted = report.ok ? cloth_components : 0;
+        return report;
+    }
+    SkeletalAnimationFreezeReport freeze_skeletal_animation(bool frozen) override {
+        calls.push_back(frozen ? "anim_freeze" : "anim_restore");
+        SkeletalAnimationFreezeReport report{};
+        report.ok = frozen ? !fail_anim : !fail_anim_restore;
+        report.found = anim_components;
+        report.acted = report.ok ? anim_components : 0;
+        return report;
+    }
+    bool freeze_motion_blur(bool frozen) override {
+        calls.push_back(frozen ? "motion_blur_freeze" : "motion_blur_restore");
+        return frozen ? !fail_motion_blur : !fail_motion_blur_restore;
+    }
+    RenderTuningReport freeze_lighting(bool frozen, const LightingTuningOptions& options) override {
+        calls.push_back(frozen ? "lighting_freeze" : "lighting_restore");
+        RenderTuningReport report{};
+        report.ok = frozen ? !fail_lighting : !fail_lighting_restore;
+        report.applied = (options.screen_traces_off || options.short_range_ao_off || options.radiance_cache_off ||
+                          options.fixed_jitter || options.lumen_off)
+                             ? 1
+                             : 0;
+        return report;
+    }
+    void lighting_ab_tick(double dt, bool enabled, double phase_seconds) override {
+        calls.push_back("lighting_ab_tick");
+        if (enabled) ++lighting_ab_ticks;
+        (void)dt;
+        (void)phase_seconds;
+    }
+    bool fail_lighting{false};
+    bool fail_lighting_restore{false};
+    int lighting_ab_ticks{0};
+    RenderTuningReport freeze_shadow_ab(bool frozen) override {
+        calls.push_back(frozen ? "shadow_freeze" : "shadow_restore");
+        RenderTuningReport report{};
+        report.ok = frozen ? !fail_shadow : !fail_shadow_restore;
+        return report;
+    }
+    void shadow_ab_tick(double dt, bool enabled, double phase_seconds) override {
+        calls.push_back("shadow_ab_tick");
+        if (enabled) ++shadow_ab_ticks;
+        (void)dt;
+        (void)phase_seconds;
+    }
+    bool fail_shadow{false};
+    bool fail_shadow_restore{false};
+    int shadow_ab_ticks{0};
+    CustomClothFreezeReport freeze_custom_cloth(bool frozen) override {
+        calls.push_back(frozen ? "custom_cloth_freeze" : "custom_cloth_restore");
+        CustomClothFreezeReport report{};
+        report.ok = frozen ? !fail_custom_cloth : !fail_custom_cloth_restore;
+        report.sway_found = 4;
+        report.sway_acted = report.ok ? 4 : 0;
+        return report;
+    }
+    bool fail_custom_cloth{false};
+    bool fail_custom_cloth_restore{false};
+    WpoFreezeReport freeze_wpo(bool frozen) override {
+        calls.push_back(frozen ? "wpo_freeze" : "wpo_restore");
+        WpoFreezeReport report{};
+        report.ok = frozen ? !fail_wpo : !fail_wpo_restore;
+        report.found = 5;
+        report.acted = report.ok ? 5 : 0;
+        return report;
+    }
+    bool fail_wpo{false};
+    bool fail_wpo_restore{false};
     std::string freeze_diag_sample() override {
         calls.push_back("freeze_diag");
         return "冻结诊断(模拟)";

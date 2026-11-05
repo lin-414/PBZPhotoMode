@@ -48,6 +48,21 @@ double SteadySeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+// ImGui 1.92 applies the framework's panel zoom / UI scale through
+// style.FontScaleMain, which only scales glyphs - explicit sizes such as
+// ImVec2(150, 0) stay in unscaled pixels. A fixed-width key-cap button
+// therefore clipped long names (MOUSE_LEFT/MOUSE_RIGHT...) as soon as the
+// menu was enlarged. Size the button from the current font metrics instead:
+// keep the old 150px footprint as the minimum (scaled with the font), and
+// always reserve enough room for the label plus the frame padding.
+float KeyButtonWidth(const char* label) {
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float fontScale = style.FontSizeBase > 0.0f ? ImGui::GetFontSize() / style.FontSizeBase : 1.0f;
+    const float minWidth = 150.0f * fontScale;
+    const float textWidth = ImGui::CalcTextSize(label).x + style.FramePadding.x * 2.0f + 2.0f;
+    return textWidth > minWidth ? textWidth : minWidth;
+}
+
 // 改键捕获用：候选 VK → ImGuiKey。与框架输入层的 VkToImGuiKey 保持一致
 // （键喂进 ImGui 后再查回来），不支持的键返回 ImGuiKey_None。
 constexpr ImGuiKey VkToImGuiKey(int vk) {
@@ -133,7 +148,16 @@ void PbzfmClient::start(Host* host) {
 void PbzfmClient::stop() {
     quit_.store(true, std::memory_order_release);
     if (worker_.joinable()) worker_.join();
-    // 不撤销注册：框架没有反注册 API。回调入口都查 alive_，DLL 卸载前先停线程，
+
+    // 反注册菜单事件：PBZFM_OnMenuEvent 的返回值就是给 PBZFM_RemoveMenuEvent 用的句柄
+    // （见 third_party/pbzfm/pbzfm.h:196-198）。旧注释写"框架没有反注册 API"与事实不符，
+    // 后果是 menu_event_id_ 只写不读、事件一直挂到进程结束。
+    if (menu_event_id_ != 0 && api_.RemoveMenuEvent != nullptr) {
+        api_.RemoveMenuEvent(menu_event_id_);
+        menu_event_id_ = 0;
+    }
+
+    // 设置页/诊断页回调没有反注册入口：入口都查 alive_，DLL 卸载前先停线程，
     // 之后即便框架再调进来也是空转（与 UE4SS 控制台 tab 回调同等的存在期约束）
     alive_.store(false, std::memory_order_release);
 
@@ -151,6 +175,19 @@ void PbzfmClient::sync_from_config(const Config& cfg) {
     if (!alive_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lock(mirror_mutex_);
     mirror_ = cfg;  // 自绘页每次渲染都读 mirror_，重载后显示值即跟随 config.ini
+    ++mirror_generation_;  // 外部重载：丢弃渲染线程手里的旧草案，别让拖动中的值回写覆盖它
+}
+
+Config PbzfmClient::take_draft(std::uint64_t& generation_out) {
+    std::lock_guard<std::mutex> lock(mirror_mutex_);
+    generation_out = mirror_generation_;
+    return mirror_;
+}
+
+void PbzfmClient::store_draft(const Config& draft, std::uint64_t generation) {
+    std::lock_guard<std::mutex> lock(mirror_mutex_);
+    if (generation != mirror_generation_) return;  // 期间有重载/提交：不拿旧草案覆盖
+    mirror_ = draft;
 }
 
 void PbzfmClient::publish_snapshot(const PbzfmSnapshot& snap) {
@@ -181,6 +218,7 @@ void PbzfmClient::register_all() {
     {
         std::lock_guard<std::mutex> lock(mirror_mutex_);
         mirror_ = host_->current_config();
+        ++mirror_generation_;
     }
     refresh_language();  // 树节点名按启动时语言注册；此后语言变化经 RenameSection 热改名
     renamed_lang_id_ = lang_.CurrentId();
@@ -430,6 +468,7 @@ void PbzfmClient::commit_settings(const Config& draft, const std::string& what) 
     {
         std::lock_guard<std::mutex> lock(mirror_mutex_);
         mirror_ = draft;
+        ++mirror_generation_;  // 本帧草案已提交：页面收尾不必再写回
     }
     // 渲染线程不再直接写盘：落盘由 saver_main 用「临时文件 + 原子替换」完成，
     // 避免框架渲染线程与引擎 tick 线程同时读写 config.ini 造成半写/读到旧值。
@@ -506,10 +545,13 @@ void PbzfmClient::render_language_controls(Config& draft) {
 }
 
 // 单个字段的控件 + 提交语义（Bool/Enum/键位即时提交，Float 松手提交）
-void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
+// 读值统一走 pbzfm_read_field（schema_map 里的唯一实现，测试已覆盖）。此前这里把四个
+// case 各内联重写了一遍，Key 支漏了 key_fallback——ini 里写了别名的键在菜单显示 "?"，
+// 而引擎实际用的是回退默认键（14 个 Key(...) 的 fallback lambda 因此全部失效）。
+void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const KeyMap& keys) {
     switch (f.kind) {
         case PbzfmFieldKind::Bool: {
-            bool b = f.get_bool(draft);
+            bool b = pbzfm_read_field(f, draft, keys) != 0.0;
             if (ImGui::Checkbox(lang_.T(f.label).c_str(), &b)) {
                 f.set_bool(draft, b);
                 commit_settings(draft, lang_.T(f.label));
@@ -517,8 +559,14 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
             break;
         }
         case PbzfmFieldKind::Float: {
-            float v = static_cast<float>(f.get_num(draft));
-            if (ImGui::SliderFloat(lang_.T(f.label).c_str(), &v, static_cast<float>(f.mn), static_cast<float>(f.mx), f.fmt)) {
+            float v = static_cast<float>(pbzfm_read_field(f, draft, keys));
+            // 跨数量级的字段（对焦距离 1..100000cm、对焦步进 1..5000cm）走对数刻度：
+            // 线性刻度下 1 像素 ≈ 500cm，可用的 300~1500cm 根本拖不到（实机反馈「怎么调都没景深」
+            // 的根因之一就是焦点被拖到几万 cm，物理上等于无穷远、CoC≈0）。
+            ImGuiSliderFlags flags = ImGuiSliderFlags_AlwaysClamp;
+            if (f.logarithmic && f.mn > 0.0) flags |= ImGuiSliderFlags_Logarithmic;
+            if (ImGui::SliderFloat(lang_.T(f.label).c_str(), &v, static_cast<float>(f.mn), static_cast<float>(f.mx),
+                                   f.fmt, flags)) {
                 f.set_num(draft, v);  // 拖动中先落 draft，松手才提交（与框架 schema 同语义）
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) {
@@ -527,7 +575,7 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
             break;
         }
         case PbzfmFieldKind::Enum: {
-            int idx = f.get_enum(draft);
+            int idx = static_cast<int>(pbzfm_read_field(f, draft, keys));
             std::string opt_text[8];
             const char* opts[8]{};
             const int n = f.option_count < 8 ? f.option_count : 8;
@@ -542,7 +590,7 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft) {
             break;
         }
         case PbzfmFieldKind::Key:
-            render_key_field(f, draft);
+            render_key_field(f, draft, keys);
             break;
     }
 }
@@ -555,24 +603,24 @@ void PbzfmClient::render_settings_page() {
     if (font_pushed) ImGui::PushFont(page_font_, page_font_->LegacySize);
     lang_.RescanLanguages(host_->mod_dir(), false);  // 外部词典热加载（内部 2 秒节流）
 
-    Config draft;
-    {
-        std::lock_guard<std::mutex> lock(mirror_mutex_);
-        draft = mirror_;
-    }
+    std::uint64_t draft_gen = 0;
+    Config draft = take_draft(draft_gen);
 
     render_language_controls(draft);
     ImGui::TextDisabled(lang_.T("#hint").c_str());
     ImGui::Separator();
 
     const char* current_group = nullptr;
+    // 键位回退表：与引擎侧 build_keymap 同一实现（每帧一次；只在键名解析失败时被读到）
+    const KeyMap keys = build_keymap(draft, nullptr);
     for (const PbzfmField& f : pbzfm_fields()) {
         if (current_group == nullptr || std::strcmp(current_group, f.group) != 0) {
             ImGui::SeparatorText(lang_.T(f.group).c_str());
             current_group = f.group;
         }
-        render_field_widget(f, draft);
+        render_field_widget(f, draft, keys);
     }
+    store_draft(draft, draft_gen);  // Float 拖动值跨帧保持（松手提交前不能丢）
     if (font_pushed) ImGui::PopFont();
 }
 
@@ -584,13 +632,11 @@ void PbzfmClient::render_language_page() {
     if (font_pushed) ImGui::PushFont(page_font_, page_font_->LegacySize);
     lang_.RescanLanguages(host_->mod_dir(), false);
 
-    Config draft;
-    {
-        std::lock_guard<std::mutex> lock(mirror_mutex_);
-        draft = mirror_;
-    }
+    std::uint64_t draft_gen = 0;
+    Config draft = take_draft(draft_gen);
     render_language_controls(draft);
     ImGui::TextDisabled(lang_.T("#hint").c_str());
+    store_draft(draft, draft_gen);
     if (font_pushed) ImGui::PopFont();
 }
 
@@ -601,33 +647,38 @@ void PbzfmClient::render_group_page(const char* group) {
     const bool font_pushed = ensure_page_font();
     if (font_pushed) ImGui::PushFont(page_font_, page_font_->LegacySize);
 
-    Config draft;
-    {
-        std::lock_guard<std::mutex> lock(mirror_mutex_);
-        draft = mirror_;
-    }
+    std::uint64_t draft_gen = 0;
+    Config draft = take_draft(draft_gen);
+    const KeyMap keys = build_keymap(draft, nullptr);  // 键位回退表（同 render_settings_page）
     for (const PbzfmField& f : pbzfm_fields()) {
         if (std::strcmp(f.group, group) != 0) continue;
-        render_field_widget(f, draft);
+        render_field_widget(f, draft, keys);
     }
+    store_draft(draft, draft_gen);  // Float 拖动值跨帧保持（松手提交前不能丢）
     if (font_pushed) ImGui::PopFont();
 }
 
-void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft) {
+void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft, const KeyMap& keys) {
     // 捕获态是成员变量（H-4：原函数内 static），线程归属见 pbzfm_client.h：
     // 仅框架渲染线程读写；5 秒未按键自动取消，菜单被关掉（v2 菜单事件）时立即取消。
     if (menu_closed_tick_.exchange(false, std::memory_order_acq_rel)) {
         key_capturing_ = false;
     }
 
-    ImGui::TextUnformatted(lang_.T(f.label).c_str());
-    ImGui::SameLine(0.0f, 12.0f);
-    const int current_vk = vk_from_name(draft.*f.key_name);
+    const std::string label_text = lang_.T(f.label);
+    // 读值走 pbzfm_read_field（单一真源）：键名解析失败时回退 KeyMap 的默认键，
+    // 不再显示 "?"——引擎实际用的就是那个回退键。
+    const int current_vk = static_cast<int>(pbzfm_read_field(f, draft, keys));
     char kb[64]{};
     std::snprintf(kb, sizeof(kb), "[%s]", current_vk != 0 ? vk_to_name(current_vk).c_str() : "?");
+    const float button_w = KeyButtonWidth(kb);
+    const float label_w = ImGui::CalcTextSize(label_text.c_str()).x;
+    const bool same_line = label_w + 12.0f + button_w <= ImGui::GetContentRegionAvail().x;
+    ImGui::TextUnformatted(label_text.c_str());
+    if (same_line) ImGui::SameLine(0.0f, 12.0f);
 
     if (key_capturing_ && key_capture_field_ == &f) {
-        ImGui::Button(lang_.T("#capturing").c_str(), ImVec2(150.0f, 0.0f));
+        ImGui::Button(lang_.T("#capturing").c_str(), ImVec2(button_w, 0.0f));
         for (const int cand : kCandidateVks) {
             const ImGuiKey key = VkToImGuiKey(cand);
             if (key != ImGuiKey_None && ImGui::IsKeyPressed(key)) {
@@ -645,7 +696,7 @@ void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft) {
         if (key_capturing_ && SteadySeconds() - key_capture_started_ > kCaptureTimeoutSec) {
             key_capturing_ = false;
         }
-    } else if (ImGui::Button(kb, ImVec2(150.0f, 0.0f))) {
+    } else if (ImGui::Button(kb, ImVec2(button_w, 0.0f))) {
         key_capturing_ = true;
         key_capture_field_ = &f;
         key_capture_started_ = SteadySeconds();
@@ -694,15 +745,20 @@ void PbzfmClient::render_diag_page() {
     }
     api_.Separator();
 
-    char buf[320]{};
+    char buf[640]{};
     std::snprintf(buf, sizeof(buf), lang_.T("#pose").c_str(), s.pos[0], s.pos[1], s.pos[2], s.pitch, s.yaw, s.roll);
     api_.Text(buf);
-    api_.TextDisabled(lang_.T("#help_look").c_str());
+    std::snprintf(buf, sizeof(buf), lang_.T("#help_look").c_str(), s.free_look_key.c_str(),
+                  s.move_forward_key.c_str(), s.move_back_key.c_str(), s.move_left_key.c_str(),
+                  s.move_right_key.c_str(), s.roll_left_key.c_str(), s.roll_right_key.c_str(),
+                  s.boost_key.c_str(), s.slow_key.c_str());
+    api_.TextDisabled(buf);
+    if (s.wheel_fov) api_.TextDisabled(lang_.T("#help_wheel").c_str());
     std::snprintf(buf, sizeof(buf), lang_.T("#help_keys").c_str(), s.toggle_key.c_str(), s.freeze_key.c_str(),
                   s.reset_key.c_str(), s.roll_reset_key.c_str());
     api_.TextDisabled(buf);
     api_.TextDisabled((lang_.T("#pad_prefix") + s.pad_backend).c_str());
-    api_.TextDisabled(PBZPM_DISPLAY_NAME " " PBZPM_VERSION);
+    api_.TextDisabled(PBZPM_DISPLAY_NAME " " PBZPM_VERSION_FULL);
     if (font_pushed) ImGui::PopFont();
 }
 

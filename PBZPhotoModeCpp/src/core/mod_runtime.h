@@ -14,14 +14,17 @@ namespace pbzpm {
 // 切换结果：调用方（mod_app）据此决定是否清空输入状态、重置退避、转储引擎状态。
 enum class ToggleOutcome { Entered, Left, EnterFailed };
 
-// PBZFM 菜单三个「有实时通道」的开关差异。其余字段只更新配置，等下一次
+// PBZFM 菜单里「有实时通道」的开关差异。其余字段只更新配置，等下一次
 // 进入 / 下一次冻结 / 每秒重试路径按新值执行（即「下一帧生效」）。
 struct LiveTogglePlan {
     bool hide_player{false};
     bool block_game_input{false};
     bool hide_game_hud{false};
+    // 相机后端（接管当前相机 ↔ 独立相机）。两条后端都是「进入摄影模式」时建立的，
+    // 所以改这一项必须走一次热切换，否则用户得退出重进才生效。
+    bool camera_backend{false};
 
-    bool any() const { return hide_player || block_game_input || hide_game_hud; }
+    bool any() const { return hide_player || block_game_input || hide_game_hud || camera_backend; }
 };
 
 // 纯函数：只比较三个实时开关，非实时字段的变化不产生任何动作。
@@ -35,9 +38,6 @@ public:
     //   cfg     —— mod_app 持有的当前配置（apply_config 会原地更新）
     //   keys    —— mod_app 持有的键位映射（apply_config 会重建）
     ModRuntime(EnginePort& engine, PhotoMode& mode, Config& cfg, KeyMap& keys);
-
-    // 用 cfg_ 重新同步 PhotoMode（配置文件热重载后调用）。
-    void sync_mode_config();
 
     // 应用一份新配置：原地更新 cfg_/keys_、同步 PhotoMode；若当前处于摄影模式，
     // 按 plan_live_toggles 的差异当帧下发三个实时开关。

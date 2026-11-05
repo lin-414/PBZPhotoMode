@@ -4,8 +4,682 @@
 
 ## 一句话状态
 
+**2.0 正式版（2026-11-05，2.0.0-cpp）**：hotfix1~35 的成果收进不带后缀的版本号
+（`PBZPM_HOTFIX 35 → 0`），日志/UI/包名统一为 `2.0.0-cpp`。功能面：摄影模式本体（世界冻结/帧冻结、
+键位全可配、接管相机与独立相机双后端、画幅解锁、出图）、**画面效果五项全部实机生效**（暗角 / 饱和 /
+对比 / 泛光 / 冷暖）、PBZFM 可选图形菜单、四语言；**明确不支持并已从界面删除**：引擎景深、色差、
+胶片颗粒（取证在 `core/tuning.h`）。旧 `config.ini` 的废弃键会在首次进游戏时原子重写清掉。
+核心层 **5,133 项测试全绿**，DLL 2,155,008 字节、包内不带任何 `hotfix` 字样。详见「v2.0.0-cpp 正式版记录」。
+
+**旧配置真清理（2026-11-05，2.0.0-cpp-hotfix35）**：hotfix34 删了色差/胶片颗粒，但旧 `config.ini`
+里的残留键只是「提示一次然后忽略」，文件里那几行还在。本版给 `ConfigLoadResult` 加 `legacy_keys`，
+`PhotoModeMod::reload_config()` 拿到非空时用规范格式**原子重写一次 config.ini**（`.tmp` → rename），
+把 `[dof]` 段、`key_focus_*`/`key_aperture_*`/`pad_focus_*`/`pad_aperture_*`、`chromatic_aberration`、
+`film_grain` 从文件里物理删掉，日志 `配置清理：已从 config.ini 删除 N 个已废弃键并重写文件（…）`。
+告警文案改成「已忽略并将从 config.ini 清理」；**只在真命中废弃键时才写盘**（干净配置不会每次启动
+白重写，有单测盯着）；重写走 `config_ini_text()` 规范序列化，未知/拼错键也一并清掉。核心层
+5,124 → **5,133 项测试全绿**。详见「v2.0.0-cpp-hotfix35 打包记录」。
+
+**画面效果收口（2026-11-05，2.0.0-cpp-hotfix34）**：`[look]` 只剩 **五项，全部实测生效** ——
+暗角 / 饱和度 / 对比度 / 泛光 / 冷暖。色差与胶片颗粒按用户定调「按景深那套做法整条删掉」执行：
+PBZFM 两条滑条、`[look]` 两键、四语言两标签、`set_look()` 里的 `SceneFringeIntensity` /
+`FilmGrainIntensity` / `ChromaticAberrationStartOffset` 写入与下发回读字段、`log_look_gates()`
+取证函数、`LookOptions` 两字段全部移除；旧 config.ini 残留这两键时按 `kLegacyLookKeys` 合并成
+一条提示后静默忽略（与 `[dof]` 一致）。取证结论移到 `core/tuning.h` 顶部注释。核心层
+5,291 → **5,124 项测试全绿**。详见「v2.0.0-cpp-hotfix34 打包记录」。
+
+**画面效果收口（2026-11-05，2.0.0-cpp-hotfix33）**：`[look]` 七项定性完毕 —— 暗角 / 泛光 / 冷暖 /
+饱和度 / 对比度**生效**（饱和度与对比度在 hotfix32 修好 `FVector4` 的 X/Y/Z/W 成员名后才真正写进去），
+色差 / 胶片颗粒**本作不支持**。颗粒最后一次尝试（hotfix32 补 `FilmGrainTexture` 噪声图 + TexelSize）
+实测无效：纹理挂上了、`r.FilmGrain=1`、强度 6.85，画面里一粒都没有 —— 颗粒 pass 与色差 pass 同属被
+`r.Tonemapper.Quality=2` 钉死的那一档，而那个值钉在比任何游戏设置级写入都高的优先级上。本版删除
+`attach_film_grain_texture()` 与两个状态成员、`FilmGrainTexture`/`FilmGrainTexelSize` 写入，颗粒强度
+仍写入作参数记录，四语言菜单标签标「本作不支持」。核心层 **5,291 项测试全绿**。详见「v2.0.0-cpp-hotfix33 打包记录」。
+
+**景深功能整体移除（2026-11-05，2.0.0-cpp-hotfix32）**：菜单「景深（手动对焦）」整页、`[dof]` 配置段、
+对焦/光圈键位、`Intent.*_nudge` 与连发状态、`PhotoMode::apply_depth_of_field` 与全部 `dof_*` 状态、
+`EnginePort` 三个景深接口、引擎侧 `write_post_process_dof`（含 SEH 包装）与 `takeover_pp_*` 快照、
+`core/dof_math.h`、四语言 11 个标签键、1,106 项单测断言——端到端删干净。自建后处理体积保留并改名
+（`ensure_post_volume` / `post_volume_`），画面效果七项不受影响；旧 `config.ini` 里的 `[dof]` 与键位残留
+合并成一条提示后静默忽略。DLL 2,202,624 → **2,159,616 字节**（-43,008），核心层 **5,291 项测试全绿**。
+同版**修掉画面效果两处真 bug**：`ColorSaturation`/`ColorContrast` 在 UE5 是 `FVector4`（成员名
+**X/Y/Z/W**），hotfix29~31 按 R/G/B/A 找 → 三通道全 `nullptr`，饱和度/对比度一个字节都没写进去；
+胶片颗粒缺 `FilmGrainTexture` → 现在从场景纹理里挑噪声图挂上。色差判定为本作不支持（cvar 被更高
+优先级钉死、console 不执行、UE4SS 无 `IConsoleManager`），菜单标签已标注、抬档代码删除。
+详见「v2.0.0-cpp-hotfix32 打包记录」。
+
+**backlog 清零 + 画面效果四项修好（2026-11-05，2.0.0-cpp-hotfix31）**：对焦/光圈按住连发 + Shift 粗调/Ctrl 微调 + 对焦比例步进（`max(配置步进, 距离×10%)`）；景深实验设施 20 个函数/整块一次删净（`camera_view.cpp` 3,046 → 1,926 行、头文件 825 → 679 行、DLL -23,040 字节），景深反射写入加 SEH 兜底，世界换代时作废接管相机与后处理快照并回退独立相机。**画面效果四项（色差/颗粒/饱和/对比）失效的真因是引擎后处理档位**（本作 `r.Tonemapper.Quality=2`、`r.SceneColorFringeQuality=0` → 这些 pass 被整段跳过），本版加写后回读 + `ColorGradingIntensity` / `ChromaticAberrationStartOffset` 兜底，并通过 `UGameUserSettings.SetPostProcessingQuality(3)` 临时抬档、以 cvar 回读判定成败、退出还原。核心层 **6,397 项测试全绿**。详见「v2.0.0-cpp-hotfix31 打包记录」。
+
+**景深判死收口（2026-11-05，2.0.0-cpp-hotfix30）**：本作 gameplay 视图不渲染引擎景深——相机 POV / 自建体积 / 关卡体积 / ViewTarget.POV 四条通道全部写入成功但画面零变化，径向模糊替代方案（`M_FX_RadialBlur` 挂 `WeightedBlendables`）在挂载那一步就断了（40 个体积全无槽位、`Array` 取址失败）。实验代码已整体删除，`[dof]` 只作参数记录，菜单标签标「本作不支持」。**这件事不再排期。** 详见「v2.0.0-cpp-hotfix30 打包记录」。
+
 **C++ 版 1.0.75（Q/E 滚转键可配置：新增 [keys] key_roll_left/right，修复硬编码）已实现并编译**——见「v1.0.75 修了什么」。此前 1.0.74（过场对话 Flow 冻结/诊断：保留相机，不挂线程——新增 freeze_dialogue_flow + WBP_FlowDialog_C 冻结期 Collapsed 停 Tick + ForceFinishAudio/StopAudio_C 只读诊断）已实现并编译**——见「v1.0.74 修了什么」。此前 1.0.73（1.0.72 过场/对话中进入摄影模式后语句仍不续播：整引擎 Suspend 降级为无 ID 兜底 + 逐 PlayingID 唯一常规路径 + GetPlayingIDPositionMs 位置校验）已实现并编译——见「v1.0.73 修了什么」。此前 1.0.72（过场动画进入/退出摄影模式后语句断句不续播：Wwise 双层静音 + 原 ViewTarget 还原 + 对话 UI Hidden 保 Tick）已实现并编译——见「v1.0.72 修了什么」。此前 1.0.71（字幕/交互提示反复进出后仍消失：修复 UI 修复的玩家就绪判定 + 设置原值改读属性）已实现并编译——见「v1.0.71 修了什么」。此前 1.0.70（进入游戏时崩溃：修复 controller 缓存悬空指针，UI 一次性修复改用实时玩家查询）已实现并编译——见「v1.0.70 修了什么」。此前 1.0.69（字幕/交互提示退出后一直消失：一次性修复 + 设置读写加固）已实现并编译——见「v1.0.69 修了什么」。此前 1.0.68（锁定白点与锁定血条一起隐藏：接游戏锁定系统 TargetingComponent）已实现并编译——见「v1.0.68 修了什么」。此前 1.0.67（清理 PostProcess 快照误报 + 相机修饰器列表兼容 ModifierList）已实现并编译——见「1.0.67：清理两处旧日志提示」。此前 1.0.66（移除时间偏移补偿、修复移动视角卡顿；Wwise 整引擎 Suspend 改为从 PBZ.exe 静态导出解析）已实现并编译——见「1.0.66：移除时间偏移补偿…」。此前 1.0.63（升降键可在 config.ini 配置）已实现——见「v1.0.63 改了什么」。此前 1.0.62（分类树韩语节点问号修复：框架默认字体合并 Malgun）已实现——见「v1.0.62 修了什么」。此前 1.0.53（词典稳定命名键 + en-US 基准词典）已实现——见「v1.0.53 改了什么」。此前 1.0.52（四语言词典外部化：DLL 不再内嵌文本）已实现——见「v1.0.52 改了什么」。此前 1.0.51（dilation 判死 + POV 监测 idle 门控）已实现——见「v1.0.51 修了什么」。此前 1.0.50（POV 微动监测 + MPC 转正确认）已实现——见「v1.0.50 修了什么」。此前 1.0.49（MPC 取值修复：ReturnValue 兜底）已实现——见「v1.0.49 修了什么」。此前 1.0.48（MPC 快照 0 参数逐环节诊断）已实现——见「v1.0.48 修了什么」。此前 1.0.47（冻结治理实机排障：数组判定失灵修复）已实现——见「v1.0.47 修了什么」。此前 1.0.46（方向键/十字键左右：平移改转向）已实现——见「v1.0.46 修了什么」。此前 1.0.45（进入 FOV 取游戏当前镜头 + 进出全对象扫描按类缓存提速）已实现——见「v1.0.45 修了什么」。此前 1.0.44（隐藏锁定敌人的白点标记）已实现——见「v1.0.44 修了什么」。此前 1.0.41（冻结期残余微动治理 + 滚转归零快捷键）已实现——见「v1.0.41 修了什么」。此前 1.0.39 已编译（1.0.38 实机复盘：不进摄影模式已无卡顿；模式内转视角每几秒一卡。三条根因都修了：① Xbox 手柄锁定 XInput 槽位后 DInput 后台线程仍每 2 秒枚举同一设备、SetDataFormat 必败，诊断串反复回游戏线程写 UE4SS.log（一次会话刷 68 行）——现在 XInput 锁定即完全停手（恢复 1.0.37 语义），且相同诊断只发布一次；② 摄影模式内每秒的输入诊断日志（反射摘要+日志落盘）改为 mod 目录放 debug_input_diag.txt 才开启，默认关；③ 字幕收编每秒遍历全对象数组（大场景单次几十毫秒）——世界硬暂停时控件 Tick 冻住、游戏不会重新显示控件，暂停期零扫描；未暂停（dilation 冻结/暂停被解除）才按秒收编，30 秒例行兜底。1.0.38 的 DInput 后台线程化、HUD/提示/血条重试 10 次封顶、SetViewTargetWithBlend/GetInputMouseDelta 反射缓存、语音钩子重试封顶全量保留）。
 核心层 **2529 项测试全绿**；引擎内图形菜单路线六连判死（PROGRESS v1.6.4 终审），真图形菜单若日后重启只剩 D2 DirectComposition 覆盖窗一条路。**1.0.39 实机已验证：卡顿消失**（不进模式无卡顿、模式内转视角无周期性卡顿、进出还原全部正常、DInput 刷日志归零）。**1.0.40 收尾**（1.0.39 日志复盘的两处小尾巴）：① 暂停期跳过字幕收集后空 widgets 仍会落到「场上没有 USubtitleDisplay 控件」告警并白跑一次候选全扫描（每进程首次重申一次）——现在直接早退；② class_chain_contains 改 FName 池索引比较（原逐节点 GetName 转 FString，入场全量扫描实机 ~270ms 小分配风暴）——入场扫描显著提速。
+
+## v2.0.0-cpp 正式版记录（2026-11-05）
+
+用户要求「准备发版 2.0 正式版」。执行的是**版本号收口 + 全量核对**，不再改功能：
+
+1. `src/core/version.h`：`PBZPM_HOTFIX 35 → 0`（宏本身在 0 时自动省略 `-hotfixNN`），
+   日志「加载完成 v2.0.0-cpp」、UI 标题、包名全部跟着变。
+2. 用户可见文案里最后一处 `2.0.0-cpp-hotfix9` 改成 `2.0 起可配`（`config_ini_text` 里的注释），
+   顺带把 `config.h` / `pbzfm_client.h` / `input_logic.h` 里同样的历史编号注释统一，
+   DLL 内**已无任何 `hotfix` 字样**（`grep -ac hotfix` = 0）。
+3. 全量重建 + 跑测试 + 重新生成 `config.ini.example` 与 `docs/test_count.txt`。
+4. 文档：CHANGELOG 新增「2.0.0-cpp 正式版」总览（功能面 / 画面效果五项 / 明确不做的四项 / 安装 /
+   数字）；docs/README 顶部版本行改 `v2.0.0-cpp（正式版）` 并加正式版条目；根 README 加正式版条目；
+   PROGRESS 加本节。
+5. 打包 `dist/PBZPhotoModeCpp_2.0.0-cpp.zip`，并把同线的 `2.0.0-cpp-hotfix*.zip` 全部清掉
+   （1.0.x 历史包保留不动）。
+
+**核对**：DLL 2,155,008 字节；`2.0.0-cpp` 在 DLL 内出现 2 次（版本串 + 显示名
+`PBZ Photo Mode (C++) 2.0.0-cpp`）；核心层 5,133 项 0 失败；包内 DLL 与 `build-dll` 逐字节一致；
+`config.ini` 的 `[look]` 五项、四语言词典齐全、`[dof]` 与色差/胶片颗粒键不存在。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp.zip`（**898,128 字节**，SHA-256
+`9d8b2e676e21a69362371724ce06d3e5e92cd7ec5d8cd67bc7eaf2e6f2ad6b51`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（**2,155,008 字节**）。包内 8 个文件：
+`config.ini`（`[look]` 正好五项、无任何 `[dof]`/色差/胶片颗粒残留）、`enabled.txt`、`README.md`、
+`dlls/PBZPhotoModeCpp.dll`、四语言词典。同线 `2.0.0-cpp-hotfix*.zip` 已全部删除，1.0.x 历史包保留。
+
+## v2.0.0-cpp-hotfix35 打包记录（2026-11-05）
+
+用户定调：「config.ini 不会留着旧键，都清干净一点」。hotfix34 只是**忽略**旧键（打一条提示就完事），
+文件里那几行会一直留着 —— 这版改成物理清理。
+
+做法：
+
+- `ConfigLoadResult` 新增 `std::vector<std::string> legacy_keys`；`parse_config` 命中
+  `kLegacyDofKeys` / `kLegacyLookKeys` 时 push 进去（不再只 warn）。
+- `PhotoModeMod::reload_config()` 在打完 warnings 后，若 `legacy_keys` 非空 → `save_config_file(path, cfg_)`
+  按当前规范格式**原子重写**（`.tmp` + rename），日志：
+  `配置清理：已从 config.ini 删除 N 个已废弃键并重写文件（a, b, c, …）`（名字最多列 8 个）。
+- 告警文案：「…已忽略并将从 config.ini 清理」，不再让用户自己删。
+- 只在命中时写盘：干净的配置不会每次启动都重写（单测 `test_config_legacy_purge` 的最后一条盯着）。
+- 重写走 `config_ini_text()`，因此未知键 / 拼错键 / 空段也一并被清掉，文件回到标准格式。
+
+**测试**：5,124 → **5,133 项**断言全绿（+9：新增 `test_config_legacy_purge`）。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix35.zip`（**897,933 字节**，SHA-256
+`27746bb081b0b8c146610058ff2e3ccc158149cfba26f97d1cc7c2956937e644`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（**2,155,008 字节**），
+版本串 `2.0.0-cpp-hotfix35` 出现 2 次；包内 DLL 能搜到 `配置清理：已从 config.ini 删除` 与
+`并将从 config.ini 清理`（清理路径确实进了包）。hotfix34 的包已删除。
+
+## v2.0.0-cpp-hotfix34 打包记录（2026-11-05）
+
+用户定调：「将色差与胶片颗粒从菜单和 [look] 里整条删掉」——即按 hotfix32 删景深那套做法办，
+不带「参数记录」这种留尾巴的说法。
+
+删除清单（端到端）：
+
+- **菜单**：`pbzfm_schema_map.cpp` 里 `Float(kLookGroup, "chromatic_aberration", …)` /
+  `Float(kLookGroup, "film_grain", …)` 两项。
+- **配置**：`[look]` 段 `chromatic_aberration` / `film_grain`；`Config` 两个成员、schema 表两项、
+  `default_config_text()` 的输出（注释 + 值）。
+- **词典**：四语言 `#chromatic_aberration` / `#film_grain`。
+- **引擎**：`set_look()` 里 `SceneFringeIntensity` / `FilmGrainIntensity` 写入、
+  `ChromaticAberrationStartOffset=0` 兜底、下发/回读日志里的这两个字段，以及 `log_look_gates()`
+  与 `look_gates_logged_`（取证行改由 `core/tuning.h` 注释承担）。
+- **结构**：`LookOptions` 的 `chromatic_aberration` / `film_grain` 字段与 `*_active()`、
+  `any_active()`、`look_options_equal()` 对应判定。
+- **兼容**：新增 `kLegacyLookKeys`，旧 config 残留这两键时合并成一条 warning 后忽略。
+
+`tuning.h` 顶部新增一整段取证结论（档位依据 `r.Tonemapper.Quality=2` /
+`r.SceneColorFringeQuality=0` / `r.Tonemapper.GrainQuantization=0`、抬档被 cvar 优先级丢弃、
+console 不执行、UE4SS 无 `IConsoleManager`、补噪声纹理后颗粒强度 6.85 仍不出现），
+后来者不必重走这条路。
+
+**测试**：5,291 → **5,124 项**断言（-167：字段表/校验类用例里这两项的覆盖），全绿。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix34.zip`（**896,135 字节**，SHA-256
+`76a70d86fb38a566eea7ee088d78094822b5de9052b8b68be8439235c9880fb1`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（**2,151,936 字节**，比 hotfix33 少 4,096），
+版本串 `2.0.0-cpp-hotfix34` 出现 2 次。核对结果：DLL 里 `SceneFringeIntensity` /
+`ChromaticAberrationStartOffset` 均为 **0 处**（引擎写入确实删干净）；`chromatic_aberration` /
+`film_grain` 各余 1 处、`色差`/`胶片颗粒` 只出现在**旧配置兼容告警文案**里（`kLegacyLookKeys`），
+符合预期；四语言词典里 `film_grain` 标签 **0 处**；包内 `config.ini` 的 `[look]` 正好五项
+（vignette / saturation / contrast / bloom / temperature）。hotfix33 的包已删除。
+
+## v2.0.0-cpp-hotfix33 打包记录（2026-11-05）
+
+用户实机反馈：「饱和度与对比度生效，胶片颗粒无效」。
+
+- 饱和度/对比度生效 = hotfix32 的 `FVector4` 成员名修复（X/Y/Z/W）确实命中，日志里
+  `回读 … 饱和=1.01(覆盖1) 对比=…` 不再是 `<读不到>`。
+- 颗粒则把 hotfix32 那套尝试的每一步都走完了还是没画面：日志
+  `画面效果：胶片颗粒纹理 = Texture2D /Engine/EngineMaterials/Good64x64TilingNoiseHighFreq…（命中关键词 noise）`
+  + `颗粒=6.85(覆盖1)` + `r.FilmGrain=1`。纹理有了、强度拉满、pass 总开关开着 —— 唯一解释仍是
+  **颗粒 pass 处在那档被钉死的 `r.Tonemapper.Quality=2` 之下**（与色差 pass 同源）。
+
+本版处理：
+
+- **删除** `attach_film_grain_texture()`（进模式扫全场景 `Texture2D` 找 grain/noise 图）
+  与 `film_grain_texture_` / `film_grain_scanned_`、`FilmGrainTexture` / `FilmGrainTexelSize` 写入
+  —— 实测证伪的机制不留，也不再每次进模式扫一遍纹理。
+- 颗粒强度照常写入（与色差一致的「参数记录」语义）；四语言菜单标签标「本作不支持」；
+  `config.ini.example` 的 `[look]` 注释同步改写。
+- `log_look_gates()` 保留：一行 `画面效果诊断（画面效果首次写入）：r.Tonemapper.Quality / r.SceneColorFringeQuality / r.Tonemapper.GrainQuantization / r.FilmGrain`，
+  换引擎版本时直接复核。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix33.zip`（**897,827 字节**，SHA-256
+`3420c353e5b379a4289240649a9590b7a055ea93d83de7784fdc254dce84c599`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（**2,156,032 字节**，比 hotfix32 少 3,584 = 删掉的
+纹理补丁），
+版本串 `2.0.0-cpp-hotfix33` 出现 2 次；DLL 内已搜不到 `胶片颗粒纹理` / `attach_film_grain_texture`
+相关字符串（机制确实删干净），仍能搜到 `画面效果诊断` 取证行。hotfix32 的包已删除。
+
+## v2.0.0-cpp-hotfix32 打包记录（2026-11-05）
+
+用户看着 PBZFM 的「景深（手动对焦）」页说：「图示配置都没有效果，也应一并删掉吧」。
+同意——hotfix25 起它就只是「参数记录」，既然永远不会出画面、也没有任何功能消费这些值，
+留在菜单里就是误导。本版把景深功能**端到端删除**。
+
+### 删除清单
+
+- **菜单**：`#group_dof` 整页（`dof_enabled` + 5 条滑条）、`[keys]` 里 4 个对焦/光圈键位项；
+  `pbzfm_schema_map.cpp` 的 `kDofGroup` 常量、字段与注释一并删除。
+- **配置**：`[dof]` 段 6 键、`key_focus_near/far`、`key_aperture_open/close`、`pad_focus_*`、`pad_aperture_*`
+  （`Config` 成员、schema 表、`default_config_text()` 输出全部去掉）。
+- **输入**：`Intent.focus_nudge` / `aperture_nudge`、4 组 `RepeatState`、`axis_nudge` 只服务 FOV；
+  手柄 LB+BACK 之类的「对焦组合键」不再是特殊组合（不再抑制滚转）。
+- **核心**：`apply_depth_of_field`、`log_dof_write_if_due`、旧配置迁移（legacy migrate）、不可用重探、
+  `set_config` 的实时下发分支、`dof_*` 全部状态与 getter、`engine_port.h` 的步进换算 helper。
+- **引擎接口**：`set_depth_of_field` / `restore_depth_of_field` / `clear_depth_of_field` 三个虚函数。
+- **引擎实现**：`write_post_process_dof`（含 SEH 包装与 `DofWriteSehContext`）、`snapshot_takeover_post_process`、
+  `restore/clear_depth_of_field`、`takeover_pp_*` 快照、`log_dof_field_candidates`、景深字段候选表、
+  `collect_dof_field_names` / `seh_collect_dof_field_names`、`write_takeover_pov` 里的景深重申块。
+- **其它**：`core/dof_math.h`、四种语言词典各 11 个标签键、`tests` 里 1,106 项断言。
+
+### 保留并改名
+
+「画面效果」七项依赖自建的无界高优先级体积（本作唯一会被采纳的后处理通道），所以：
+
+- `ensure_dof_volume` → `ensure_post_volume`
+- `destroy_dof_volume` → `destroy_post_volume`
+- `dof_volume_` → `post_volume_`，`dof_volume_diag_logged_` / `dof_volume_fail_logged_` → `post_volume_*`
+
+日志前缀从「景深：」改成「画面效果：」，创建参数（`bEnabled` / `bUnbound` / `Priority=10000` / `BlendWeight=1`）不变。
+`log_look_gates` 里顺手去掉了 `r.DepthOfFieldQuality` 读数（不再相关）。
+
+### 旧配置兼容
+
+`parse_config` 里加了一张 `kLegacyDofKeys` 表：命中这些键时合并成**一条** warning 后静默忽略，
+不会出现「未知配置项已忽略」刷十几行：
+
+```
+配置里的景深相关项已废弃（本作不支持引擎景深，功能已移除），已忽略；
+可以把 [dof] 段与 key_focus_*/key_aperture_*/pad_focus_*/pad_aperture_* 一并删掉
+```
+
+### 数字
+
+- DLL 2,202,624 → **2,159,616 字节**（-43,008）
+- 核心层 6,397 → **5,291 项**断言（-1,106），全绿
+- `config.ini.example` 已无 `[dof]`、无对焦/光圈键位
+
+### 同版夹带：画面效果四项失效的两处真 bug
+
+hotfix31 的写后回读在实机日志里把结论直接摊开了：
+
+```
+画面效果：回读 … 饱和=<读不到> 对比=<读不到> …   ← 这两项根本没写进去
+画面效果诊断（抬档前）：r.Tonemapper.Quality=2 r.SceneColorFringeQuality=0 …
+画面效果：抬档后 cvar 没变（色差质量 0→0，色调映射质量 2→2，应用=已调用）  ← 抬档无效
+```
+
+1. **`ColorSaturation` / `ColorContrast` 成员名写错**：UE5 里它们是 `FVector4`（`TVector4<double>`），
+   成员名 **X/Y/Z/W**；`FLinearColor`（冷暖的 `SceneColorTint`）才是 R/G/B/A。hotfix29~31 按 R/G/B/A
+   找三个通道，`struct_member` 全返回 `nullptr`，写入被静默跳过——**滑条值是存了，但一个字节都没进体积**。
+   现在按 X/Y/Z/W 写、按同一套名字回读，日志会变成 `饱和=0.16(覆盖1)`。
+2. **胶片颗粒缺噪声纹理**：UE5 的颗粒是 tonemapper 用 `FilmGrainTexture` 叠出来的，本作没有任何体积
+   设置过这张纹理，纹理为空时强度写再大也画不出颗粒。现在从场景 `Texture2D` 里按
+   `filmgrain → grain → noise → perlin → speckle → dust` 找一张（跳法线图 / flow），挂到自建体积并
+   写 `FilmGrainTexelSize=1`，日志 `画面效果：胶片颗粒纹理 = <资源名>（命中关键词 …）`。
+3. **色差：判定「本作不支持」**。`r.SceneColorFringeQuality` 被钉在 0，而 UE5 的 cvar 有 `ECVF_SetBy*`
+   优先级：Scalability/GameSetting 都低于把值钉住的 ConsoleVariablesIni/DeviceProfile，所以
+   `SetPostProcessingQuality(3) → Scalability::SetQualityLevels` 的写入被直接丢弃（实测回读 unchanged）。
+   console 命令在本作不执行（hotfix25 判死），UE4SS 头文件里也没有 `IConsoleManager` —— Mod 侧没有合法开关。
+   **抬档代码整体删除**（`ensure_game_user_settings` / `raise_look_post_quality` / `restore_look_post_quality`
+   与三个状态成员），只保留 `log_look_gates()` 这一行诊断；菜单标签四语言标注「本作不支持」，
+   `config.ini.example` 的 `[look]` 注释同步改写。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix32.zip`（**898,977 字节**，SHA-256
+`f382c7399bee148c9105212645db7c8417762d3fcf68c0bfbdb6548dc24c6c19`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,159,616 字节），
+版本串 `2.0.0-cpp-hotfix32` 出现 2 次；DLL 内搜不到 `伪虚化` / `景深闸门` / `对焦距离`，
+`dof_enabled` 仅剩旧配置兼容表里那一处字符串；能搜到本版新增的 `成员名是 X/Y/Z/W` 与
+`胶片颗粒纹理`（确认修复真的进了包）。hotfix31 的包已删除。
+
+## v2.0.0-cpp-hotfix31 打包记录（2026-11-05）
+
+backlog 四件一次做完，外加景深死代码清零。
+
+### 1) 输入：按住连发 + 变速 + 比例步进
+
+- `FovRepeat` 泛化成 `RepeatState`，FOV/对焦/光圈六个方向共用：按下沿 1 格，按住 0.35s 后每 0.08s
+  1 格，`while (hold >= next)` 掉帧补格；键盘键与手柄组合合成同一条方向通道。
+- `PhotoMode::tick` 里把 `mult = boost_mult × slow_mult` 提到 DOF 之前，对焦/光圈步进同样乘它。
+  **顺序关键**：`focus_step_scaled(距离, 配置步进, 10%) × mult`——先把比例算出来再乘变速，
+  否则 Ctrl 微调会被比例下限吃掉。
+- 新增 `tuning::kDofFocusStepProportion = 0.1` 与 `focus_step_scaled()`：
+  实际步进 = max(配置步进, 距离×10%)。300cm → 30cm，10m → 1m，100m → 10m。
+- `dof_focus_step` 语义改为「最小步进」，`default_config_text()` 注释同步改写。
+
+### 2) 景深实验设施清零（本次改动最大）
+
+删除 20 个函数/整块：通道③（关卡体积）/④（玩家相机组件）/⑤（ViewTarget.POV + 每帧重申）、
+`ShowFlags` 内存采样（0xB8 原始读）、console 命令闸门（`exec_command` / `verify_exec_channel` /
+`raise_dof_render_quality` / `restore_dof_render_quality` / `tick_dof_gates`）、三段探针
+（`start_dof_probe` / `tick_dof_probe` / `probe_dof_showflag`）、材质普查、MPC 景深候选参数 dump、
+`describe_dof_settings/volume`、`DofVolumeOverrideBackup` / `DofCameraComponentBackup` 与全部状态成员。
+
+- `set_depth_of_field` 从 106 行收到 52 行：只剩通道①（相机/POV 的 PostProcessSettings）+
+  通道②（自建无界体积）+ 参数记录。
+- 常量 `kDofExperimentalChannels` / `kDofQualityTarget` 删除；`tuning.h` 顶部的取证结论保留成文档。
+- `destroy_dof_volume()` 只剩体积本身的收尾。
+- 数字：`ue4ss_port_camera_view.cpp` 3,046 → **1,926 行**（净减 1,120），`ue4ss_port.h` 825 → **679 行**，
+  DLL 2,225,664 → **2,202,624 字节**（-23,040）。
+
+### 3) SEH 兜底
+
+`write_post_process_dof_guarded()`：内层 `dof_write_seh_entry()` 只含 POD 局部变量（避开 C2712），
+`__try/__except` 拦下非法访问 → 返回失败 + 一次性告警「景深写入触发了一次非法内存访问（已拦下…）」。
+4 个调用点全改走 guarded 版本。
+
+### 4) 世界换代清接管
+
+`invalidate_world_scoped_state()` 新增：作废 `takeover_active_` / 位姿 / 后处理快照（**不写回**），
+置 `takeover_render_lost_ = true` 让 core 走既有 `fallback_from_takeover()`（spawn 独立相机），
+日志 `世界换代：接管当前相机已失效（…本次将回退独立相机）`。以前换图后退出会把旧世界的后处理
+参数写进新地图的相机。
+
+### 5) 画面效果四项失效：根因是后处理档位
+
+用户实机（hotfix30）把滑条拖到位却没画面变化：色差 **1.98** / 颗粒 **7.68** / 饱和 **0.74** /
+对比 **0.81** 全部失效，而同一次会话里暗角（拖到 2.17 验证）、泛光 1.5、冷暖 0.16 都正常。
+同一个体积、同一套 `bOverride_*` + 数值 → 既不是值太小，也不是没写进去。
+
+引擎 `BaseScalability.ini` 给出解释：`PostProcessQuality@0/@1` 写的是
+`r.SceneColorFringeQuality=0` / `r.Tonemapper.Quality=0|2` / `r.Tonemapper.GrainQuantization=0`，
+而 `@2/@3/@Cine` 才是 `1 / 5 / 1`。本作读到的 `r.Tonemapper.Quality` 正是 **2**：色差 pass、
+胶片颗粒、颜色分级 LUT 相关项被整体跳过；暗角/泛光/SceneColorTint 不受这些档位管辖，所以只有
+它们正常。**失效四项正好是「受档位管辖」那一拨。**
+
+本版做法：
+
+- `set_look` 每次值变化先下发、再**回读**体积里 7 项（+ 颜色分级强度）的实际值与覆盖标志，
+  打一行 `画面效果：回读 …`，把「没写进去」和「写进去了引擎不画」分开。
+- 饱和/对比：用到时把 `ColorGradingIntensity` 钉成 1（LUT 内容仍由引擎生成）。
+- 色差：同时把 `ChromaticAberrationStartOffset` 钉成 0，让分离从画面中心开始。
+- **抬档**：console 命令在本作不执行（hotfix25 判死），只能走 `UGameUserSettings`：
+  `SetPostProcessingQuality(3)` → `ApplyNonResolutionSettings()`（内部即 `Scalability::SetQualityLevels`）。
+  成败**以 cvar 回读判定**（`r.SceneColorFringeQuality` / `r.Tonemapper.Quality` 任一变大才算成功），
+  日志 `画面效果诊断（抬档前/后）…`；抬不动立刻写回原档位。退出摄影模式（效果全回中性）自动还原。
+- 抬档连带提高 AO/泛光/运动模糊质量，只在用到色差/颗粒/饱和/对比时抬。
+
+### 测试与打包
+
+核心层 6,365 → **6,397 项**全绿（新增：对焦/光圈连发时序、掉帧补格、松开即停、按住时 reset 不误发、
+`focus_step_scaled` 五种输入、PhotoMode 层 Shift/Ctrl 变速与一帧三格）。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix31.zip`（**919,768 字节**，SHA-256
+`949687b798b3a47c1028e69e39e2798497e9dac3585eb440e73b1ba6a3ec1e69`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,202,624 字节），版本串 `2.0.0-cpp-hotfix31` 出现 2 次，
+DLL 内搜不到 `RadialBlur` / `伪虚化` / `景深闸门` / `MPC 景深候选参数` 残留，且能搜到本版新增的
+`画面效果：回读` / `已把游戏后处理质量临时抬到` / `ColorGradingIntensity` / `ApplyNonResolutionSettings`
+四个标记（确认抬档代码真的进了包）。hotfix30 的包已删除。
+
+## v2.0.0-cpp-hotfix30 打包记录（2026-11-05）
+
+**决定：径向模糊伪虚化到此为止，代码整体删除。** hotfix28 的日志把最后一格拼上了：
+
+```
+伪虚化诊断：40 个后处理体积里，带 WeightedBlendables 的有 0 个：<无>
+伪虚化：使用材质 Material /PBZVFXPack/.../M_FX_RadialBlur.M_FX_RadialBlur
+伪虚化：开始自建槽位（借不到现成的，改用 FMemory 分配）
+伪虚化：自建槽位失败 → Array 取址失败
+```
+
+没有现成槽位可借，自建槽位时连 `FWeightedBlendables.Array` 的地址都拿不到 —— 这条路在「挂载」
+这一步就断了，继续只能靠猜 Shipping 的内存布局，风险远大于收益。用户决定停止，本版执行收尾。
+
+删除清单（零残留）：
+
+- `attach_radial_blur_material()` / `detach_radial_blur_material()` / `scan_weighted_blendables()`
+- 匿名命名空间里的 `ScriptArrayView` / `read_script_array()`（仅这两处用）
+- 头文件里 21 行状态成员（`radial_*` / `blendables_scanned_`）
+- `#include <Unreal/FMemory.hpp>`（engine 侧唯一使用者已删）
+- `destroy_dof_volume()` 里的 `detach_radial_blur_material()` 调用
+
+engine 层净减 **233 行**，头文件净减 **21 行**；DLL 2,237,952 → 2,225,664 字节（-12,288）。
+`[dof]` 段注释改写为「本作不渲染引擎景深、以下仅为记录」，并由 `tools/gen_config.bat` 重新生成
+`config.ini.example`。`tuning::kDofExperimentalChannels` 注释补齐伪虚化结论。
+`[look]` 七项画面效果（hotfix29）不受影响。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix30.zip`（**928,172 字节**，SHA-256
+`491d75bcac9c133a0398b83c27364047fafb91d0b8bc8afc12b503266997175b`），包内 DLL 与
+`build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,225,664 字节，SHA-256 `d8d0415698932a00…`），
+版本串 `2.0.0-cpp-hotfix30` 出现 2 次，包内 DLL 搜不到 `RadialBlur` / `伪虚化` 残留；
+核心层测试 **6,365 项全绿**（0 失败）。hotfix29 的包已删除。
+
+## v2.0.0-cpp-hotfix29 打包记录（2026-11-05）
+
+画面效果全套：暗角 / 色差 / 胶片颗粒 / 饱和度 / 对比度 / 泛光 / 冷暖，全部走自建后处理体积（hotfix28 已证明有效）。
+新增 `src/core/look.h`（LookOptions + 中性/相等判定），`EnginePort::set_look` 取代 `set_vignette`，
+`[look]` 段 7 项 + 菜单 7 条滑条。核心层测试 5,816 → 6,365 项。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix29.zip`（**932,883 字节**，SHA-256 `bb495c86…65b31b1`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,237,952 字节），版本串 `2.0.0-cpp-hotfix29`；核心层测试 **6,365 项全绿**。hotfix28 的包已删除。
+
+## v2.0.0-cpp-hotfix28 打包记录（2026-11-05）
+
+hotfix27：材质找到，但自建槽位那段静默返回（多个分支都是无日志 return，无法定位）。
+本版：把 `WeightedBlendables → Array → Inner → Object/Weight → Malloc → 写入` 每一步拆开打日志，
+失败时输出具体是哪一步，据此确定 5.7 的字段名/类型。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix28.zip`（**927,377 字节**，SHA-256 `7735afb4…5479cea872` 前 8/后 8），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,228,736 字节），版本串 `2.0.0-cpp-hotfix28`；核心层测试 **5,728 项全绿**。hotfix27 的包已删除。
+
+## v2.0.0-cpp-hotfix28 打包记录（2026-11-05）
+
+新增「屏幕暗角」功能：走自建后处理体积写 `VignetteIntensity`（本作 gameplay 视图里唯一实测能出画面的通道，
+探针第 2 段已证明）。配置新增 `[look] vignette = 0`（0~4），菜单新增「画面效果（暗角）」滑条，退出恢复。
+核心层测试 5,728 → 5,816 项。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix28.zip`（**927,725 字节**，SHA-256 `6689920a…ec4119c`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,228,736 字节），版本串 `2.0.0-cpp-hotfix28`；核心层测试 **5,816 项全绿**。hotfix27 的包已删除。
+
+## v2.0.0-cpp-hotfix27 打包记录（2026-11-05）
+
+hotfix26 结果：材质找到（`/PBZVFXPack/VFX/A_Materials/Template/Original/M_FX_RadialBlur`），
+但 40 个后处理体积的 `WeightedBlendables` 全空，借不到槽位。
+
+本版：用 `RC::Unreal::FMemory::Malloc/Free`（引擎 GMalloc，Binned2）分配 1 个 `FWeightedBlendable`，
+写入材质 + 权重 1.0，`FScriptArray` 头设 `{Data,1,1}`；退出时先清空数组头再自己释放。
+回退方式：`[dof] enabled=false` 即完全不碰这条路径。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix27.zip`（**925,262 字节**，SHA-256 `8794308a…5f5414b`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,225,152 字节），版本串 `2.0.0-cpp-hotfix27`；核心层测试 **5,728 项全绿**。hotfix26 的包已删除。
+
+## v2.0.0-cpp-hotfix26 打包记录（2026-11-05）
+
+用户选择试「径向模糊伪虚化」。做法：把游戏自己的后处理材质 `M_FX_PP_RadialBlur` 挂到某个
+`PostProcessVolume` 的 `WeightedBlendables` 第 0 个槽位（借槽位，不自己分配 TArray；记原值、退出还原）。
+日志：`伪虚化诊断：N 个后处理体积里，带 WeightedBlendables 的有 M 个` + 挂载/失败结果。
+已知局限：径向模糊不是景深（前景背景一起糊）。
+**结局（hotfix30）**：这条路线失败并已整体删除——40 个体积都没有 blendable 槽位，自建槽位时
+`Array` 取址失败，材质挂不上。以下记录仅作历史取证。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix26.zip`（**924,074 字节**，SHA-256 `b7e04771…907df737`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,223,616 字节），版本串 `2.0.0-cpp-hotfix26`；核心层测试 **5,728 项全绿**。hotfix25 的包已删除。
+
+## v2.0.0-cpp-hotfix25 收口记录（2026-11-05）
+
+hotfix24 日志：`ViewTarget.POV 的 fstop 在两次 tick 之间从 1.84 变回 40.00` —— 每帧重申也留不住，
+游戏每帧把 fstop 写回 F40（针孔＝全合焦）。
+
+证据链（全部实机验证）：相机 POV PP 无效；自建体积只有暗角生效、光圈 88px 无效；关卡体积写入成功但无效果；
+ViewTarget.POV 写入成功但每帧被写回 F40；`r.DepthOfFieldQuality=2`、`r.DOF.*` 全默认，但 console 命令在本作完全不执行；
+`ShowFlags@0xB8` 整局一位不变（不是真的 FEngineShowFlags）；6864 个材质里无 DOF/bokeh 后处理材质。
+→ **本作 gameplay 视图不渲染引擎景深，反射层无可用开关。**
+
+本版：① 四个景深标签在 zh/en/ja/ko 追加「本作不支持」；② `tuning::kDofExperimentalChannels=false` 关闭实验通道
+（③关卡体积 / ④相机组件 / ⑤ViewTarget.POV / 探针 / ShowFlags 采样 / 每帧重申）；③ 首次下发景深时打一次性说明。
+景深的配置项、滑条、换算、日志全部保留，只是不再声称有效。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix25.zip`（**919,762 字节**，SHA-256 `772142e1…f369755e`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,213,376 字节——实验通道被门控掉后链接器把死代码裁了），版本串 `2.0.0-cpp-hotfix25`；核心层测试 **5,728 项全绿**。hotfix24 的包已删除。
+
+## v2.0.0-cpp-hotfix24 修了什么 + 打包记录（2026-11-05）
+
+hotfix23 结果：① `ShowFlags@0xB8` 整局一次没变 → 那块内存不是真的 FEngineShowFlags，`bit20=1` 作废；
+② 材质普查 6864 个，无 DOF/bokeh 后处理材质（只有 `M_FX_PP_RadialBlur` / `M_ShadowBlur` / `*_BeforeDof` 粒子材质）。
+
+新发现：`ViewTarget.POV` 的 focal 两次进入分别为 221 / 362 → 这份 POV 被游戏反复重填；而通道⑤ 之前只在开启/拖滑条时写，
+写一次就被下一帧的 F40 抹掉。本版：**通道⑤ 每帧重申**（`reassert_view_target_dof`，探针第 3 段期间用强力参数），
+并打印「fstop 在两次 tick 之间变回 X」的诊断，直接回答写入能否活过一帧。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix24.zip`（**937,707 字节**，SHA-256 `5865bdf1…f4877f`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,253,824 字节），版本串 `2.0.0-cpp-hotfix24`；核心层测试 **5,728 项全绿**。hotfix23 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix23 修了什么 + 打包记录（2026-11-05）
+
+hotfix22：88px（fstop=0.1 / 300cm / 200mm）同时写进四条通道（相机 POV、自建体积、关卡体积、ViewTarget.POV），
+**依旧完全不糊**；同一体积的暗角有效 →「值/通道/覆盖」全部排除，只剩「这个视图里没有 DOF pass」。
+只剩 `View.Family->EngineShowFlags.DepthOfField` 无法确认，且 console 命令在本作完全不执行。
+
+本版：① 每帧采样 `UGameViewportClient+0xB8` 的 16 字节并记录变化（验证那块内存是否真是 show flags）；
+② 材质普查（列出名字含 blur/dof/bokeh/coc 的材质，若存在可用作背景虚化的替代方案）。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix23.zip`（**935,741 字节**，SHA-256 `3cf2827b…5547ad`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,250,752 字节），版本串 `2.0.0-cpp-hotfix23`；核心层测试 **5,728 项全绿**。hotfix22 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix22 修了什么 + 打包记录（2026-11-05）
+
+hotfix21 打印出元凶：`ViewTarget.POV 的景深原值 focal=221(override=1) fstop=F40.00(override=1) sensor=23.8(override=1)`
+—— 游戏在相机管理器 `ViewTarget.POV` 里显式写 F40（≈0.04px，等于全部合焦），且这份 POV 在体积之后 weight=1 生效。
+所以写体积/相机 POV 的光圈全被按回 F40，只有暗角这类没被覆盖的字段能穿过。通道⑤ 写入成功。
+
+但画面仍不糊，因为：① 当时通道⑤ 用的是滑条值（F1.8 / 678cm / 286mm ≈ 3px）；
+② 探针第 3 段的 90px 强力值当时没写进通道⑤，又被 F40 按回。
+
+本版：把通道⑤ 加进探针第 3 段（fstop=0.1 / 300cm / 200mm ≈ 88px），四条通道同时写，2.5 秒后还原。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix22.zip`（**933,183 字节**，SHA-256 `890ef278…55c2`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,246,656 字节），版本串 `2.0.0-cpp-hotfix22`；核心层测试 **5,728 项全绿**。hotfix21 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix21 修了什么 + 打包记录（2026-11-05）
+
+hotfix20 结果：`景深诊断：玩家 Pawn/控制器身上没找到 CameraComponent，通道④不可用` —— 玩家 Pawn 身上没有
+引擎原生 CameraComponent，相机在更深处，按名字找不到。
+
+改走通道⑤：`APlayerCameraManager::ViewTarget.POV.PostProcessSettings`。理由：写 CameraCache.POV 的 PP 无效、
+写体积的 PP 有效、体积的光圈却无效 → 视图 PP 还有一条来源就是 ViewTarget.POV（UpdateCamera 填充，
+暂停后不再重建，很可能带着 `bOverride_DepthOfFieldFocalDistance=1 + focal=0`，并在体积之后 weight=1 生效）。
+
+本版：快照并写入 ViewTarget.POV 的景深三项（退出还原），并打印其原值。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix21.zip`（**932,824 字节**，SHA-256 `64e79643…1bbf84`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,246,656 字节），版本串 `2.0.0-cpp-hotfix21`；核心层测试 **5,728 项全绿**。hotfix20 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix20 修了什么 + 打包记录（2026-11-05）
+
+hotfix19 结论：**console 命令在本作里完全不生效**（Kismet 与直连 `PlayerController::ConsoleCommand` 都改不动
+`r.Tonemapper.Quality`，回读始终 2）→ 过去十几轮的 cvar/ShowFlag 操作全是空转。
+
+探针三条事实：相机 POV 的 PP 无效、体积的暗角有效、体积的光圈（90px）无效 →
+只能是体积之后还有一步单独覆盖 DOF 字段：`CalcSceneView` 时从 ViewTarget 相机组件重填的
+`ViewInfo.PostProcessSettings`（weight=1），那里极可能写 `bOverride_DepthOfFieldFocalDistance=1 + focal=0`。
+
+本版新增**通道④**：遍历玩家 Pawn/PC 名下的 `CameraComponent`，快照并写入焦点/光圈/传感器（退出还原），
+并打印 `景深诊断：玩家相机组件 … 的景深原值 focal=…(override=…) fstop=… sensor=…` 直接指认元凶。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix20.zip`（**929,361 字节**，SHA-256 `35a1cff2…565bb595`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,237,952 字节），版本串 `2.0.0-cpp-hotfix20`；核心层测试 **5,728 项全绿**。hotfix19 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix19 修了什么 + 打包记录（2026-11-05）
+
+hotfix18：fstop=0.1 / 对焦 300cm / 传感器 200mm（约 90px）同时写进相机 POV、自建体积、关卡自带体积，
+**依旧完全不糊** → 「通道不对」「参数太弱」两条排除。
+但日志里 `r.DepthOfFieldQuality 写 3 回读=2` 与 `ShowFlag.DepthOfField 翻转后内存一位没变` 同时出现，
+最像的解释是**console 命令根本没执行**（返回成功 ≠ 执行）。
+
+本版：① 用 `r.Tonemapper.Quality` 验证 exec 通道（读→写→回读→还原，打一行结论）；
+② 新增直连 `APlayerController::ConsoleCommand`，验证不过就切过去；③ 在可用通道上重做 ShowFlag 翻转
+（实测位索引）与 `sg.DepthOfFieldQuality 4`。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix19.zip`（**926,716 字节**，SHA-256 `155fb681…55dec073`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,232,320 字节），版本串 `2.0.0-cpp-hotfix19`；核心层测试 **5,728 项全绿**。hotfix18 的包已删除（被本版取代）。
+
+## v2.0.0-cpp-hotfix18 修了什么 + 打包记录（2026-11-05）
+
+用户确认 hotfix16 探针：第 1 段（相机 POV 写 ColorSaturation）无变化；第 2 段（自建体积写 VignetteIntensity）
+「四周变暗」→ **相机 CameraCache.POV 的 PostProcessSettings 在本作 gameplay 视图里不被采纳**，自建体积通道是活的。
+
+回看历史：过去所有「极端光圈」（F0.08 / 421cm / 164mm ≈ 200px）全写在相机 POV 这条死通道上；
+探针那次的现用参数 F1.8 / 678cm / 286mm 按公式只有约 3px。所以「参数够不够」这一条以前根本没被真正测过。
+
+本版：探针第 3 段从「深度模糊」换成**强力景深**（fstop=0.1、focal=300cm、sensor=200mm ≈ 90px），
+同时写进相机 POV / 自建体积 / 关卡自带体积，2.5 秒后还原。保留 hotfix17 的「关卡体积承载光圈」与「ShowFlag 位索引实测」。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix18.zip`（**923,165 字节**，SHA-256 `e5fb17d4…708693d1`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,225,152 字节），版本串 `2.0.0-cpp-hotfix18`；核心层测试 **5,728 项全绿**。hotfix17 的包已删除（未使用，被本版取代）。
+
+## v2.0.0-cpp-hotfix17 修了什么 + 打包记录（2026-11-05）
+
+hotfix16 探针结论：
+
+- 引擎质量闸门全部排除：`gq.DepthOfFieldQualityLevel=4`、`r.DOF.*` 全健康、`r.DepthOfFieldQuality` 被钉在 2。
+- **探针证明相机 POV 通道写了没反应**：第 1 段（相机 POV 的 ColorSaturation）无变化，第 2 段（自建体积的
+  VignetteIntensity）有明显变化 → 之前十几轮把景深写在相机 POV 上，而那条通道在 gameplay 里很可能没被采纳。
+- 深度模糊（`DepthBlurRadius>0` 分支，不看光圈）也没糊。
+
+本版：① 新增通道③——把关卡自带的 PostProcessVolume 也写上当前光圈/焦距/传感器（它们一定在
+`UWorld::PostProcessVolumes` 里），退出按快照还原；② 用引擎自己的 `ShowFlag.DepthOfField 0/1` 翻一次、
+对比内存差异，**实测**真正的位索引与当前值；翻不动就明确判定这条路走不通。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix17.zip`（**922,721 字节**，SHA-256 `8a5641da…5984792a`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,225,664 字节），版本串 `2.0.0-cpp-hotfix17`；核心层测试 **5,728 项全绿**。
+
+## v2.0.0-cpp-hotfix16 修了什么 + 打包记录（2026-11-05）
+
+hotfix15 打包后核对 UE 源码，查出三件事：
+
+1. **ShowFlags 内存写入是错的**：`FEngineShowFlags` 只有 `PLATFORM_USE_SHOWFLAGS_ALWAYS_BITFIELD` 才是纯位域，
+   Shipping 里 `SHOWFLAG_FIXED_IN_SHIPPING` 的成员退化成 `static const bool`（无存储），
+   「word0 bit20 = DepthOfField」不成立，`07FFFFFF FFFFFBFF …` 更像读到相邻数据。
+   → 本版只读不写（hex 留档），hotfix15 包作废并删除。
+2. **相机 POV 的后处理在体积之后生效**（体积 → POV weight=1 → 相机动画 PP → `UpdatePhotographyPostProcessing`），
+   摘体积覆盖不必要（保留，退出写回）；能顶掉 DOF 的只可能是 POV 之后那几步。
+3. `DepthOfFieldScale` 在 `DiaphragmDOF.cpp` 出现 0 次（CircleDOF 专用），关不掉 DiaphragmDOF。
+
+新增探针第三段（深度模糊）：`IsEnabled` 有两条放行分支，第二条 `DepthBlurRadius > 0` 完全不看光圈；
+`DepthOfFieldDepthBlurRadius=400 / Amount=1.0` 同时写相机与体积 → 背景糊 = 引擎 DOF 活着（焦距/光圈被顶掉），
+不糊 = 本作没跑 DiaphragmDOF（`bSupportsDiaphragmDOF=0` 会让 `IsSupported()` 静默 false）。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix16.zip`（**921,031 字节**，SHA-256 `3e291fdf…179de6b0`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,222,592 字节），版本串 `2.0.0-cpp-hotfix16`；核心层测试 **5,728 项全绿**。hotfix15 的包已删除（作废）。
+**下一步**：等用户回 hotfix16 日志 + 探针三段各自的观察。
+
+## v2.0.0-cpp-hotfix15 修了什么 + 打包记录（2026-11-05）
+
+hotfix14 日志（13:04）给出四条都成立、但拼不到一起的事实：
+
+1. `景深闸门：EngineShowFlags@0xB8 = 07FFFFFF FFFFFBFF FFFFFFFF FFFFFFFF` —— **bit20 本来就是 1**，
+   ShowFlags 不是闸门；上一版按「低 12 位全 1、12~16 为 0」（5.3 声明顺序推的）判形状，实机不满足，
+   于是每次判「形状不符、没敢写」，把真正的结论埋在了误报后面。
+2. `景深质量：r.DepthOfFieldQuality 2 → 3 … | 回读=2` —— 写 3 回读 2：**这条 cvar 被钉住**，写了等于没写。
+3. `sg.DepthOfFieldQuality=0`，包里存在 `gq.DepthOfFieldQualityLevel` 一族 —— 本作把「景深质量」做成了独立画质档。
+4. 用户实机：进摄影模式后暗角生效 → 闪一下 → 效果全没；之后拖光圈/传感器毫无虚化。
+
+`DiaphragmDOF::IsEnabled` 四个条件从游戏线程看全满足，只剩两种可能：闸门在进入之后被改写，
+或者「哪条后处理通道活着」从一开始就判错了。本版两件事都做成可判读的：
+
+- `tick_dof_gates()`：每 2 秒复核。一次性普查 11 个 cvar 打一行；`gq.DepthOfFieldQualityLevel` <3 抬到 3 并每 2 秒补位
+  （退出还原）；`r.DepthOfFieldQuality` 写不动只告警一次；`ShowFlags.DepthOfField` 被清就补位并告警。
+- 探针重做：A 段只去色（整屏黑白）→ 停顿 1 秒 → B 段只加暗角（四周变暗）。肉眼即可分辨相机 POV / 自建体积哪条通道活着。
+- ShowFlags 形状判定改成「位很密、四个字都不为 0」，实机 hex 通过，不再误报。
+
+**打包**：`dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix15.zip`（**919,827 字节**，SHA-256 `91983f7a…49d00f`），包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,221,056 字节），版本串 `2.0.0-cpp-hotfix15`；核心层测试 **5,728 项全绿**。
+**下一步**：等用户回 hotfix15 日志——重点是 `景深闸门(普查)` 行、`游戏画质·景深质量` 的读数，
+以及探针「先黑白还是先暗角」。
+
+## v2.0.0-cpp-hotfix14 修了什么 + 打包记录（2026-11-05）
+
+hotfix13 日志（12:37:33）证实两件事：
+
+1. 关卡体积确实覆盖了光圈并被摘掉：`景深：已临时摘掉关卡体积的 DOF 覆盖 …（原 fstop=F7.1 focal=0
+   sensor=24.6）` ×3，随后 `DOF覆盖=<无>`。体积里原本是 **F7.1**，远大于我们写的 0.3。
+2. 摘掉后 focal=421cm / fstop=F0.08 / sensor=164mm（公式 203px）依然毫无虚化。
+
+⇒ 通道活（暗角）、结构对（2208B/588 字段）、覆盖已摘，只剩「引擎不建 DOF pass」。
+UE5 `DiaphragmDOF::IsEnabled` 的最后条件是 `EngineShowFlags.DepthOfField`；按 `ShowFlagsValues.inl`，
+`DepthOfField` 是 `ALWAYS_ACCESSIBLE` 真实位，声明序第 **20** 位，默认全开，游戏可运行时关掉。
+
+改动：
+
+- `probe_dof_showflag()`：读 `UGameViewportClient + 0xB8` 的 `EngineShowFlags` 前 8 个 32 位字并打印 hex；
+  用「低 12 位全 1、12~16 为 0、20 以上全 1」的形状验证偏移（兼容 bool 布局）；bit20=0 时置位并回读；
+  形状不符只在日志留 hex，不写内存。
+- DOF 采样参数：读 `r.DOF.Gather.RingCount` / `r.DOF.HalfRes` / `r.DOF.Recombine.Quality`，
+  环数 <3 时抬到 3（记基线、退出还原）——环数为 0 时 DOF pass 跑但采不到样本。
+- 核心层 **5,728 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix14.zip`（**917,228 字节**，SHA-256 `cf4d7e75…6801c59`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,216,448 字节），版本串 `2.0.0-cpp-hotfix14`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix13 修了什么 + 打包记录（2026-11-05）
+
+hotfix12 探针（12:28:41）结果：`目标结构 字节=2208 字段=588`（真的是 `FPostProcessSettings`）、
+只有 `ExposureCompensation` 属性不存在、用户看到 `VignetteIntensity=3` 造成的**四周变暗**。
+⇒ 通道通、结构对、值生效；但 `ColorSaturation=0` 与景深都无效。
+
+唯一能同时解释三者的机制：字段被更高优先级的覆盖顶掉。本关两个**有界** `PostProcessVolume`
+显式覆盖 `DepthOfFieldFstop`（priority 5/1），而暗角没有任何体积覆盖 → 只有暗角看得见；
+fstop 被盖成体积里的值后 CoC 掉到 ~1px，于是「完全没有虚化」。
+
+改动：
+
+- `clear_level_dof_overrides()`：枚举 `PostProcessVolume` / `PBZPostProcessVolume`，对覆盖了
+  DOF 三项的体积快照原值并摘掉 `bOverride_DepthOfField{FocalDistance,Fstop,SensorWidth}`。
+- `restore_level_dof_overrides()`：关景深/退出/换代时按快照写回，日志 `已还原 N/M 个`。
+- 每个被处理的体积打印原 `fstop/focal/sensor`，用于证实「体积里原本的光圈是多少」。
+
+- 核心层 **5,728 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix13.zip`（**914,361 字节**，SHA-256 `4515b72d…20a45ad5`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,210,304 字节），版本串 `2.0.0-cpp-hotfix13`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix12 修了什么 + 打包记录（2026-11-05）
+
+hotfix11 探针（12:18:51）执行了：A 相机通道路 `ColorSaturation=0`（应去色）、B 自建体积
+`ColorGain` 强红（应全红），用户反馈**画面毫无变化**。同一通道在 hotfix8 把虚化算到 33px 也没反应。
+
+本版改为「先证伪我们写的东西」，探针自证 + 多重旋钮：
+
+- 打印被写结构的字节大小与字段总数（真 `FPostProcessSettings` 有 200+ 字段）。
+- 同时改三个互不相关的旋钮：`ExposureCompensation=+6`、`VignetteIntensity=3`、`ColorSaturation=0`。
+- 写前核对每个 `bOverride_*`/值属性是否存在，缺哪个打印哪个，并列出该结构里所有含
+  `color/exposure/vignette/bloom/depthoffield` 的真实字段名。
+
+- 核心层 **5,728 项**测试全绿（未改核心逻辑）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix12.zip`（**910,873 字节**，SHA-256 `92022623…7a6d4f3`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,203,136 字节），版本串 `2.0.0-cpp-hotfix12`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix11 修了什么 + 打包记录（2026-11-05）
+
+hotfix8 日志（11:52:40–11:54:18）把已知闸门全部排除：`r.DepthOfFieldQuality=2`、
+CoC 半径 0.025、`override` 全 1、`blendWeight=1.00`、自建体积 `unbound=1 priority=10000`
+（关卡 8 个体积里最高）、独立相机模式下 `管理器 ViewTarget=CineCameraActor`；
+参数按薄透镜公式算到 **16.6~33.2px@1920**（sensor 304mm / F0.72 / 对焦 538cm），画面无变化。
+
+结论：只剩两种可能——引擎 DOF 没跑，或我们的后处理写入通道没进渲染。本版把两者分开：
+
+- 探针 A（1.2s）：只改相机通道 `ColorSaturation=0` → 黑白。
+- 探针 B（1.2s）：只改自建体积 `ColorGain` 强红 → 全红。
+- 判读：都没看到 = 相机后处理通道没进渲染（换写入位置）；只 A = 体积没被采集（写进关卡体积）；
+  只 B = 相机通道没被采纳。
+- 新增一次性 `MPC 景深候选参数：…`（blur/dof/focus/aperture/coc/bokeh/soft/depth 过滤）——
+  为「本作景深是自家后处理材质做的」这条退路准备参数名。
+
+- 核心层 **5,728 项**测试全绿（本版未改核心逻辑；数字变化来自 schema 数值范围放宽后
+  参数校验用例取值区间变大）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix11.zip`（**908,887 字节**，SHA-256 `f2896c14…dd31321f`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,199,040 字节），版本串 `2.0.0-cpp-hotfix11`。
+  注：hotfix9/10 是并行开展的「按键全量可配」与「景深配置独立节点」两条线，本模组序号顺延到 11。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix10 修了什么 + 打包记录（2026-11-05）
+
+用户要求：**把景深的配置单独分成一个节点。**
+
+- PBZFM 设置页新增分组 `#group_dof`「景深（手动对焦）」，把 `[dof]` 六项从「相机与移动」搬过去：
+  `dof_enabled` / `dof_focal_distance` / `dof_fstop` / `dof_sensor_width` / `dof_focus_step` / `dof_aperture_step`。
+  节点顺序：快捷键 → 行为 → 隐藏 → 冻结增强 → 相机与移动 → 景深 → 手柄。
+- 四语言词典补 `#group_dof`；配置键名、范围、默认值、滑条刻度与运行逻辑均不变（纯菜单分组）。
+- `tests/test_pbzfm_validation.cpp` 新增「6 个 dof_* 字段全在 #group_dof、其它字段不混入」断言。
+- 核心层 **5,728 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix10.zip`（**905,767 字节**，SHA-256 `2dba032a…f94e8e78`），包内 DLL 2,193,920 字节、版本串 `2.0.0-cpp-hotfix10`；只出包、未部署。
+
+## v2.0.0-cpp-hotfix9 修了什么 + 打包记录（2026-11-05）
+
+用户要求：**把不可配置的固定键全部转为可配置，删掉 F9 键。**
+
+- 新增 `[keys]`：`key_move_forward/back/left/right`（W/S/A/D）、`key_boost`（SHIFT）、`key_slow`（CONTROL）、`key_free_look`（ALT）；
+  新增 `[control]`：`wheel_fov`、`wheel_fov_invert`；
+  新增 `[gamepad]`：`pad_roll_left/right`（LB/RB）、`pad_boost/slow`（LS/RS）、`pad_vertical_up/down`（RT/LT，单键绑定保留扳机模拟量行程）。
+  默认值与旧写死行为一致，老 config 不改也能跑。
+- **输入轮询改为 1..255 全量 VK**：删除 `kPolledKeys` 白名单。旧名单漏了 `OEM_4/OEM_6`，默认 `[`/`]` 光圈键能解析、能在菜单捕获，却永远没有按下沿；其它非名单改键同样静默失效。
+- **删除 F9 无 UI 截图整套逻辑**：`request_ui_free_screenshot` / `resolve_screenshot_api` / `game_window_focused` / `poll_screenshot_hotkey` 及成员、导出表解析全部移除（本作 Shipping 无 `FScreenshotRequest::RequestScreenshot`，原本只会打一条不可用日志）。玩法截图请用 NVIDIA / Steam / Xbox Game Bar。
+- PBZFM 设置页键盘键位 14 → **26 项**（补 `key_frame_freeze`、对焦两键、光圈两键、新增移动/变速/门控七键），新增滚轮两个开关；状态页与 UE4SS 控制台速查改为显示当前生效键名。四语言词典新增 14 个标签，`#help_look` / `#console_help_move` / `#console_help_pad2` 改动态格式。
+- 核心层 **5,720 项**测试全绿（新增默认值/改键/手柄改绑/滚轮开关与反向断言）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix9.zip`（**905,608 字节**，SHA-256 `6f9931ab…21e19998`），包内 DLL 2,193,920 字节、版本串 `2.0.0-cpp-hotfix9`；只出包、未部署。
 
 ## 交付流程（2026-10-31 起固定）
 
@@ -24,6 +698,232 @@
 | C++ 输入层 | `src/win_input.cpp`：低级鼠标钩子 + `GetAsyncKeyState` 轮询（UE4SS C++ 没有 keyup） |
 | 发布包 | `dist/PBZPhotoModeCpp/`（dlls/config.ini/enabled.txt/README.md）→ `dist/PBZPhotoModeCpp_v1.0.0-cpp.zip` |
 | 文档 | `docs/README.md`、`docs/BUILD.md`（含 6 条编译踩坑表）、`docs/P1_CHECKLIST.md` |
+
+## v2.0.0-cpp-hotfix8 修了什么 + 打包记录（2026-11-05）
+
+hotfix7 的自检日志（11:17）把引擎侧全部排除了：
+
+- `r.DepthOfFieldQuality=2`（>0 → DOF pass 是开的；游戏画质里的景深拉到最高后值仍为 2）
+- `CoC半径上限=0.0250/0.0250`（引擎默认值，没被压小）
+- 相机通道 `override focal=1 fstop=1 sensor=1`、`blendWeight=1.00`；体积通道 `unbound=1
+  priority=10000 blend=1.00`；`enabled=<na>`（`DepthOfFieldEnabled` 在本作 UE5.7 不存在）
+- 另测出 `exec` 对 `r.DepthOfFieldQuality` 无效（回读仍 2），但值本来就 >0，不影响结论
+
+**真因是物理量。** UE5 DiaphragmDOF 是薄透镜模型，本作 FOV 固定、等效焦距由传感器宽度反推
+（`f = 0.5·sensor/tan(hFOV/2)`，虚化像素 ≈ `0.5·CoC/sensor×屏宽`）。按日志里的真实落点换算：
+
+- focal=578cm F1.6 sensor=60mm → **2.1px**；focal=907cm F1.6 sensor=19.9mm → **0.44px**
+- focal=484cm F1.6 sensor=60mm → **2.5px**
+- 旧默认 F4 / 35mm / 500cm → **0.42px**；用户 config（focal=51311、F18.4、68mm）→ **0.00px**
+
+2px 以下肉眼等于没有，所以即使通道完全正常也「没效果」。
+
+改动：
+
+- 光圈下限 0.5→0.05、传感器宽度上限 100→400mm；光圈滑条改对数刻度（F0.5 约 37%）。
+- 默认值改 `300cm / F0.5 / 60mm`（≈9.7px@1920），`config.ini.example` 注释按物理量重写。
+- 日志新增 `预计背景虚化≈X.Xpx@1920`；<2px 时补一条可执行提示。
+- 旧配置迁移（每次启动一次）：进模式时若判断一定看不出虚化（对焦>15m / F>8 / 传感器<10mm
+  且估算<0.5px）就纠正为默认可用值并打印原值；只改内存 cfg，写回交给既有保存流程。
+- 黑白探针（每进程一次、约 1.5s）：区分「虚化太弱」与「相机后处理通道没进渲染」。
+- 新增 `core/dof_math.h`（纯函数）；tests 加 12 项断言（默认值可见性、三个方向单调性、
+  非法输入归零、旧默认 <2px、迁移行为）。
+
+- 核心层 **4,524 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix8.zip`（**900,887 字节**，SHA-256 `27b5b476…debdd4e2`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,178,560 字节），版本串 `2.0.0-cpp-hotfix8`；
+  包内 `config.ini` 已按新默认值/注释重新生成（300 / 0.5 / 60）。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix7 修了什么 + 打包记录（2026-11-05）
+
+第四次实机「调数值没反应」（日志 10:49–10:50）：`景深写入：` 一路正常（focal 361~1483cm、fstop 到 F0.5、
+sensor 1.0~97mm，接管/独立两个后端都试过），但画面没有虚化。这一轮先把「写入与通道」和「引擎闸门」分开：
+
+判据链（不是新猜，前几轮已经验证过的事实）：
+
+- **相机 POV 的 `PostProcessSettings` 通道是活的**：`post_process_override_tick()` 每帧把 AA / 动态模糊 /
+  GI / 反射 / 胶片颗粒覆盖成 0，实机有效。
+- **体积通道也正常**：`priority=10000` 的无界体积建得起来；关卡 6 个体积里 5 个完全不覆盖 DOF，
+  另 2 个**有界**体积只覆盖 `fstop`（priority 5 / 1），压不过 10000。
+- 于是只剩引擎侧闸门。UE5 里能让 DOF 彻底消失的只有三条，且都会被低画质档位压到「关」：
+  ① `r.DepthOfFieldQuality <= 0`（`DiaphragmDOF::IsEnabled` 直接 false，不建 DOF pass；
+  1~4 是同一套 DiaphragmDOF 只是采样质量，没有「低档位走高斯」）；
+  ② `ShowFlag.DepthOfField == false`（同样直接 false）；
+  ③ `r.DOF.Kernel.MaxForeground/BackgroundRadius` 被压小（默认 0.025，Low 档 0.006）把 CoC 夹没。
+  另有 UE 5.4+ 的 per-view 总开关 `FPostProcessSettings::DepthOfFieldEnabled`（默认 true）
+  与 `CameraCache.POV` 每帧由 `UpdateCamera` 整份重建（`OutVT.POV = DefaultViewInfo`）这两条背景。
+
+改动：
+
+- 新增 `raise_dof_render_quality()` / `restore_dof_render_quality()`：开景深时把三道闸门一次调到可用
+  ——`r.DepthOfFieldQuality` < 3 抬到 3；`ShowFlag.DepthOfField 1`；两条 `r.DOF.Kernel.Max*Radius`
+  < 0.025 抬到 0.025；`destroy_dof_volume()`（关景深 / 退出 / 切后端 / 世界换代销毁体积的唯一收口点）
+  按基线还原，还原失败报给 core 的 1s/2s/4s 重试环。
+- `write_post_process_dof()` 顺手写 `bOverride_DepthOfFieldEnabled` / `DepthOfFieldEnabled`（5.4+ 才有的
+  per-view 总开关，缺失时 no-op）；POV 的 PP 每帧整份重建，故无需还原。
+- 新增一次性「景深自检」日志（每个景深生命周期一轮）：`r.DepthOfFieldQuality` / `sg.DepthOfFieldQuality` /
+  两条 CoC 半径上限 + 相机通道写后回读（`focal/fstop/sensor`、`enabled`、四个 `bOverride_`、`blendWeight`）
+  + 体积通道回读（同名字段 + `unbound/priority/blend`）；读不到一律印 `<na>`。
+- `render_state_text()` 的渲染状态行加读 `r.DepthOfFieldQuality` / `sg.DepthOfFieldQuality`。
+- `get_cvar_int` / `exec_console_command` 从 `ue4ss_port_micro_motion.cpp` 的匿名命名空间提到 `detail`
+  （相机后端也要用），行为不变。
+- 独立复核后补的记账修正：读不到 CVar / exec 失败不锁死（下次改值继续试）；命令发出去过就按「已改动」
+  记账；只有还原成功才清基线、失败保留待下次重试；`invalidate_world_scoped_state()` 清 `checked_`
+  让换关后重新抬档；体积通道失败告警一次性门控。
+- 断言 +2：`kDofQualityTarget` 必须落在 2..3（低于 2 拿不到物理景深管线，4 是 UE5 Cinematic 档）。
+
+- 核心层 **4,505 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix7.zip`（**897,854 字节**，SHA-256 `00725fa2…915063ec`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,173,952 字节），版本串 `2.0.0-cpp-hotfix7`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix6 修了什么 + 打包记录（2026-11-05）
+
+用户建议：既然出效果的范围只在 300~1500cm，把滑条范围直接改成这段即可（比换刻度直观）。采纳。
+
+- 菜单滑条窗口：`对焦距离` 范围改为 `tuning::kDofMenuFocalMin/Max`（300~1500cm），
+  窄区间用**线性**（1 像素 ≈ 12cm），撤掉 hotfix5 给该字段加的对数刻度。
+- `[dof]` 配置与 PAGE_UP 步进仍为 1..100000cm：微距/远景照旧可用 config 或按键调，菜单只铺 3~15m。
+- 旧配置里的窗口外值（如 2622）打开菜单会贴右端、一拖动即夹到 1500；不动则运行时仍用原值。
+- `对焦步进`（1..5000cm）保持对数刻度不变。
+- 断言：`dof_focal_distance` 必须落在 kDofMenuFocalMin..Max 且线性；`dof_focus_step` 必须对数。
+
+- 核心层 **4,503 项**测试全绿。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix6.zip`（**888,115 字节**，SHA-256 `9d12fe95…2c0c17`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,151,936 字节），版本串 `2.0.0-cpp-hotfix6`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix5 修了什么 + 打包记录（2026-11-05）
+
+hotfix4 的诊断日志（10:38）把问题定死：
+
+- **后处理栈没在抢**：场上 6 个关卡体积里 4 个无 DOF 覆盖，另外两个是 **有界** 体积、只覆盖 `fstop`
+  （priority 5 / 1，`unbound=0`）；我们的 `priority=10000` 无界体积已成功建立。
+- **问题在数值**：所有下发值都是 `focal=2622~86142cm`（26~860m）配 `fstop=F16~20.6`，或
+  `focal=57304cm + F1.8`。26m 对焦 + F16 时超焦距只有几米 → 整个场景都在景深内；57km 对焦时
+  近景 CoC 趋近 0 → 同样全清晰。也就是说每次落点都在「物理上不可能虚化」的区间。
+- **为什么拖不到可用值**：`对焦距离` 滑条是 1..100000cm **线性**刻度，1 像素 ≈ 500cm，
+  可用的 300~1500cm 只占最左 0.3%~1.5%，鼠标无法稳定落点；`对焦步进`（1..5000cm）同理。
+
+修法：`PbzfmField` 增加 `logarithmic` 标志，`dof_focal_distance` 与 `dof_focus_step` 改**对数滑条**
+（`ImGuiSliderFlags_Logarithmic | AlwaysClamp`），其余 Float 保持线性；补断言锁死「对数字段下界>0」
+与这两个字段必须对数。hotfix4 的 Info 级诊断全部保留。
+
+- 核心层 **4,502 项**测试全绿（新增 4 条：对数字段下界 > 0 ×2、两个 DOF 字段必须对数 ×2）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix5.zip`（**887,913 字节**，SHA-256 `fa2e5bc1…eb0a7c`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,151,936 字节），版本串 `2.0.0-cpp-hotfix5`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix4 修了什么 + 打包记录（2026-11-05）
+
+用户实机反馈（hotfix3 日志 10:24）：滑条能改、config.ini 也写进去了（落到 51311 / 18.4 / 68.1），
+但画面完全没变化；日志无 `景深/对焦不可用`、无写入失败 → 值都写进了 `PostProcessSettings`，
+是渲染端没采纳。
+
+根因：UE 的最终后处理 = 相机/POV 的 Settings 打底 + 场上每个 `APostProcessVolume` 按 `bOverride_*`
+**后续覆盖**。相机设置没有优先级，关卡里只要有体积覆盖 `DepthOfField*`，手动对焦就永远进不了画面。
+接管后端写 `CameraCache.POV`、独立后端写自建组件，都逃不出这条规则。
+
+修法：新增**景深专用后处理体积**通道（第一次下发时生成 `PostProcessVolume`，`bUnbound=1`、
+`Priority=10000`、`BlendWeight=1`，DOF 三项 + override 写进 `Settings`）。相机/POV 通道保留，
+任一成功即视为景深可用；退出/关景深/切后端/世界换代时销毁，不留残留；体积生成失败只 Warn 回落通道①。
+同时新增 Info 级诊断：体积建立日志、场上体积的 unbound/priority/blend 与 DOF 覆盖清单、
+每次下发的 `focal/fstop/sensor` 实际值（原来按键摘要是 Debug 级、菜单改值完全无日志）。
+
+- 核心层 **4,498 项**测试全绿（`log_dof_write_if_due` 由 Debug 升 Info，相关断言同步更新）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix4.zip`（**887,976 字节**，SHA-256 `48cc4013…00120af7`），
+  包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,151,424 字节），版本串 `2.0.0-cpp-hotfix4`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix3 修了什么 + 打包记录（2026-11-04）
+
+用户实机反馈（hotfix2 日志 22:48）：F8 → PBZ Photo Mode → 相机页，拖动 `对焦距离 / 光圈 F 值 / 传感器宽度 /
+对焦步进 / 光圈步进` 滑条，松手弹回原位。日志里每次都提交了 `PBZFM 菜单：<字段名> 已更新` 与 `config.ini 已原子写回`，
+但写回的是旧值。
+
+根因：自绘页每个回调都从 `mirror_` 拷一份**帧内局部** `draft`；Float 滑条按设计「拖动中只落 draft、松手才提交」，
+局部 draft 每帧重建使中间值每帧丢失；松手帧 `ImGui::SliderFloat` 已无位移、返回 false，draft 仍是旧值 →
+`commit_settings(draft)` 把旧值写回。ImGui 的 `DragCurrentAccum` 在应用后即扣减（假定宿主已持久化 `*v`），
+所以每帧重置绑定变量时滑条只能动一帧位移。**与 [dof] 无关，所有 Float 滑条都中招，只是此前没人拖过。**
+
+修法：新增 `take_draft()` / `store_draft()`，页面渲染完把草案写回 `mirror_`（跨帧保持）；加 `mirror_generation_`
+代次，`sync_from_config` 与 `commit_settings` 自增，`store_draft` 发现代次变了就放弃写回，避免旧草案覆盖同帧的配置重载。
+
+- 核心层 **4,498 项**测试全绿（该修复在 `PBZPM_WITH_UE4SS` 的框架渲染线程代码里，不进核心层测试二进制）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix3.zip`（**884,950 字节**，SHA-256 `da15b24a…109c22`），
+  结构同上；包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,144,256 字节），版本串 `2.0.0-cpp-hotfix3`。
+- 只出包、未部署。
+
+## v2.0.0-cpp-hotfix2 修了什么 + 打包记录（2026-11-04）
+
+景深/手动对焦专项修复（H1 手柄组合键滚转互斥 / H2 写失败按秒重探 / H3 快照与运行值分离 /
+M1-M2 后端热切换保留对焦值并在回滚分支重下发 / M3 独立相机关景深立即撤销覆盖 / M6 景深失败独立记账 /
+M5 范围集中到 `core/tuning.h`），逐条说明见 [docs/CHANGELOG.md](docs/CHANGELOG.md) 的 2.0.0-cpp-hotfix2 一节。
+
+- 核心层 **4,498 项**测试全绿（2.0.0 时 4,444 项；新增 54 条断言，`docs/test_count.txt` 由脚本生成）。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp-hotfix2.zip`（**884,491 字节**，SHA-256 `06f16fa3…6b83c32`），
+  结构 `PBZPhotoModeCpp/{dlls/PBZPhotoModeCpp.dll, languages/*.json, config.ini, enabled.txt, README.md}`。
+- 包内 DLL 与 `build-dll/PBZPhotoModeCpp.dll` 逐字节一致（2,143,744 字节），版本串 `2.0.0-cpp-hotfix2`（ASCII ×2）；
+  包内 `config.ini` / `README.md` 头部版本已同步为 hotfix2。
+- 按交付纪律**只出包、未部署**游戏目录。
+
+## v2.0.0 修了什么（2026-11-04 冗余清理 + 缺陷修复 + 相机后端热切换）
+
+本版不加玩法，清掉审查出来的冗余与「同一事实存多份真源并互相漂移」的问题，并修掉漂移已经造成的缺陷。
+
+**审查口径（可复现）**：4 个分区并行精读 + token 归一化 8 行滑窗哈希做客观度量 ——
+跨文件重复代码只占有效代码 **0.3%（约 50 行）**，说明本仓库没有复制粘贴型冗余；
+真问题是「同一事实存多份真源」与「冗余功能」。审查报告见仓库 `_review/`（汇总 + 4 份分区）。
+
+**修掉的缺陷（7 条）**
+- 解冻级联分叉：`toggle_freeze` 里风场/相机晃动两段丢弃返回值并无条件清标志（相邻 WPO/布料三段不是这样），
+  恢复失败后退出路径不再重试 → 布料与植被可能永久停在冻结态。已统一为「成功才清、失败保留并 Warn」。
+- `KeyMap` 的 `pad_*` 回退值与 `Config` 默认值漂移 3 处（focus_near/far 漏 LB 肩键、aperture_open 把 RB 写成 LB），
+  恰好吃到 `config.h:70` 注释警告的单按 BACK/START 误触。已对齐并加不变量测试锁死。
+- `config.ini.example` 是手抄件、实为「本次测试包」配置（`freeze_mode=dilation`、`freeze_dilation` 差 10⁵ 倍、
+  `freeze_diag=true`、AA/Lumen/DLSS/Tonemapper 全被预设为关）。改为由 `tools/gen_config.bat` 从 `default_config_text()` 生成。
+- 菜单坏键名显示 `?`：自绘控件内联重写读值且漏了 `key_fallback`（14 个 lambda 从未生效）。改为走 `pbzfm_read_field`。
+- 4 个零消费者配置项：`imgui_tab` 补上消费点（决定是否注册控制台面板）；其余 3 个（`restore_fov_on_exit`/`restore_view_on_exit`/`dry_run`）删除。
+- 三个 `.bat` 是 LF+中文注释（cmd 936 双字节配对会吃掉换行、把下一行当命令执行），统一 ASCII+CRLF；
+  另修掉合并脚本里 `shift` 重设 `%0` 导致 `%~dp0` 找错目录。
+- PBZFM 菜单事件只注册不反注册（原注释称「框架没有反注册 API」与 `pbzfm.h` 事实不符），已在 `stop()` 补 `RemoveMenuEvent`。
+
+**新能力**
+- **相机后端可热切换**：菜单「接管当前相机」当场生效（拆旧后端→建新后端→重发 FOV/景深），任一步失败回滚到原后端。
+  新增 `PhotoMode::set_camera_backend_live()` + `LiveTogglePlan::camera_backend` 差异位；复用既有 `set_config` 即时下发通道，未新增交互管线。
+- **接管缺钩子时自动降级**：`GameViewportClientTickPost` 注册失败即本会话按 `takeover_current_camera=false` 处理并 Warn
+  （原先只报 Error 让用户改配置，结果是镜头完全不动）；菜单里也不再允许把接管打开。
+- **版本号支持热修序号**：`version.h` 增 `PBZPM_HOTFIX` / `PBZPM_VERSION_FULL`，日志/UI/生成的 ini 统一打印完整串。
+
+**清理**（净删 3,129 行 / 释放 1,833 MB）
+- 删与 UE4SS FetchContent 副本 md5 全等的 `third_party/imgui/backends/`（2,763 行）。
+- `docs/README.md` 829→195 行，62 节变更史迁入 `docs/CHANGELOG.md`（字节级重建校验通过）。
+- 工具 7→4 个（删 `pack.ps1`、`build_dll_offline.bat`、`dump_labels.bat`、13 个一次性 `_*.py`；`gen_config` 迁入 `tools/` 并修好）。
+- 代码：死函数 4、接口层死方法 2、下标 i18n API 整组、只写不读状态 6、音频一次性普查 133 行、F9 落盘观测 106 行（机制保留）；
+  `ui_tab` 收敛为只读诊断面，可写设置唯一入口改为 PBZFM 页。
+- 仓库卫生：删 4 个过期 build 目录（1,831 MB）与两份 `%SystemDrive%/` 残留（1.88 MB）；`.zcode/` 移出版本库。
+
+**验证**
+- 核心层测试 **4,444 项全绿**（清理前 4,398：删 9 条重复断言、补 1 条唯一覆盖、增 49 条新断言）；DLL 编译 exit 0。
+- 版本串核验：DLL 内 ASCII `2.0.0-cpp` ×2、UTF-16 ×1，旧串 `1.0.76-cpp` 残留 0 处。
+- 发布包 `dist/PBZPhotoModeCpp_2.0.0-cpp.zip`（882,139 字节，SHA-256 `8c3cf68f…76b006b2`），结构同既定交付纪律。
+- **待实机确认**：切换后端时画面不黑/视角连续；独立相机长焦压缩是否更真实；`lb+bck` 对焦与坏键名显示。
+
+## v1.0.76 修了什么（2026-11-04 进入相机模式自动冻结后布料件整体换位）
+
+用户反馈（hotfix27 实机日志 13:02）：「按下 F2 进入相机模式自动冻结后，人物服装的布料皮肤会在一次卡顿后更改位置」。追问确认：**布料件整体挪位、褶皱形状基本不变**，进入后约半秒变一次后固定，每次 F2 稳定复现。
+
+定位：进入冻结的 63ms 内 mod 连写 8 组一次生效的状态，全部在 420ms 渲染 CVar 排空卡顿前落地、卡顿后第一帧才可见；其中两处会把 Sway/布料一次性推成另一种姿态：
+1. `r.MorphTarget.Enable=0` / `r.MorphTarget.ForceUpdate=0` 原是 `freeze_wpo_velocity_off`（A/B 诊断开关）顺带塞进“关速度输出”批次的，实为全局关 morph 求值，布料姿态修正/皮肤 morph 一次性消失。
+2. `pbz.Sway.SkipSkeletalKinematicBoneUpdate=1` 停掉 Sway 骨骼写出后，布料网格回到动画姿态——整件布料换位、褶皱形状不变，与描述完全吻合。
+
+本版：
+- 从速度输出批次移除 morph 两项（保留 Velocity/Nanite WPO/毛发速度项）。
+- 不再写全局 sway CVar；改为冻结时 `ForEachUObject` 全对象扫描“类名含 Sway”的对象（前两次冻结、硬编码类名未命中时各扫一次），真实类名/实例写日志 `Sway 全对象扫描：...`，是组件就停 tick（保留最后一次写出的骨骼姿态），解冻恢复。
+- 布料挂起失败日志带组件全名（截断尾部），下次能直接看出挂不住的是玩家还是 NPC。
+- 渲染 CVar 写入逐项计时，单项 ≥50ms 打 `渲染 CVar 写入耗时：...`，定位进入冻结的 368–454ms 卡顿。
+- 核心层 4398 项断言全绿；DLL 编译 exit 0；`dist/PBZPhotoModeCpp_1.0.76-cpp.zip`（DLL 1,339,904 B，SHA-256 `f41adb7a18b9693188a0bd7fb9d7a2352a635c30ab2adae8f3bb1b700ce3cf2f`）。
 
 ## v1.0.75 修了什么（2026-11-02 Q/E 滚转键可配置）
 
@@ -475,25 +1375,6 @@ UE4SS 用自定义构建类型：**`Game__Shipping__Win64`**，不是 `Release`�
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Game__Shipping__Win64
 cmake --build build
 ```
-
-## 下一步（按顺序）
-
-1. `tools/build_dll.bat` —— 现在默认参数是 `-DCMAKE_BUILD_TYPE=Release`，**先改成 `Game__Shipping__Win64`**，
-   否则 ABI/符号对不上。跑起来后先让 UE4SS 本体编译通过（第一次会很慢，十几分钟量级）。
-2. 按上面「已核实的 API」重写这两个文件（其余不用动）：
-   - `src/engine/ue4ss_port.cpp` + `src/engine/ue4ss_port.h`
-   - `src/mod_app.cpp` + `src/mod_app.h`
-   - `dllmain.cpp`（include 与 `RC::CppUserModBase` 前缀）
-3. 输入方案（沿用已验证的思路）：
-   - 开关类（F2/T/F/FOV）→ `register_keydown_event` 足够
-   - 按住类（Alt/WASD/QE/左右键/鼠标位移/滚轮）→ hook `PlayerController:InputKey` + `InputAxis`，
-     反射读 `FInputKeyParams` 里的 Key/Event/Delta，`FKey` 是含 `KeyName`(FName) 的结构体
-   - 鼠标轴名：`MouseX` / `MouseY`，滚轮看 `MouseWheelAxis` 或 `MouseScrollUp/Down`（两个都要兜）
-4. 编译通过后按 `docs/P1_CHECKLIST.md` 逐条核对 12 个辅助函数，再进游戏验收。
-
-## 明天开工第一句
-
-> 「继续做 C++ 版，先跑 tools/build_dll.bat 把构建配置改成 Game__Shipping__Win64」
 
 ## 备忘
 

@@ -64,10 +64,6 @@ auto set_widget_visibility(UObject* widget, int visibility) -> bool {
 // get_widget_visibility / find_hud_layout_widgets 被诊断文件共用，已提到
 // ue4ss_port_internal.h（namespace pbzpm::detail），此处不再保留副本。
 
-auto pointer_in(const std::vector<UObject*>& list, UObject* target) -> bool {
-    return std::find(list.begin(), list.end(), target) != list.end();
-}
-
 auto tracked_hud_widget(const std::vector<std::pair<UObject*, int>>& list, UObject* target) -> bool {
     for (const auto& entry : list) {
         if (entry.first == target) return true;
@@ -96,104 +92,189 @@ auto set_ui_manager_hide_for_pv(bool hidden) -> bool {
 }  // namespace
 
 bool Ue4ssPort::set_hud_visible(bool visible) {
+    if (visible) {
+        // ---- 恢复：所有开关都按「本 Mod 确实动过」的记账恢复，失败保留记账交给 core 重试 ----
+        bool ok = true;
+
+        // ① 游戏自己的 PV 总开关。
+        if (pv_hide_active_) {
+            if (set_ui_manager_hide_for_pv(false)) {
+                pv_hide_active_ = false;
+                log(LogLevel::Info, "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD");
+            } else {
+                ok = false;  // 保留 pv_hide_active_，下次重试
+            }
+        }
+
+        // ② AHUD 粗开关 bShowHUD：对象已随世界卸载则直接放弃记账（旧世界不存在了），
+        //    否则按原值回写并回读校验，避免把玩家血条/锁定等 HUD 元素留在关闭状态。
+        if (hud_show_flag_active_) {
+            UObject* owner = hud_show_flag_owner_;
+            FProperty* prop = is_ok(owner) ? find_property(owner, "bShowHUD") : nullptr;
+            if (!is_ok(owner)) {
+                hud_show_flag_active_ = false;
+                hud_show_flag_owner_ = nullptr;
+            } else if (prop != nullptr && write_bool(prop, owner, hud_show_flag_original_)) {
+                double readback = 0.0;
+                if (read_number(prop, owner, readback) &&
+                    (readback != 0.0) == hud_show_flag_original_) {
+                    hud_show_flag_active_ = false;
+                    hud_show_flag_owner_ = nullptr;
+                    log(LogLevel::Info, std::string("AHUD bShowHUD 已恢复：原值=") +
+                                            (hud_show_flag_original_ ? "true" : "false"));
+                } else {
+                    ok = false;
+                    log(LogLevel::Warn, "AHUD bShowHUD 回写后回读不一致，保留记账重试");
+                }
+            } else {
+                ok = false;
+                log(LogLevel::Warn, "AHUD bShowHUD 恢复失败（属性不存在或写不进去），保留记账重试");
+            }
+        }
+
+        // ③ UMG 根控件：存活校验改用 UE 对象数组（is_ok），不再要求「本轮重新扫描必须命中」。
+        //    旧逻辑用 pointer_in(重新扫描列表) 判断，扫描漏项时活控件会被静默丢账，
+        //    永远停在 Collapsed——这正是实机里字幕/提示「反复消失」的根因之一。
+        int restored_count = 0;
+        std::vector<std::pair<UObject*, int>> pending;
+        for (const auto& entry : hud_widgets_) {
+            if (!is_ok(entry.first)) continue;  // 已随世界销毁，无需回写
+            if (set_widget_visibility(entry.first, entry.second)) {
+                ++restored_count;
+            } else {
+                pending.push_back(entry);
+                ok = false;
+            }
+        }
+        hud_widgets_.swap(pending);
+        if (restored_count > 0) {
+            log(LogLevel::Info, "UMG HUD 已恢复：控件数=" + std::to_string(restored_count));
+        }
+
+        // ④ AHUD Actor 兜底：只恢复本 Mod 真正隐藏过的 actor（旧版无条件置可见，
+        //    会把玩家手动关掉的 HUD 打开）。
+        if (hud_actor_hidden_ != nullptr) {
+            UObject* hud = hud_actor_hidden_;
+            hud_actor_hidden_ = nullptr;
+            if (is_ok(hud)) {
+                static_cast<AActor*>(hud)->SetActorHiddenInGame(false);
+            }
+        }
+        return ok;
+    }
+
+    // ---- 隐藏 ----
     bool touched = false;
 
     std::vector<UObject*> widgets;
     find_hud_layout_widgets(widgets);
 
-    if (!visible) {
-        // 先记录原始可见性，再调用游戏自己的 PV 开关——它内部可能先把控件改成 Collapsed。
-        for (UObject* widget : widgets) {
-            if (!is_ok(widget)) continue;
-            if (!tracked_hud_widget(hud_widgets_, widget)) {
-                int original = 0;
-                if (!get_widget_visibility(widget, original)) original = 0;  // 默认 Visible
-                hud_widgets_.emplace_back(widget, original);
+    // 先记录原始可见性，再调用游戏自己的 PV 开关——它内部可能先把控件改成 Collapsed。
+    for (UObject* widget : widgets) {
+        if (!is_ok(widget)) continue;
+        if (!tracked_hud_widget(hud_widgets_, widget)) {
+            int original = 0;
+            if (!get_widget_visibility(widget, original)) original = 0;  // 默认 Visible
+            hud_widgets_.emplace_back(widget, original);
+        }
+    }
+
+    // 主路径：游戏 UIManager 的“为拍照/PV 隐藏 UI”总开关。
+    const bool pv_ok = set_ui_manager_hide_for_pv(true);
+    pv_hide_active_ = pv_ok;
+    if (pv_ok) {
+        log(LogLevel::Info, "UIManager.SetHideUIForPV(true) 已请求隐藏游戏 UI/HUD");
+    }
+
+    // 补充路径：HUD 布局根控件也设为 Collapsed，覆盖没有订阅 PV 事件的纯 UMG 控件。
+    // 只碰布局根控件（不是整棵子树逐个控件），退出时按原可见性成对恢复。
+    int hidden_count = 0;
+    for (UObject* widget : widgets) {
+        if (!is_ok(widget)) continue;
+        if (set_widget_visibility(widget, 1)) {  // Collapsed
+            touched = true;
+            ++hidden_count;
+        }
+    }
+    if (hidden_count > 0) {
+        hud_widget_missing_logged_ = false;
+        log(LogLevel::Info, "UMG HUD 已隐藏：根控件数=" + std::to_string(hidden_count) +
+                                "（退出摄影模式时恢复原可见性）");
+    } else if (widgets.empty() && !pv_ok) {
+        if (!hud_widget_missing_logged_) {
+            hud_widget_missing_logged_ = true;
+            log(LogLevel::Warn, "找不到 UMG HUD 根控件（W_FrontEndHUDLayout_C），也未找到 UIManager，退回隐藏 AHUD");
+        }
+    } else if (!widgets.empty()) {
+        hud_widget_missing_logged_ = false;
+    }
+
+    // 粗粒度补充：AHUD 层的 bShowHUD（PlayerController 或 MyHUD 上的反射属性）。
+    // 本作 HUD 是纯 UMG（1.0.4 实机：游戏根本不调 DrawHUD），这一路通常不产生可见效果，
+    // 但只要有可读原值就成对开关；读不到原值坚决不写，避免退出时猜错把 HUD 留在关闭状态。
+    if (hud_show_flag_active_ && !is_ok(hud_show_flag_owner_)) {
+        // 换世界后旧对象已销毁：旧世界的开关随对象一起消失，直接放弃记账，重新探测新世界的对象。
+        hud_show_flag_active_ = false;
+        hud_show_flag_owner_ = nullptr;
+    }
+    if (!hud_show_flag_active_) {
+        UObject* pc = controller();
+        UObject* owner = nullptr;
+        if (is_ok(pc) && find_property(pc, "bShowHUD") != nullptr) {
+            owner = pc;
+        } else if (is_ok(pc)) {
+            UObject* hud = nullptr;
+            if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud) &&
+                find_property(hud, "bShowHUD") != nullptr) {
+                owner = hud;
             }
         }
-
-        // 主路径：游戏 UIManager 的“为拍照/PV 隐藏 UI”总开关。
-        const bool pv_ok = set_ui_manager_hide_for_pv(true);
-        pv_hide_active_ = pv_ok;
-        if (pv_ok) {
-            log(LogLevel::Info, "UIManager.SetHideUIForPV(true) 已请求隐藏游戏 UI/HUD");
-        }
-
-        // 补充路径：HUD 布局根控件也设为 Collapsed，覆盖没有订阅 PV 事件的纯 UMG 控件。
-        int hidden_count = 0;
-        for (UObject* widget : widgets) {
-            if (!is_ok(widget)) continue;
-            if (set_widget_visibility(widget, 1)) {  // Collapsed
-                touched = true;
-                ++hidden_count;
+        if (owner == nullptr) {
+            if (!hud_show_flag_probe_logged_) {
+                hud_show_flag_probe_logged_ = true;
+                log(LogLevel::Info, "AHUD 粗开关不可用：PlayerController/MyHUD 上都没有可读的 bShowHUD"
+                                    "（本作 HUD 为纯 UMG，继续依赖 PV 总开关 + UMG 根控件）");
             }
-        }
-        if (hidden_count > 0) {
-            hud_widget_missing_logged_ = false;
-            log(LogLevel::Info, "UMG HUD 已隐藏：控件数=" + std::to_string(hidden_count) +
-                                    "（退出摄影模式时恢复原可见性）");
-        } else if (widgets.empty() && !pv_ok) {
-            if (!hud_widget_missing_logged_) {
-                hud_widget_missing_logged_ = true;
-                log(LogLevel::Warn, "找不到 UMG HUD 根控件（W_FrontEndHUDLayout_C），也未找到 UIManager，退回隐藏 AHUD");
-            }
-        } else if (!widgets.empty()) {
-            hud_widget_missing_logged_ = false;
-        }
-
-        // 最后一道兜底：AHUD Actor（纯 UMG 的 HUD 对 SetActorHiddenInGame 不敏感）。
-        if (widgets.empty() && !pv_ok) {
-            UObject* pc = controller();
-            if (is_ok(pc)) {
-                UObject* hud = nullptr;
-                if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud)) {
-                    static_cast<AActor*>(hud)->SetActorHiddenInGame(true);
-                    touched = true;
+        } else {
+            double raw = 1.0;
+            if (read_number(find_property(owner, "bShowHUD"), owner, raw)) {
+                if (raw != 0.0) {
+                    if (write_bool(find_property(owner, "bShowHUD"), owner, false)) {
+                        hud_show_flag_owner_ = owner;
+                        hud_show_flag_original_ = true;
+                        hud_show_flag_active_ = true;
+                        touched = true;
+                        log(LogLevel::Info, "AHUD 粗开关 bShowHUD=false 已生效（退出时按原值 true 恢复）");
+                    } else if (!hud_show_flag_probe_logged_) {
+                        hud_show_flag_probe_logged_ = true;
+                        log(LogLevel::Warn, "AHUD bShowHUD 写不进去，跳过粗开关（不影响 PV/根控件路径）");
+                    }
+                } else if (!hud_show_flag_probe_logged_) {
+                    hud_show_flag_probe_logged_ = true;
+                    log(LogLevel::Info, "AHUD bShowHUD 原本就是关闭状态，本轮不写也不记账");
                 }
+            } else if (!hud_show_flag_probe_logged_) {
+                hud_show_flag_probe_logged_ = true;
+                log(LogLevel::Warn, "AHUD bShowHUD 读不到原值，按约束不写（避免退出时猜错）");
             }
         }
-        return pv_ok || touched;
     }
 
-    // 恢复：先关掉游戏 UIManager 的 PV 隐藏开关，再按记录的原值恢复 UMG 控件。
-    // 任一项失败都保留记账并返回 false，由 core 在后续 tick 退避重试（H-1）。
-    bool ok = true;
-    if (pv_hide_active_) {
-        if (set_ui_manager_hide_for_pv(false)) {
-            pv_hide_active_ = false;
-            log(LogLevel::Info, "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD");
-        } else {
-            ok = false;  // 保留 pv_hide_active_，下次重试
+    // 最后一道兜底：AHUD Actor（纯 UMG 的 HUD 对 SetActorHiddenInGame 不敏感）。
+    // 粗开关 bShowHUD 已生效时不再走这一路：它已经关掉 AHUD 的绘制，再藏 Actor 只是多
+    // 一项要恢复的账（这正是要减少的脆弱项）。只有真正隐藏过才记账，退出时也只恢复这些（见 ④）。
+    if (widgets.empty() && !pv_ok && !hud_show_flag_active_ && hud_actor_hidden_ == nullptr) {
+        UObject* pc = controller();
+        if (is_ok(pc)) {
+            UObject* hud = nullptr;
+            if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud)) {
+                static_cast<AActor*>(hud)->SetActorHiddenInGame(true);
+                hud_actor_hidden_ = hud;
+                touched = true;
+            }
         }
     }
-
-    // 重新枚举一次做存活校验：关卡切换后旧控件可能已销毁，不能直接解引用旧指针。
-    // 已随旧世界销毁的控件无需回写（世界换代时 invalidate 已清空缓存），只保留写失败的项。
-    int restored_count = 0;
-    std::vector<std::pair<UObject*, int>> pending;
-    for (const auto& entry : hud_widgets_) {
-        if (!pointer_in(widgets, entry.first)) continue;
-        if (set_widget_visibility(entry.first, entry.second)) {
-            ++restored_count;
-        } else {
-            pending.push_back(entry);
-            ok = false;
-        }
-    }
-    hud_widgets_.swap(pending);
-    if (restored_count > 0) {
-        log(LogLevel::Info, "UMG HUD 已恢复：控件数=" + std::to_string(restored_count));
-    }
-
-    // AHUD 兜底恢复（即使 PV 开关没找到，也把可能被隐藏的 AHUD 恢复）
-    UObject* pc = controller();
-    if (is_ok(pc)) {
-        UObject* hud = nullptr;
-        if (read_object(find_property(pc, "MyHUD"), pc, hud) && is_ok(hud)) {
-            static_cast<AActor*>(hud)->SetActorHiddenInGame(false);
-        }
-    }
-    return ok;
+    return pv_ok || touched;
 }
 
 // ------------------------------------------------------------------ 交互提示（E 键图标）
@@ -210,23 +291,33 @@ namespace {
 
 // 设置开关挂在哪个类离线确定不了（exe 里只有属性/函数名），运行时按候选探测：
 // 第一个带 bSceneInteractPromptVisible 属性的实例就是它（跳过 CDO，优先活对象）。
-auto find_scene_prompt_setting_owner() -> UObject* {
-    static const char* candidates[] = {
-        "PBZUIManagerSubsystem", "BP_GameInstance_C", "PBZGameUserSettings", "PBZCommonUserSettings",
-        "PBZSettingsSubsystem", "PBZUserSettings", "PBZSettingsShared", "PBZSettings", "GameUserSettings",
-    };
+// 三个设置项（场景交互提示 / 怪物血条模式 / 字幕）的探测骨架逐字相同，只有候选表与
+// “承载判定”不同，所以统一走 find_setting_owner_by_class。
+template <typename Match>
+auto find_setting_owner_by_class(const char* const* candidates, Match&& match) -> UObject* {
     UObject* cdo_fallback = nullptr;
-    for (const char* name : candidates) {
+    for (const char* const* name = candidates; *name != nullptr; ++name) {
         std::vector<UObject*> found;
-        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
+        RC::Unreal::UObjectGlobals::FindAllOf(widen(*name), found);
         for (UObject* object : found) {
             if (!is_ok(object)) continue;
-            if (find_property(object, "bSceneInteractPromptVisible") == nullptr) continue;
+            if (!match(object)) continue;
             if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
             if (cdo_fallback == nullptr) cdo_fallback = object;
         }
     }
     return cdo_fallback;
+}
+
+auto find_scene_prompt_setting_owner() -> UObject* {
+    static const char* const candidates[] = {
+        "PBZUIManagerSubsystem", "BP_GameInstance_C", "PBZGameUserSettings", "PBZCommonUserSettings",
+        "PBZSettingsSubsystem", "PBZUserSettings", "PBZSettingsShared", "PBZSettings", "GameUserSettings",
+        nullptr,
+    };
+    return find_setting_owner_by_class(candidates, [](UObject* object) {
+        return find_property(object, "bSceneInteractPromptVisible") != nullptr;
+    });
 }
 
 // UWidgetComponent 继承 USceneComponent：SetVisibility(false) 后渲染器不再画它。
@@ -339,11 +430,12 @@ bool Ue4ssPort::set_interact_prompts_visible(bool visible) {
             log(LogLevel::Warn, "场景里没有 PBZInteractComponent（交互提示若仍在屏上，把这条日志发回来）");
         }
     } else {
-        // 重新枚举做存活校验：换图/GC 后旧组件可能已销毁，不能直接解引用旧指针
+        // 存活校验用 UE 对象数组（is_ok），不再依赖「本轮扫描必须命中」：
+        // 扫描漏项时活组件会被旧逻辑静默丢账，永远停在隐藏状态。
         int restored_count = 0;
         std::vector<std::pair<UObject*, bool>> pending;
         for (const auto& entry : prompt_components_) {
-            if (!pointer_in(components, entry.first)) continue;
+            if (!is_ok(entry.first)) continue;
             if (set_component_visibility(entry.first, entry.second)) {
                 ++restored_count;
             } else {
@@ -426,22 +518,14 @@ auto bar_mode_display_name(UObject* enum_object, double value) -> std::string {
 // 设置项挂在哪个类离线确定不了，运行时按候选探测（1.6.0 交互提示开关同款）：
 // 第一个带 MonsterHealthBarMode 属性的实例就是它（跳过 CDO，优先活对象）。
 auto find_bar_mode_setting_owner() -> UObject* {
-    static const char* candidates[] = {
+    static const char* const candidates[] = {
         "PBZSettingsShared", "PBZGameUserSettings", "PBZCommonUserSettings", "PBZSettingsSubsystem",
         "PBZUserSettings", "PBZSettings", "PBZUIManagerSubsystem", "BP_GameInstance_C", "GameUserSettings",
+        nullptr,
     };
-    UObject* cdo_fallback = nullptr;
-    for (const char* name : candidates) {
-        std::vector<UObject*> found;
-        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
-        for (UObject* object : found) {
-            if (!is_ok(object)) continue;
-            if (find_property(object, "MonsterHealthBarMode") == nullptr) continue;
-            if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
-            if (cdo_fallback == nullptr) cdo_fallback = object;
-        }
-    }
-    return cdo_fallback;
+    return find_setting_owner_by_class(candidates, [](UObject* object) {
+        return find_property(object, "MonsterHealthBarMode") != nullptr;
+    });
 }
 
 // fill_bar_mode_param 被世界换代清理共用，已提到 ue4ss_port_internal.h（namespace pbzpm::detail）。
@@ -551,34 +635,25 @@ auto class_chain_contains(UClass* cls, const char* base_name) -> bool {
 // 第一个带 SetSubtitlesEnabled 函数或 bSubtitlesEnabled 属性的实例就是它（跳过 CDO，优先活对象）。
 // 1.0.30 实机：PBZSettingsShared 命中（只有 setter，属性在引擎 GlobalUserParam 上）。
 auto find_subtitle_setting_owner() -> UObject* {
-    static const char* candidates[] = {
+    static const char* const candidates[] = {
         "PBZGameUserSettings", "PBZSettingsShared", "PBZCommonUserSettings", "PBZSettingsSubsystem",
         "PBZUserSettings", "PBZSettings", "GameUserSettings", "PBZUIManagerSubsystem", "BP_GameInstance_C",
+        nullptr,
     };
-    UObject* cdo_fallback = nullptr;
-    for (const char* name : candidates) {
-        std::vector<UObject*> found;
-        RC::Unreal::UObjectGlobals::FindAllOf(widen(name), found);
-        for (UObject* object : found) {
-            if (!is_ok(object)) continue;
-            if (find_function(object, "SetSubtitlesEnabled") == nullptr &&
-                find_property(object, "bSubtitlesEnabled") == nullptr) {
-                continue;
-            }
-            if (narrow(object->GetFullName()).find("Default__") == std::string::npos) return object;
-            if (cdo_fallback == nullptr) cdo_fallback = object;
-        }
-    }
+    UObject* owner = find_setting_owner_by_class(candidates, [](UObject* object) {
+        return find_function(object, "SetSubtitlesEnabled") != nullptr ||
+               find_property(object, "bSubtitlesEnabled") != nullptr;
+    });
     // 设置对象真不在时才退到引擎实例：bSubtitlesEnabled 是 UEngine 的 GlobalUserParam，
     // 字幕显示控件读的就是它（bSubtitlesForcedOff 是它的强制关闭位）。
     // 注意：必须在候选都没命中时才走这里，不能覆盖上面已经找到的设置对象。
-    if (cdo_fallback == nullptr) {
+    if (owner == nullptr) {
         for (const char* name : {"GameEngine", "PBZGameEngine", "Engine"}) {
             UObject* engine = RC::Unreal::UObjectGlobals::FindFirstOf(widen(name));
             if (is_ok(engine) && find_property(engine, "bSubtitlesEnabled") != nullptr) return engine;
         }
     }
-    return cdo_fallback;
+    return owner;
 }
 
 }  // namespace
@@ -787,7 +862,7 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
                     bool original = true;
                     std::string via = "默认(true)";
                     read_bool_setting(owner, kSubtitleSettingSpec, original, &via);
-                    subtitle_setting_saved_ = true;  // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
+                    // 只要动过开关，退出就必须还原（原值读不到按 true 还原）
                     subtitle_setting_touched_ = true;
                     subtitle_setting_original_ = original;
                     subtitle_setting_owner_ = owner;
@@ -826,7 +901,6 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
         }
         if (restored) {
             subtitle_setting_touched_ = false;
-            subtitle_setting_saved_ = false;
             subtitle_setting_owner_ = nullptr;
             touched = true;
         } else {
@@ -903,11 +977,12 @@ bool Ue4ssPort::set_subtitles_visible(bool visible) {
                                                                          std::string("，类名带 Subtitle 的控件：") + names));
         }
     } else {
-        // 重新枚举做存活校验：换图/GC 后旧控件可能已销毁，不能直接解引用旧指针
+        // 存活校验用 UE 对象数组（is_ok）；扫描漏项不能当作「已销毁」丢掉记账，
+        // 否则字幕控件会永远停在 Collapsed（实机「字幕反复消失」的直接原因）。
         int restored_count = 0;
         std::vector<std::pair<UObject*, int>> pending;
         for (const auto& entry : subtitle_widgets_) {
-            if (!pointer_in(widgets, entry.first)) continue;
+            if (!is_ok(entry.first)) continue;
             if (set_widget_visibility(entry.first, entry.second)) {
                 ++restored_count;
             } else {
@@ -1019,7 +1094,7 @@ bool Ue4ssPort::recover_ui_settings_once() {
     }
 
     std::ofstream marker_file(marker);
-    marker_file << "repaired by " << PBZPM_VERSION << " (subtitles=on, scene_interact_prompt=on)\n";
+    marker_file << "repaired by " << PBZPM_VERSION_FULL << " (subtitles=on, scene_interact_prompt=on)\n";
     marker_file.close();
     log(LogLevel::Info, std::string("UI 设置修复完成：字幕开关与场景交互提示已打开并存盘（只执行一次；")
                             + "若你本来关闭字幕，可在 config.ini 把 repair_ui_settings_once 设为 false 并删除 "
@@ -1192,24 +1267,6 @@ auto lockon_class_verdict(UClass* cls) -> const LockonClassVerdict& {
     return it->second;
 }
 
-// 可能承载白点的对象超集（UserWidget 派生 + 可视组件派生，跳过 CDO）。隐藏后只记录
-// 这个集合里的指针，还原时重新枚举一遍做存活校验——不能直接解引用退出前的旧指针
-//（换图/GC 后可能已销毁，槽位可能被复用）。
-auto collect_lockon_superset(std::vector<UObject*>& out) -> void {
-    RC::Unreal::UObjectGlobals::ForEachUObject([&](UObject* object, int32, int32) -> RC::LoopAction {
-        if (!RC::Unreal::UObjectGlobals::IsValidObjectForFindXOf(object)) return RC::LoopAction::Continue;
-        UClass* cls = object->GetClassPrivate();
-        if (cls == nullptr) return RC::LoopAction::Continue;
-        // 用 Widget 基类（不是 UserWidget）：锁定系统的 LockWidget 可能是 UWidget 子类（UImage 之类）
-        const LockonClassVerdict& verdict = lockon_class_verdict(cls);
-        if (!verdict.in_superset && !class_chain_contains(cls, "Widget")) return RC::LoopAction::Continue;
-        // CDO 的对象名固定以 Default__ 开头；查对象自身名比拼全名（外层链展开）便宜得多
-        if (narrow(object->GetName()).rfind("Default__", 0) == 0) return RC::LoopAction::Continue;
-        out.push_back(object);
-        return RC::LoopAction::Continue;
-    });
-}
-
 }  // namespace
 
 bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
@@ -1370,6 +1427,7 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
             lockon_components_.emplace_back(host, true);
             return 1;
         };
+        int root_index = 0;
         for (UObject* root : targeting_roots) {
             std::string detail;
             const std::string root_class = narrow(root->GetClassPrivate()->GetName());
@@ -1468,7 +1526,12 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
             if (UFunction* set_fn = find_function(root, "SetLockTarget")) {
                 detail += " SetLockTarget(" + describe_params(set_fn) + ")";
             }
-            log(LogLevel::Info, "锁定系统：类=" + root_class + " 对象=" + narrow(root->GetName()) + detail);
+            // 每进一次锁定组件都会打印一条明细；多个组件（真机 5 个）里大多只是
+            // “LockWidget 不可读”的同一类诊断，全部按 Info 会把日志刷满。
+            // 首个组件保留 Info，其余降到 Debug，默认日志级别下每次进入最多一条。
+            log(root_index == 0 ? LogLevel::Info : LogLevel::Debug,
+                "锁定系统：类=" + root_class + " 对象=" + narrow(root->GetName()) + detail);
+            ++root_index;
         }
         if (targeting_acted > 0) {
             touched = true;
@@ -1499,16 +1562,15 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
         return true;
     }
 
-    // 恢复：重新枚举白点可能所在的超集做存活校验（换图/GC 后旧对象可能已销毁，
-    // 不能直接解引用旧指针）。任何一项写失败都保留记账，由 core 退避重试（H-1）。
-    std::vector<UObject*> alive;
-    collect_lockon_superset(alive);
+    // 恢复：存活校验用 UE 对象数组（is_ok），不再全量重扫白点超集——那次扫描只是
+    // 用来判断指针是否还活着，而 is_ok 本身就是权威校验；扫描漏项反而会丢记账。
+    // 任何一项写失败都保留记账，由 core 退避重试（H-1）。
     bool ok = true;
     int restored_count = 0;
 
     std::vector<std::pair<UObject*, int>> pending_widgets;
     for (const auto& entry : lockon_widgets_) {
-        if (!pointer_in(alive, entry.first)) continue;
+        if (!is_ok(entry.first)) continue;
         if (set_widget_visibility(entry.first, entry.second)) {
             ++restored_count;
         } else {
@@ -1520,7 +1582,7 @@ bool Ue4ssPort::set_lockon_marker_visible(bool visible) {
 
     std::vector<std::pair<UObject*, bool>> pending_components;
     for (const auto& entry : lockon_components_) {
-        if (!pointer_in(alive, entry.first)) continue;
+        if (!is_ok(entry.first)) continue;
         if (set_component_visibility(entry.first, entry.second)) {
             ++restored_count;
         } else {

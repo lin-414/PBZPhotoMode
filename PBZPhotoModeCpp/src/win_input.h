@@ -51,6 +51,10 @@ public:
 
     // 诊断用：鼠标位移事件计数（进模式时打一行日志，方便判断输入源是否活着）
     unsigned long mouse_event_count() const;
+    // 低级鼠标钩子线程 ID（F7 全线程定格的排除名单：挂起它会让全桌面鼠标卡住）
+    unsigned long raw_thread_id() const;
+    // 清空冻结期间累积的鼠标位移/滚轮，避免恢复后相机按截图时的鼠标轨迹瞬移
+    void discard_pending();
     // 低级鼠标钩子（滚轮来源）：安装线程在哪个线程，回调就派发到哪个线程
     bool ll_ready() const;
     unsigned long ll_wheel_events() const;
@@ -131,7 +135,6 @@ private:
     void dinput_thread_main();
     void dinput_thread_tick();
     void dinput_set_diag(std::string text);
-    void dinput_append_diag(std::string text);
     bool ensure_dinput_runtime();
     bool dinput_probe();
     void dinput_release_device();

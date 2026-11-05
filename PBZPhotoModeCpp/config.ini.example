@@ -1,6 +1,5 @@
 ; ================================================================
-; PBZ Photo Mode (C++) 配置文件（UTF-8，可留空使用默认值）
-; 放在 ue4ss\Mods\PBZPhotoModeCpp\config.ini
+; 2.0.0-cpp 配置文件（UTF-8，可留空使用默认值）
 ; 改完存盘后按 F2 重进摄影模式即可生效（或重启游戏）
 ; ================================================================
 
@@ -9,7 +8,9 @@
 key_toggle = F2
 ; 冻结/恢复时间
 key_freeze = F
-; 重置相机到进入摄影模式时的位置/朝向/FOV
+; 画面定格/恢复（挂起本进程除热键线程外的所有线程，屏幕停在最后一帧；再按恢复）
+key_frame_freeze = F7
+; 重置相机到进入摄影模式时位置/朝向/FOV
 key_reset = R
 ; 滚转归零（水平校正）：只把滚转回 0，位置/俯仰/偏航/FOV 不动
 key_roll_reset = Z
@@ -29,24 +30,36 @@ key_roll_right = E
 ; 可写键盘键名（PAGE_UP/PAGE_DOWN 等）或鼠标键 MOUSE_LEFT/MOUSE_RIGHT/MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2
 key_vertical_up = MOUSE_LEFT
 key_vertical_down = MOUSE_RIGHT
-
+; 移动/变速/自由视角门控（2.0 起可配）：默认 W/S/A/D 平移、SHIFT 加速、CONTROL 减速、ALT 转视角门控
+key_move_forward = W
+key_move_back = S
+key_move_left = A
+key_move_right = D
+key_boost = SHIFT
+key_slow = CONTROL
+key_free_look = ALT
+; 景深/手动对焦：PAGE_UP 对焦拉近 / PAGE_DOWN 对焦拉远；[ 开大光圈（更虚化）/ ] 收小光圈（更实）
 [control]
-; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速
+; 常规移动速度（单位/秒）；按住 key_boost 加速、key_slow 减速
 move_speed = 400
 boost_mult = 4
 slow_mult = 0.3
-; 按住 Ctrl（手柄为按下右摇杆 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细
+; 按住减速键（默认 Ctrl；手柄为 pad_slow，默认 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细
 slow_look_mult = 0.1
 ; 每单位鼠标位移转多少度
 look_sensitivity = 0.1
 pitch_limit = 89
 invert_y = false
-; 必须按住 Alt 才能自由转视角
+; 自由转视角必须按住 key_free_look（默认 ALT）才能动鼠标；false = 不按键也能转
 free_look_requires_alt = true
 ; 进入摄影模式时屏蔽角色移动/视角输入（退出时还原）
 block_game_input = true
 ; 升降键行为（具体键位见 [keys] 的 key_vertical_up/down）：translate=相机上下平移，look=俯仰
 mouse_vertical_mode = translate
+; 鼠标滚轮调整 FOV（默认向上缩小/拉近、向下放大）；false = 滚轮不参与 FOV
+wheel_fov = true
+; 滚轮方向反转（true = 向上放大 FOV、向下缩小）
+wheel_fov_invert = false
 vertical_speed = 200
 ; 滚转相机速度（度/秒）：默认 E 顺时针，Q 逆时针（键位见 [keys] key_roll_left/right）；Shift 加速 / Ctrl 减速同样生效
 roll_speed = 60
@@ -55,15 +68,10 @@ pitch_speed = 30
 ; 方向键左/右（与手柄十字键左/右）转向速度（度/秒）；Shift 加速 / Ctrl 减速同样生效
 yaw_speed = 90
 
-; ================================================================
-; 手柄支持（v1.0.15 新增；v1.4.0 起原生支持 DualSense/DualShock4，USB 与蓝牙均可）
-; ================================================================
-
 [gamepad]
 ; 手柄支持总开关（false=不轮询手柄）
 pad_enabled = true
 ; 进入/退出摄影模式：默认左右摇杆同时按下（LS=左摇杆按下 L3，RS=右摇杆按下 R3）
-; Xbox 手柄走 XInput，PS 手柄（DualSense/DualShock4）走 DirectInput，键位写法完全一致
 ; 可用按钮：A B X Y LB RB LS RS BACK START GUIDE UP DOWN LEFT RIGHT LT RT
 ; 也认 PS 叫法（CROSS/CIRCLE/SQUARE/TRIANGLE/L1/R1/L2/R2/L3/R3/OPTIONS/SHARE/PS）
 ; 多个按钮用 + 连接（同时按住触发）；写 NONE 表示解绑该功能
@@ -83,16 +91,22 @@ pad_pitch_down = DOWN
 ; 左右转视角（按住持续转）：十字键左 = 左转 / 右 = 右转
 pad_yaw_left = LEFT
 pad_yaw_right = RIGHT
-; 固定键位（不占配置项）：RT/LT 升降；RB/LB 滚转相机（RB 顺时针 / LB 逆时针，与键盘 Q/E 同向）；
-; L3/R3 变速（LS 加速 / RS 减速；两杆同时按住是进出模式组合键，此时不触发变速）；
-; 按下右摇杆 RS 同时把右摇杆/鼠标视角速度放慢到 slow_look_mult 倍（精调）
+; 滚转（按住持续转）：默认 RB 顺时针 / LB 逆时针
+pad_roll_left = LB
+pad_roll_right = RB
+; 变速：默认 LS（左摇杆按下）加速 / RS（右摇杆按下）减速；两键同按是进出模式组合键，不触发变速
+pad_boost = LS
+pad_slow = RS
+; 升降：默认 RT 上 / LT 下；单键绑定 RT/LT 保留模拟量行程，换其它按钮则为按下/松开
+pad_vertical_up = RT
+pad_vertical_down = LT
 ; 右摇杆转视角速度（度/秒，全行程）
 pad_look_speed = 60
 ; 左摇杆移动速度占 move_speed 的比例
 pad_move_scale = 1
 ; 摇杆死区（0~0.5，摇杆有漂移就调大）
 pad_deadzone = 0.15
-
+; 景深/对焦：LB+BACK 对焦拉近 / LB+START 对焦拉远；RB+BACK 开大光圈 / RB+START 收小光圈
 [camera]
 fov_default = 90
 fov_min = 15
@@ -100,6 +114,25 @@ fov_max = 150
 fov_step = 2
 ; 超宽屏（21:9/32:9）：进入摄影模式时解除游戏 16:9 画幅锁定（消除两侧黑边），退出还原
 ultrawide_unlock = true
+; 接管当前相机（UUU 式）：true=不 spawn 独立相机、不切 ViewTarget，每帧写当前相机 POV；
+; 进入时接管失败会自动回退到独立相机（spawn + SetViewTargetWithBlend）。false=始终用独立相机
+takeover_current_camera = true
+
+[look]
+; 暗角强度（0=关闭，1~3 明显；走后处理体积通道，本作 gameplay 视图实测有效）
+vignette = 0
+
+; 饱和度倍率（1=原样，<1 去色，>1 更艳）
+saturation = 1
+
+; 对比度倍率（1=原样）
+contrast = 1
+
+; 泛光强度（0=不覆盖，1~5 明显）
+bloom = 0
+
+; 冷暖色调（-1 偏冷，0=不覆盖，+1 偏暖）
+temperature = 0
 
 [effects]
 hide_player = false
@@ -117,10 +150,9 @@ hide_subtitles = true
 ;（旧版本可能把它们写坏并让游戏存盘；只执行一次，成功后写 ui_settings_repair_done.flag）。
 ; 如果你本来就关闭字幕、不要这项修复，设为 false。
 repair_ui_settings_once = true
-
 ; 进入摄影模式时自动暂停时间（默认开启；false=进入后时间照常流动，可按 F 手动冻结）
 auto_pause_time = true
-; pause=游戏暂停（默认，真正冻结角色/敌人/特效）；dilation=只调全局时间倍率
+; dilation=时间几乎停住（画面仍可动）；pause=游戏暂停
 freeze_mode = pause
 freeze_dilation = 0.0001
 ; 冻结时同时暂停剧情/过场（Sequencer 播放器），解冻/退出时恢复。
@@ -129,11 +161,12 @@ freeze_sequences = true
 ; 冻结时把对话 Flow（WBP_FlowDialog_C）改为 Collapsed 停止 Slate Tick，避免对话 Flow
 ; 在冻结期继续推进/提前结束当前语音；解冻恢复 Hidden（仍隐藏但继续 Tick）。仅在 hide_subtitles=true 时生效
 freeze_dialogue_flow = true
-; 冻结时处理 Wwise 音频：有截获到逐 PlayingID 时逐语音真暂停（PBZPausePlayingID/PBZResumePlayingID），
+; 冻结时处理 Wwise 音频：有逐 PlayingID 时逐语音真暂停（PBZPausePlayingID/PBZResumePlayingID），
 ; 跳过整引擎 Suspend；没有 ID 时才用整引擎静音兜底，失败回落组件音量
 stop_wwise_on_freeze = true
-; 仅当没有截获到逐个 PlayingID 时，整引擎 Suspend(true,false) 作兜底；
-; 正常有 ID 时不会调用，避免 render-anyway 继续推进语音时间轴
+; 仅当没有截获到逐个 PlayingID 时，整引擎 Suspend(true,false) 作兜底：
+; render-anyway 只静音、音频继续处理；正常有 ID 时不会调用，避免推进语音时间轴
+; false=不做整引擎兜底，只走逐语音/组件音量
 wwise_engine_suspend = true
 ; 冻结时停用相机修饰器并立即结束相机 shake。它们用真实时间驱动，世界暂停拦不住，
 ; 是冻结画面边缘抖动/脸部阴影爬动的主变化源；解冻时按冻结前状态还原
@@ -144,14 +177,70 @@ freeze_wind = true
 ; 冻结时钉住材质参数集合（MPC）当前值，冻结期每帧写回快照，压制实时驱动参数
 ; 继续推布料/植被摆动；解冻释放
 freeze_mpc = true
-; 冻结期每秒输出一条冻结诊断（风源/MPC 参数变化/相机修饰器状态），
-; 定位布料与阴影闪烁还剩哪个变化源没压住
-freeze_diag = true
-restore_fov_on_exit = true
-restore_view_on_exit = true
+; 冻结时挂起角色/敌人的布料模拟（SkeletalMeshComponent clothing simulation 与
+; ChaosClothComponent 独立模拟），保留最后一次模拟姿态；解冻恢复
+freeze_cloth = true
+; 冻结时额外处理 PBZ 自定义布料/摆动 + 毛发/粒子：Sway 组件 tick（按类名全对象扫描找）、
+; r.Cloth.Enable 全局开关、Groom 毛发模拟、Niagara 粒子暂停。
+; 1.0.76 起不再写 pbz.Sway.SkipSkeletalKinematicBoneUpdate（会让布料件整体换位）
+freeze_custom_cloth = false
+; 冻结时关闭 WPO 评估（SkeletalMesh + StaticMesh/植被/地形图元），排查材质顶点动画闪烁
+freeze_wpo = false
+; 冻结时把 r.Tonemapper.Quality 从 5 降到 4（去掉 GrainJitter 逐帧抖动）并关 Backbuffer 量化抖动
+freeze_tonemapper_dither_off = false
+; 冻结时暂停全部 SkeletalMesh 的动画/骨骼 pose（bPauseAnims/bNoSkeletonUpdate），
+; 防止骨骼驱动的衣摆/披风在暂停下继续流动；解冻恢复
+freeze_skeletal_animation = true
+; 冻结时关闭动态模糊（r.MotionBlurQuality=0），消除残留速度缓冲造成的流动拖影；解冻还原
+freeze_motion_blur_off = true
+; 冻结时关 AA：r.AntiAliasingMethod=0，并直接改 PPV/相机 POV 的 FPostProcessSettings
+; （AA/动态模糊/Lumen/反射），防止 PPV override 让 cvar 失效；解冻/退出按原值还原
+freeze_aa_off = false
+; 冻结时临时关闭 WPO/Nanite WPO/植被/毛发的速度输出（r.Velocity.EnableVertexDeformation 等）：
+; 用于 A/B 判断暂停期假运动向量；解冻/退出按原值还原。默认 false
+freeze_wpo_velocity_off = false
+; 冻结时抑制帧生成（r.PBZ.SuppressFrameGen=1 + 显式关 DLSSG/FSR-FI），解冻/退出还原。默认 true：
+; 静止拍照不需要插帧，FG 还可能放大/制造闪烁；关 false 可保留插帧
+freeze_framegen_off = true
+; 冻结时临时关闭 DLSS 超分（r.NGX.DLSS.Enable=0），解冻/退出还原。默认 false；
+; 若日志显示 DLSS 开启且闪烁仍在，可临时设 true 做 A/B
+freeze_dlss_off = false
+; ---- 光照 A/B（Lumen / 屏幕空间光照）：冻结时临时改光照 CVar，解冻/退出按原值还原 ----
+; 关 Lumen 屏幕空间追踪（GI/反射的 ScreenTraces 归零，保留距离场追踪）
+freeze_lumen_screen_traces_off = false
+; 关 Lumen 短距屏幕空间 AO（ShortRangeAO / DiffuseIndirect.SSAO / r.AmbientOcclusionLevels）
+freeze_lumen_short_range_ao_off = false
+; 关 Lumen 屏幕探针辐射缓存（逐帧更新、易在细几何上闪）
+freeze_lumen_radiance_cache_off = false
+; 固定 Lumen 抖动/状态帧（FixedJitterIndex/FixedStateFrameIndex=0），判断是否逐帧随机采样
+freeze_lumen_fixed_jitter = false
+; 关 Lumen GI/反射总开关（DiffuseIndirect.Allow / Reflections.Allow / 方法 CVar）
+freeze_lumen_off = false
+; 冻结期自动轮换光照阶段：原始→屏幕追踪→短距AO→辐射缓存→固定抖动→Lumen全关（诊断用）
+freeze_lighting_ab_cycle = false
+; 自动轮换每阶段持续秒数（1..120）
+freeze_lighting_ab_phase_seconds = 8
+; ---- 阴影/后处理 A/B：Lumen 之外的第二层（SMRT→VSM 缓存→VSM→全部阴影→接触阴影→体积雾→后处理） ----
+; 冻结期自动轮换阴影/后处理阶段（诊断用；与 freeze_lighting_ab_cycle 二选一）
+freeze_shadow_ab_cycle = false
+; 阴影/后处理轮换每阶段持续秒数（1..120）
+freeze_shadow_ab_phase_seconds = 8
+; 冻结诊断（默认关闭）：风源/MPC 参数变化/相机修饰器状态/视角微动；
+; 开启后状态翻转时输出，持续期每 10 秒最多一条（诊断需反射扫描，频繁输出会拖帧）
+freeze_diag = false
+; ---- F7 画面定格（全线程冻结）：参考 PBZ Pause 的“进程级硬冻结 + 时间 API 补偿” ----
+; 定格期间冻结 QueryPerformanceCounter/GetTickCount/GetTickCount64/timeGetTime，
+; 恢复时把定格时长从返回值里扣掉，避免动画/物理/计时器把整段定格当成一次巨大 delta。
+; 注意：只适用于 F7 这种连渲染线程一起停的定格；摄影模式的引擎暂停不会用这套钩子。
+frame_freeze_time_compensation = true
+; F7 定格前若摄影模式没挂 Wwise，则由 F7 调用 AK::SoundEngine::Suspend(true,false) 静音，恢复时唤醒
+frame_freeze_audio_suspend = true
+; F7 定格安全阀（秒）：即使恢复热键收不到，也会在超时后自动恢复，避免只能结束进程（5~300）
+frame_freeze_timeout_seconds = 60
 
 [ui]
-; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作
+; UE4SS 控制台里的只读诊断面板（需要 UE4SS 控制台窗口）；false=不注册该 tab
+; 游戏内无菜单，纯快捷键操作；可写设置的唯一入口是 PBZFM 菜单页
 imgui_tab = true
 ; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id
 ;（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）
@@ -159,4 +248,3 @@ menu_language = auto
 
 [misc]
 log_level = info
-dry_run = false

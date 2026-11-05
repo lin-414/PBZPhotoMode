@@ -1,5 +1,6 @@
 #include "core/config.h"
 
+#include "core/tuning.h"
 #include "core/version.h"
 
 #include <algorithm>
@@ -219,6 +220,7 @@ const std::vector<ConfigFieldSpec>& schema() {
         // ---- [keys] ----
         Text("key_toggle", "keys", &Config::key_toggle, "mod_app::on_hotkey"),
         Text("key_freeze", "keys", &Config::key_freeze, "photo_mode::tick"),
+        Text("key_frame_freeze", "keys", &Config::key_frame_freeze, "mod_app::frame_freeze"),
         Text("key_reset", "keys", &Config::key_reset, "photo_mode::tick"),
         Text("key_roll_reset", "keys", &Config::key_roll_reset, "photo_mode::tick"),
         Text("key_fov_up", "keys", &Config::key_fov_up, "photo_mode::tick"),
@@ -231,6 +233,13 @@ const std::vector<ConfigFieldSpec>& schema() {
         Text("key_roll_right", "keys", &Config::key_roll_right, "input_logic"),
         Text("key_vertical_up", "keys", &Config::key_vertical_up, "input_logic"),
         Text("key_vertical_down", "keys", &Config::key_vertical_down, "input_logic"),
+        Text("key_move_forward", "keys", &Config::key_move_forward, "input_logic"),
+        Text("key_move_back", "keys", &Config::key_move_back, "input_logic"),
+        Text("key_move_left", "keys", &Config::key_move_left, "input_logic"),
+        Text("key_move_right", "keys", &Config::key_move_right, "input_logic"),
+        Text("key_boost", "keys", &Config::key_boost, "input_logic"),
+        Text("key_slow", "keys", &Config::key_slow, "input_logic"),
+        Text("key_free_look", "keys", &Config::key_free_look, "input_logic"),
         // 兼容别名（同一字段，不再静默丢弃）
         Text("mouse_vertical_up", "keys", &Config::key_vertical_up, "input_logic", "key_vertical_up 的别名"),
         Text("mouse_vertical_down", "keys", &Config::key_vertical_down, "input_logic", "key_vertical_down 的别名"),
@@ -248,6 +257,8 @@ const std::vector<ConfigFieldSpec>& schema() {
         Bool("free_look_requires_alt", "control", &Config::free_look_requires_alt, "input_logic"),
         Bool("block_game_input", "control", &Config::block_game_input, "photo_mode::enter"),
         Enum("mouse_vertical_mode", "control", &apply_mouse_vertical_mode, "input_logic"),
+        Bool("wheel_fov", "control", &Config::wheel_fov, "photo_mode::tick"),
+        Bool("wheel_fov_invert", "control", &Config::wheel_fov_invert, "photo_mode::tick"),
         Number("vertical_speed", "control", &Config::vertical_speed, 10.0, 1000.0, "photo_mode::tick"),
         Number("roll_speed", "control", &Config::roll_speed, 5.0, 360.0, "photo_mode::tick"),
         Number("pitch_speed", "control", &Config::pitch_speed, 5.0, 180.0, "photo_mode::tick"),
@@ -265,6 +276,12 @@ const std::vector<ConfigFieldSpec>& schema() {
         Text("pad_pitch_down", "gamepad", &Config::pad_pitch_down, "input_logic"),
         Text("pad_yaw_left", "gamepad", &Config::pad_yaw_left, "input_logic"),
         Text("pad_yaw_right", "gamepad", &Config::pad_yaw_right, "input_logic"),
+        Text("pad_roll_left", "gamepad", &Config::pad_roll_left, "input_logic"),
+        Text("pad_roll_right", "gamepad", &Config::pad_roll_right, "input_logic"),
+        Text("pad_boost", "gamepad", &Config::pad_boost, "input_logic"),
+        Text("pad_slow", "gamepad", &Config::pad_slow, "input_logic"),
+        Text("pad_vertical_up", "gamepad", &Config::pad_vertical_up, "input_logic"),
+        Text("pad_vertical_down", "gamepad", &Config::pad_vertical_down, "input_logic"),
         Text("pad_pan_left", "gamepad", &Config::pad_yaw_left, "input_logic", "1.0.46 起改名为 pad_yaw_left"),
         Text("pad_pan_right", "gamepad", &Config::pad_yaw_right, "input_logic", "1.0.46 起改名为 pad_yaw_right"),
         Number("pad_look_speed", "gamepad", &Config::pad_look_speed, 10.0, 720.0, "input_logic"),
@@ -277,6 +294,15 @@ const std::vector<ConfigFieldSpec>& schema() {
         Number("fov_max", "camera", &Config::fov_max, 2.0, 179.0, "photo_mode::set_fov"),
         Number("fov_step", "camera", &Config::fov_step, 0.5, 10.0, "photo_mode::tick"),
         Bool("ultrawide_unlock", "camera", &Config::ultrawide_unlock, "photo_mode::enter"),
+        Bool("takeover_current_camera", "camera", &Config::takeover_current_camera, "photo_mode::enter"),
+
+        // ---- [look] 画面效果（后处理体积通道：本作 gameplay 视图里暗角是实测生效的）----
+        Number("vignette", "look", &Config::vignette, tuning::kVignetteMin, tuning::kVignetteMax,
+               "photo_mode::enter+tick"),
+        Number("saturation", "look", &Config::saturation, 0.0, 2.0, "photo_mode::enter+tick"),
+        Number("contrast", "look", &Config::contrast, 0.0, 2.0, "photo_mode::enter+tick"),
+        Number("bloom", "look", &Config::bloom, 0.0, 20.0, "photo_mode::enter+tick"),
+        Number("temperature", "look", &Config::temperature, -1.0, 1.0, "photo_mode::enter+tick"),
 
         // ---- [effects] ----
         Bool("hide_player", "effects", &Config::hide_player, "photo_mode"),
@@ -288,7 +314,7 @@ const std::vector<ConfigFieldSpec>& schema() {
         Bool("repair_ui_settings_once", "effects", &Config::repair_ui_settings_once, "mod_app::enter"),
         Bool("auto_pause_time", "effects", &Config::auto_pause_time, "photo_mode::enter"),
         Enum("freeze_mode", "effects", &apply_freeze_mode, "photo_mode::toggle_freeze"),
-        Number("freeze_dilation", "effects", &Config::freeze_dilation, 0.0001, 1.0, "photo_mode::toggle_freeze"),
+        Number("freeze_dilation", "effects", &Config::freeze_dilation, 1e-9, 1.0, "photo_mode::toggle_freeze"),
         Bool("freeze_sequences", "effects", &Config::freeze_sequences, "photo_mode::toggle_freeze"),
         Bool("freeze_dialogue_flow", "effects", &Config::freeze_dialogue_flow, "photo_mode::toggle_freeze"),
         Bool("stop_wwise_on_freeze", "effects", &Config::stop_wwise_on_freeze, "photo_mode::toggle_freeze"),
@@ -297,17 +323,46 @@ const std::vector<ConfigFieldSpec>& schema() {
              "photo_mode::toggle_freeze"),
         Bool("freeze_wind", "effects", &Config::freeze_wind, "photo_mode::toggle_freeze"),
         Bool("freeze_mpc", "effects", &Config::freeze_mpc, "photo_mode::toggle_freeze"),
+        Bool("freeze_cloth", "effects", &Config::freeze_cloth, "photo_mode::toggle_freeze"),
+        Bool("freeze_custom_cloth", "effects", &Config::freeze_custom_cloth, "photo_mode::toggle_freeze"),
+        Bool("freeze_wpo", "effects", &Config::freeze_wpo, "photo_mode::toggle_freeze"),
+        Bool("freeze_tonemapper_dither_off", "effects", &Config::freeze_tonemapper_dither_off,
+             "photo_mode::toggle_freeze"),
+        Bool("freeze_skeletal_animation", "effects", &Config::freeze_skeletal_animation, "photo_mode::toggle_freeze"),
+        Bool("freeze_motion_blur_off", "effects", &Config::freeze_motion_blur_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_aa_off", "effects", &Config::freeze_aa_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_wpo_velocity_off", "effects", &Config::freeze_wpo_velocity_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_framegen_off", "effects", &Config::freeze_framegen_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_dlss_off", "effects", &Config::freeze_dlss_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_lumen_screen_traces_off", "effects", &Config::freeze_lumen_screen_traces_off,
+             "photo_mode::toggle_freeze"),
+        Bool("freeze_lumen_short_range_ao_off", "effects", &Config::freeze_lumen_short_range_ao_off,
+             "photo_mode::toggle_freeze"),
+        Bool("freeze_lumen_radiance_cache_off", "effects", &Config::freeze_lumen_radiance_cache_off,
+             "photo_mode::toggle_freeze"),
+        Bool("freeze_lumen_fixed_jitter", "effects", &Config::freeze_lumen_fixed_jitter, "photo_mode::toggle_freeze"),
+        Bool("freeze_lumen_off", "effects", &Config::freeze_lumen_off, "photo_mode::toggle_freeze"),
+        Bool("freeze_lighting_ab_cycle", "effects", &Config::freeze_lighting_ab_cycle, "photo_mode::toggle_freeze"),
+        Number("freeze_lighting_ab_phase_seconds", "effects", &Config::freeze_lighting_ab_phase_seconds, 1.0, 120.0,
+               "photo_mode::tick"),
+        Bool("freeze_shadow_ab_cycle", "effects", &Config::freeze_shadow_ab_cycle, "photo_mode::toggle_freeze"),
+        Number("freeze_shadow_ab_phase_seconds", "effects", &Config::freeze_shadow_ab_phase_seconds, 1.0, 120.0,
+               "photo_mode::tick"),
         Bool("freeze_diag", "effects", &Config::freeze_diag, "photo_mode::tick"),
-        Bool("restore_fov_on_exit", "effects", &Config::restore_fov_on_exit, "photo_mode::leave"),
-        Bool("restore_view_on_exit", "effects", &Config::restore_view_on_exit, "photo_mode::leave"),
+        // ---- F7 画面定格（全线程冻结）----
+        Bool("frame_freeze_time_compensation", "effects", &Config::frame_freeze_time_compensation,
+             "mod_app::frame_freeze"),
+        Bool("frame_freeze_audio_suspend", "effects", &Config::frame_freeze_audio_suspend,
+             "mod_app::frame_freeze"),
+        Number("frame_freeze_timeout_seconds", "effects", &Config::frame_freeze_timeout_seconds, 5.0, 300.0,
+               "mod_app::frame_freeze"),
 
         // ---- [ui] ----
-        Bool("imgui_tab", "ui", &Config::imgui_tab, "imgui_tab.cpp"),
+        Bool("imgui_tab", "ui", &Config::imgui_tab, "mod_app::on_ui_init"),
         Enum("menu_language", "ui", &apply_menu_language, "pbzfm_client_lang"),
 
         // ---- [misc] ----
         Enum("log_level", "misc", &apply_log_level, "ue4ss_port::log"),
-        Bool("dry_run", "misc", &Config::dry_run, "engine_port"),
 
         // ---- 弃用：接受但忽略，每个键只告警一次 ----
         Deprecated("interval_ms", "已移除并忽略（旧版 ImGui 面板轮询间隔）"),
@@ -350,15 +405,41 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
     };
 
     // section 白名单：未知 section 报一次，但其中的键仍按已知键名解析（容错，不静默）
-    static const std::set<std::string> kKnownSections = {"keys", "control", "gamepad", "camera",
+    static const std::set<std::string> kKnownSections = {"keys", "control", "gamepad", "camera", "dof", "look",
                                                          "effects", "ui", "misc"};
     std::unordered_map<std::string, std::string> seen_keys;  // 键名 -> 首次出现的 section
+
+    // 旧版 [dof] 段与对焦/光圈键位：功能已移除（本作不支持引擎景深），
+    // 旧配置文件里若还留着这些键，合并成一条提示后静默忽略，不逐键警告。
+    static const std::set<std::string> kLegacyDofKeys = {
+        "dof_enabled",        "dof_focal_distance", "dof_fstop",        "dof_sensor_width",
+        "dof_focus_step",     "dof_aperture_step",  "key_focus_near",   "key_focus_far",
+        "key_aperture_open",  "key_aperture_close", "pad_focus_near",   "pad_focus_far",
+        "pad_aperture_open",  "pad_aperture_close"};
+
+    // 色差与胶片颗粒的滑条/配置键已移除（两个 pass 都被引擎档位钉死，永远不会出画面）。
+    // 旧 config.ini 里残留这两项时合并成一条提示后静默忽略，与 [dof] 的处理一致。
+    static const std::set<std::string> kLegacyLookKeys = {"chromatic_aberration", "film_grain"};
 
     // 按 schema 统一赋值：类型错误保留默认，数值超范围 clamp 到边界，弃用键只告警一次。
     const auto assign = [&result, &warn_once, &seen_keys](const std::string& key, const std::string& value,
                                                           const std::string& section) {
         const ConfigFieldSpec* spec = find_spec(key);
         if (spec == nullptr) {
+            if (kLegacyLookKeys.count(key) != 0) {
+                result.legacy_keys.push_back(key);
+                warn_once("legacy:look",
+                          "配置里的色差/胶片颗粒已移除（本作这两个后处理 pass 被引擎档位钉死，永远不会"
+                          "出画面），已忽略并将从 config.ini 清理");
+                return;
+            }
+            if (kLegacyDofKeys.count(key) != 0) {
+                result.legacy_keys.push_back(key);
+                warn_once("legacy:dof",
+                          "配置里的景深相关项已废弃（本作不支持引擎景深，功能已移除），已忽略并将从 "
+                          "config.ini 清理");
+                return;
+            }
             warn_once(key, "未知配置项已忽略：" + key);
             return;
         }
@@ -513,7 +594,7 @@ ConfigLoadResult load_config_file(const std::string& path) {
 std::string config_ini_text(const Config& c) {
     std::ostringstream out;
     out << "; ================================================================\n"
-        << "; " << PBZPM_VERSION << " 配置文件（UTF-8，可留空使用默认值）\n"
+        << "; " << PBZPM_VERSION_FULL << " 配置文件（UTF-8，可留空使用默认值）\n"
         << "; 改完存盘后按 F2 重进摄影模式即可生效（或重启游戏）\n"
         << "; ================================================================\n\n"
         << "[keys]\n"
@@ -521,6 +602,8 @@ std::string config_ini_text(const Config& c) {
         << "key_toggle = " << c.key_toggle << "\n"
         << "; 冻结/恢复时间\n"
         << "key_freeze = " << c.key_freeze << "\n"
+        << "; 画面定格/恢复（挂起本进程除热键线程外的所有线程，屏幕停在最后一帧；再按恢复）\n"
+        << "key_frame_freeze = " << c.key_frame_freeze << "\n"
         << "; 重置相机到进入摄影模式时位置/朝向/FOV\n"
         << "key_reset = " << c.key_reset << "\n"
         << "; 滚转归零（水平校正）：只把滚转回 0，位置/俯仰/偏航/FOV 不动\n"
@@ -540,24 +623,37 @@ std::string config_ini_text(const Config& c) {
         << "; 升降（translate=相机上下平移，look=俯仰）：默认鼠标左键上/右键下\n"
         << "; 可写键盘键名（PAGE_UP/PAGE_DOWN 等）或鼠标键 MOUSE_LEFT/MOUSE_RIGHT/MOUSE_MIDDLE/MOUSE_X1/MOUSE_X2\n"
         << "key_vertical_up = " << c.key_vertical_up << "\n"
-        << "key_vertical_down = " << c.key_vertical_down << "\n\n"
+        << "key_vertical_down = " << c.key_vertical_down << "\n"
+        << "; 移动/变速/自由视角门控（2.0 起可配）：默认 W/S/A/D 平移、SHIFT 加速、CONTROL 减速、ALT 转视角门控\n"
+        << "key_move_forward = " << c.key_move_forward << "\n"
+        << "key_move_back = " << c.key_move_back << "\n"
+        << "key_move_left = " << c.key_move_left << "\n"
+        << "key_move_right = " << c.key_move_right << "\n"
+        << "key_boost = " << c.key_boost << "\n"
+        << "key_slow = " << c.key_slow << "\n"
+        << "key_free_look = " << c.key_free_look << "\n"
+        << "; 景深/手动对焦：PAGE_UP 对焦拉近 / PAGE_DOWN 对焦拉远；[ 开大光圈（更虚化）/ ] 收小光圈（更实）\n"
         << "[control]\n"
-        << "; 常规移动速度（单位/秒）；按住 Shift 加速、Ctrl 减速\n"
+        << "; 常规移动速度（单位/秒）；按住 key_boost 加速、key_slow 减速\n"
         << "move_speed = " << c.move_speed << "\n"
         << "boost_mult = " << c.boost_mult << "\n"
         << "slow_mult = " << c.slow_mult << "\n"
-        << "; 按住 Ctrl（手柄为按下右摇杆 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细\n"
+        << "; 按住减速键（默认 Ctrl；手柄为 pad_slow，默认 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细\n"
         << "slow_look_mult = " << c.slow_look_mult << "\n"
         << "; 每单位鼠标位移转多少度\n"
         << "look_sensitivity = " << c.look_sensitivity << "\n"
         << "pitch_limit = " << c.pitch_limit << "\n"
         << "invert_y = " << (c.invert_y ? "true" : "false") << "\n"
-        << "; 必须按住 Alt 才能自由转视角\n"
+        << "; 自由转视角必须按住 key_free_look（默认 ALT）才能动鼠标；false = 不按键也能转\n"
         << "free_look_requires_alt = " << (c.free_look_requires_alt ? "true" : "false") << "\n"
         << "; 进入摄影模式时屏蔽角色移动/视角输入（退出时还原）\n"
         << "block_game_input = " << (c.block_game_input ? "true" : "false") << "\n"
         << "; 升降键行为（具体键位见 [keys] 的 key_vertical_up/down）：translate=相机上下平移，look=俯仰\n"
         << "mouse_vertical_mode = " << mouse_vertical_mode_name(c.mouse_vertical_mode) << "\n"
+        << "; 鼠标滚轮调整 FOV（默认向上缩小/拉近、向下放大）；false = 滚轮不参与 FOV\n"
+        << "wheel_fov = " << (c.wheel_fov ? "true" : "false") << "\n"
+        << "; 滚轮方向反转（true = 向上放大 FOV、向下缩小）\n"
+        << "wheel_fov_invert = " << (c.wheel_fov_invert ? "true" : "false") << "\n"
         << "vertical_speed = " << c.vertical_speed << "\n"
         << "; 滚转相机速度（度/秒）：默认 E 顺时针，Q 逆时针（键位见 [keys] key_roll_left/right）；Shift 加速 / Ctrl 减速同样生效\n"
         << "roll_speed = " << c.roll_speed << "\n"
@@ -588,19 +684,43 @@ std::string config_ini_text(const Config& c) {
         << "; 左右转视角（按住持续转）：十字键左 = 左转 / 右 = 右转\n"
         << "pad_yaw_left = " << c.pad_yaw_left << "\n"
         << "pad_yaw_right = " << c.pad_yaw_right << "\n"
+        << "; 滚转（按住持续转）：默认 RB 顺时针 / LB 逆时针\n"
+        << "pad_roll_left = " << c.pad_roll_left << "\n"
+        << "pad_roll_right = " << c.pad_roll_right << "\n"
+        << "; 变速：默认 LS（左摇杆按下）加速 / RS（右摇杆按下）减速；两键同按是进出模式组合键，不触发变速\n"
+        << "pad_boost = " << c.pad_boost << "\n"
+        << "pad_slow = " << c.pad_slow << "\n"
+        << "; 升降：默认 RT 上 / LT 下；单键绑定 RT/LT 保留模拟量行程，换其它按钮则为按下/松开\n"
+        << "pad_vertical_up = " << c.pad_vertical_up << "\n"
+        << "pad_vertical_down = " << c.pad_vertical_down << "\n"
         << "; 右摇杆转视角速度（度/秒，全行程）\n"
         << "pad_look_speed = " << c.pad_look_speed << "\n"
         << "; 左摇杆移动速度占 move_speed 的比例\n"
         << "pad_move_scale = " << c.pad_move_scale << "\n"
         << "; 摇杆死区（0~0.5，摇杆有漂移就调大）\n"
-        << "pad_deadzone = " << c.pad_deadzone << "\n\n"
+        << "pad_deadzone = " << c.pad_deadzone << "\n"
+        << "; 景深/对焦：LB+BACK 对焦拉近 / LB+START 对焦拉远；RB+BACK 开大光圈 / RB+START 收小光圈\n"
         << "[camera]\n"
         << "fov_default = " << c.fov_default << "\n"
         << "fov_min = " << c.fov_min << "\n"
         << "fov_max = " << c.fov_max << "\n"
         << "fov_step = " << c.fov_step << "\n"
         << "; 超宽屏（21:9/32:9）：进入摄影模式时解除游戏 16:9 画幅锁定（消除两侧黑边），退出还原\n"
-        << "ultrawide_unlock = " << (c.ultrawide_unlock ? "true" : "false") << "\n\n"
+        << "ultrawide_unlock = " << (c.ultrawide_unlock ? "true" : "false") << "\n"
+        << "; 接管当前相机（UUU 式）：true=不 spawn 独立相机、不切 ViewTarget，每帧写当前相机 POV；\n"
+        << "; 进入时接管失败会自动回退到独立相机（spawn + SetViewTargetWithBlend）。false=始终用独立相机\n"
+        << "takeover_current_camera = " << (c.takeover_current_camera ? "true" : "false") << "\n\n"
+        << "[look]\n"
+        << "; 暗角强度（0=关闭，1~3 明显；走后处理体积通道，本作 gameplay 视图实测有效）\n"
+        << "vignette = " << c.vignette << "\n\n"
+        << "; 饱和度倍率（1=原样，<1 去色，>1 更艳）\n"
+        << "saturation = " << c.saturation << "\n\n"
+        << "; 对比度倍率（1=原样）\n"
+        << "contrast = " << c.contrast << "\n\n"
+        << "; 泛光强度（0=不覆盖，1~5 明显）\n"
+        << "bloom = " << c.bloom << "\n\n"
+        << "; 冷暖色调（-1 偏冷，0=不覆盖，+1 偏暖）\n"
+        << "temperature = " << c.temperature << "\n\n"
         << "[effects]\n"
         << "hide_player = " << (c.hide_player ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"
@@ -644,20 +764,75 @@ std::string config_ini_text(const Config& c) {
         << "; 冻结时钉住材质参数集合（MPC）当前值，冻结期每帧写回快照，压制实时驱动参数\n"
         << "; 继续推布料/植被摆动；解冻释放\n"
         << "freeze_mpc = " << (c.freeze_mpc ? "true" : "false") << "\n"
+        << "; 冻结时挂起角色/敌人的布料模拟（SkeletalMeshComponent clothing simulation 与\n"
+        << "; ChaosClothComponent 独立模拟），保留最后一次模拟姿态；解冻恢复\n"
+        << "freeze_cloth = " << (c.freeze_cloth ? "true" : "false") << "\n"
+        << "; 冻结时额外处理 PBZ 自定义布料/摆动 + 毛发/粒子：Sway 组件 tick（按类名全对象扫描找）、\n"
+        << "; r.Cloth.Enable 全局开关、Groom 毛发模拟、Niagara 粒子暂停。\n"
+        << "; 1.0.76 起不再写 pbz.Sway.SkipSkeletalKinematicBoneUpdate（会让布料件整体换位）\n"
+        << "freeze_custom_cloth = " << (c.freeze_custom_cloth ? "true" : "false") << "\n"
+        << "; 冻结时关闭 WPO 评估（SkeletalMesh + StaticMesh/植被/地形图元），排查材质顶点动画闪烁\n"
+        << "freeze_wpo = " << (c.freeze_wpo ? "true" : "false") << "\n"
+        << "; 冻结时把 r.Tonemapper.Quality 从 5 降到 4（去掉 GrainJitter 逐帧抖动）并关 Backbuffer 量化抖动\n"
+        << "freeze_tonemapper_dither_off = " << (c.freeze_tonemapper_dither_off ? "true" : "false") << "\n"
+        << "; 冻结时暂停全部 SkeletalMesh 的动画/骨骼 pose（bPauseAnims/bNoSkeletonUpdate），\n"
+        << "; 防止骨骼驱动的衣摆/披风在暂停下继续流动；解冻恢复\n"
+        << "freeze_skeletal_animation = " << (c.freeze_skeletal_animation ? "true" : "false") << "\n"
+        << "; 冻结时关闭动态模糊（r.MotionBlurQuality=0），消除残留速度缓冲造成的流动拖影；解冻还原\n"
+        << "freeze_motion_blur_off = " << (c.freeze_motion_blur_off ? "true" : "false") << "\n"
+        << "; 冻结时关 AA：r.AntiAliasingMethod=0，并直接改 PPV/相机 POV 的 FPostProcessSettings\n"
+        << "; （AA/动态模糊/Lumen/反射），防止 PPV override 让 cvar 失效；解冻/退出按原值还原\n"
+        << "freeze_aa_off = " << (c.freeze_aa_off ? "true" : "false") << "\n"
+        << "; 冻结时临时关闭 WPO/Nanite WPO/植被/毛发的速度输出（r.Velocity.EnableVertexDeformation 等）：\n"
+        << "; 用于 A/B 判断暂停期假运动向量；解冻/退出按原值还原。默认 false\n"
+        << "freeze_wpo_velocity_off = " << (c.freeze_wpo_velocity_off ? "true" : "false") << "\n"
+        << "; 冻结时抑制帧生成（r.PBZ.SuppressFrameGen=1 + 显式关 DLSSG/FSR-FI），解冻/退出还原。默认 true：\n"
+        << "; 静止拍照不需要插帧，FG 还可能放大/制造闪烁；关 false 可保留插帧\n"
+        << "freeze_framegen_off = " << (c.freeze_framegen_off ? "true" : "false") << "\n"
+        << "; 冻结时临时关闭 DLSS 超分（r.NGX.DLSS.Enable=0），解冻/退出还原。默认 false；\n"
+        << "; 若日志显示 DLSS 开启且闪烁仍在，可临时设 true 做 A/B\n"
+        << "freeze_dlss_off = " << (c.freeze_dlss_off ? "true" : "false") << "\n"
+        << "; ---- 光照 A/B（Lumen / 屏幕空间光照）：冻结时临时改光照 CVar，解冻/退出按原值还原 ----\n"
+        << "; 关 Lumen 屏幕空间追踪（GI/反射的 ScreenTraces 归零，保留距离场追踪）\n"
+        << "freeze_lumen_screen_traces_off = " << (c.freeze_lumen_screen_traces_off ? "true" : "false") << "\n"
+        << "; 关 Lumen 短距屏幕空间 AO（ShortRangeAO / DiffuseIndirect.SSAO / r.AmbientOcclusionLevels）\n"
+        << "freeze_lumen_short_range_ao_off = " << (c.freeze_lumen_short_range_ao_off ? "true" : "false") << "\n"
+        << "; 关 Lumen 屏幕探针辐射缓存（逐帧更新、易在细几何上闪）\n"
+        << "freeze_lumen_radiance_cache_off = " << (c.freeze_lumen_radiance_cache_off ? "true" : "false") << "\n"
+        << "; 固定 Lumen 抖动/状态帧（FixedJitterIndex/FixedStateFrameIndex=0），判断是否逐帧随机采样\n"
+        << "freeze_lumen_fixed_jitter = " << (c.freeze_lumen_fixed_jitter ? "true" : "false") << "\n"
+        << "; 关 Lumen GI/反射总开关（DiffuseIndirect.Allow / Reflections.Allow / 方法 CVar）\n"
+        << "freeze_lumen_off = " << (c.freeze_lumen_off ? "true" : "false") << "\n"
+        << "; 冻结期自动轮换光照阶段：原始→屏幕追踪→短距AO→辐射缓存→固定抖动→Lumen全关（诊断用）\n"
+        << "freeze_lighting_ab_cycle = " << (c.freeze_lighting_ab_cycle ? "true" : "false") << "\n"
+        << "; 自动轮换每阶段持续秒数（1..120）\n"
+        << "freeze_lighting_ab_phase_seconds = " << c.freeze_lighting_ab_phase_seconds << "\n"
+        << "; ---- 阴影/后处理 A/B：Lumen 之外的第二层（SMRT→VSM 缓存→VSM→全部阴影→接触阴影→体积雾→后处理） ----\n"
+        << "; 冻结期自动轮换阴影/后处理阶段（诊断用；与 freeze_lighting_ab_cycle 二选一）\n"
+        << "freeze_shadow_ab_cycle = " << (c.freeze_shadow_ab_cycle ? "true" : "false") << "\n"
+        << "; 阴影/后处理轮换每阶段持续秒数（1..120）\n"
+        << "freeze_shadow_ab_phase_seconds = " << c.freeze_shadow_ab_phase_seconds << "\n"
         << "; 冻结诊断（默认关闭）：风源/MPC 参数变化/相机修饰器状态/视角微动；\n"
         << "; 开启后状态翻转时输出，持续期每 10 秒最多一条（诊断需反射扫描，频繁输出会拖帧）\n"
         << "freeze_diag = " << (c.freeze_diag ? "true" : "false") << "\n"
-        << "restore_fov_on_exit = " << (c.restore_fov_on_exit ? "true" : "false") << "\n"
-        << "restore_view_on_exit = " << (c.restore_view_on_exit ? "true" : "false") << "\n\n"
+        << "; ---- F7 画面定格（全线程冻结）：参考 PBZ Pause 的“进程级硬冻结 + 时间 API 补偿” ----\n"
+        << "; 定格期间冻结 QueryPerformanceCounter/GetTickCount/GetTickCount64/timeGetTime，\n"
+        << "; 恢复时把定格时长从返回值里扣掉，避免动画/物理/计时器把整段定格当成一次巨大 delta。\n"
+        << "; 注意：只适用于 F7 这种连渲染线程一起停的定格；摄影模式的引擎暂停不会用这套钩子。\n"
+        << "frame_freeze_time_compensation = " << (c.frame_freeze_time_compensation ? "true" : "false") << "\n"
+        << "; F7 定格前若摄影模式没挂 Wwise，则由 F7 调用 AK::SoundEngine::Suspend(true,false) 静音，恢复时唤醒\n"
+        << "frame_freeze_audio_suspend = " << (c.frame_freeze_audio_suspend ? "true" : "false") << "\n"
+        << "; F7 定格安全阀（秒）：即使恢复热键收不到，也会在超时后自动恢复，避免只能结束进程（5~300）\n"
+        << "frame_freeze_timeout_seconds = " << c.frame_freeze_timeout_seconds << "\n\n"
         << "[ui]\n"
-        << "; UE4SS 控制台里的 ImGui 诊断面板（需要 UE4SS 控制台窗口）；游戏内无菜单，纯快捷键操作\n"
+        << "; UE4SS 控制台里的只读诊断面板（需要 UE4SS 控制台窗口）；false=不注册该 tab\n"
+        << "; 游戏内无菜单，纯快捷键操作；可写设置的唯一入口是 PBZFM 菜单页\n"
         << "imgui_tab = " << (c.imgui_tab ? "true" : "false") << "\n"
         << "; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id\n"
         << ";（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）\n"
         << "menu_language = " << c.menu_language << "\n\n"
         << "[misc]\n"
-        << "log_level = " << log_level_name(c.log_level) << "\n"
-        << "dry_run = " << (c.dry_run ? "true" : "false") << "\n";
+        << "log_level = " << log_level_name(c.log_level) << "\n";
     return out.str();
 }
 

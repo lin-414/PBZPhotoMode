@@ -1,8 +1,12 @@
 // win_input 的纯翻译逻辑（XInput 状态 → PadState、短轴归一化、扳机阈值、死区边界）。
 // 这些函数原本只在 UE4SS DLL 里编译，无法离线覆盖；抽到 core/gamepad 后与 Win32 解耦。
 #include <cmath>
+#include <string>
+#include <vector>
 
+#include "core/config.h"
 #include "core/gamepad.h"
+#include "core/input_logic.h"
 #include "tests/test_harness.h"
 
 namespace {
@@ -138,6 +142,32 @@ void test_dinput_axis_bounds() {
     CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRy, 32767), 32767.0 / 65535.0, 1e-9);
 }
 
+// KeyMap 的 pad_* 初值是解析失败时的回退值，必须与 Config 默认字符串解析出的结果一致。
+// 二者一旦漂移，ini 写错时手柄会静默换一套键位（历史缺陷：focus_near/far 漏掉 LB 肩键，
+// aperture_open 把 RB 写成 LB），且不会有任何报错。
+void test_pad_combo_fallback_matches_config() {
+    section("手柄组合键回退值与 Config 默认值一致");
+
+    Config good;  // 全部字段使用默认字符串
+    std::vector<std::string> warnings;
+    const KeyMap from_config = build_keymap(good, &warnings);
+    CHECK(from_config.all_resolved);
+
+    Config bad = good;
+    bad.pad_roll_left = "NOT_A_BUTTON";
+    bad.pad_roll_right = "NOT_A_BUTTON";
+    bad.pad_pitch_up = "NOT_A_BUTTON";
+    bad.pad_pitch_down = "NOT_A_BUTTON";
+    warnings.clear();
+    const KeyMap fallback = build_keymap(bad, &warnings);
+    CHECK(!fallback.all_resolved);  // 解析失败必须被记录
+
+    CHECK(fallback.pad_roll_left == from_config.pad_roll_left);
+    CHECK(fallback.pad_roll_right == from_config.pad_roll_right);
+    CHECK(fallback.pad_pitch_up == from_config.pad_pitch_up);
+    CHECK(fallback.pad_pitch_down == from_config.pad_pitch_down);
+}
+
 }  // namespace
 
 void run_input_pure_tests() {
@@ -147,4 +177,5 @@ void run_input_pure_tests() {
     test_pad_held_threshold();
     test_deadzone_boundary();
     test_dinput_axis_bounds();
+    test_pad_combo_fallback_matches_config();
 }

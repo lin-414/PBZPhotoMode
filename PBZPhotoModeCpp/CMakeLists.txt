@@ -34,22 +34,8 @@ if (PBZPM_BUILD_TESTS)
         tests/test_pbzfm_validation.cpp
     )
     target_link_libraries(pbzpm_tests PRIVATE pbzpm_core)
-    enable_testing()
-    add_test(NAME pbzpm_core COMMAND pbzpm_tests)
-endif()
-
-# ---------------------------------------------------------------- ImGui（自带拷贝：仅 UE4SS 控制台诊断面板用，纯核心源文件）
-# 游戏内图形菜单已移除（v1.8.0 判死、v1.8.1 代码清除），不再需要 DX11/DX12/Win32 后端。
-set(PBZPM_IMGUI_SOURCES
-    third_party/imgui/imgui.cpp
-    third_party/imgui/imgui_draw.cpp
-    third_party/imgui/imgui_tables.cpp
-    third_party/imgui/imgui_widgets.cpp
-)
-add_library(pbzpm_imgui STATIC ${PBZPM_IMGUI_SOURCES})
-target_include_directories(pbzpm_imgui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
-if (MSVC)
-    set_source_files_properties(${PBZPM_IMGUI_SOURCES} PROPERTIES COMPILE_OPTIONS "/W3")
+    # 不注册 ctest：本项目的测试入口统一是 tools/build_tests.bat，
+    # 全仓对 ctest/add_test 的引用为 0（原 enable_testing()/add_test 是死接线）。
 endif()
 
 # ---------------------------------------------------------------- UE4SS DLL
@@ -62,6 +48,23 @@ if (PBZPM_WITH_UE4SS)
     endif()
     add_subdirectory(${PBZPM_UE4SS_DIR} ${CMAKE_BINARY_DIR}/ue4ss)
 
+    # ---- ImGui（自带拷贝，只编 4 个核心源文件）
+    # 两条消费路径：① UE4SS 控制台的 mod tab（ui_tab.cpp / mod_app.cpp）
+    #               ② PBZFM 框架自绘设置页（pbzfm_client.cpp 借框架的 ImGui 上下文）
+    # 本 mod 不自建覆盖层，故不编 backends/DX11/DX12/Win32（那 6 个文件已删除）。
+    # 位置在 WITH_UE4SS 守卫内：纯核心测试构建不链接 imgui，不该为它白编 39k 行。
+    set(PBZPM_IMGUI_SOURCES
+        third_party/imgui/imgui.cpp
+        third_party/imgui/imgui_draw.cpp
+        third_party/imgui/imgui_tables.cpp
+        third_party/imgui/imgui_widgets.cpp
+    )
+    add_library(pbzpm_imgui STATIC ${PBZPM_IMGUI_SOURCES})
+    target_include_directories(pbzpm_imgui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/third_party/imgui)
+    if (MSVC)
+        set_source_files_properties(${PBZPM_IMGUI_SOURCES} PROPERTIES COMPILE_OPTIONS "/W3")
+    endif()
+
     add_library(PBZPhotoModeCpp SHARED
         dllmain.cpp
         # Ue4ssPort 实现按子系统拆分，共享 helper 在 ue4ss_port_internal.h
@@ -72,6 +75,7 @@ if (PBZPM_WITH_UE4SS)
         src/engine/ue4ss_port_micro_motion.cpp    # shake/风/MPC/POV 微动
         src/engine/ue4ss_port_audio.cpp           # Wwise 音频
         src/engine/ue4ss_port_diagnostics.cpp     # 冻结诊断/状态转储
+        src/engine/process_freeze.cpp             # F7 画面定格（全线程冻结 + 时间 API 补偿）
         src/mod_app.cpp
         src/pbzfm_client.cpp
         src/ui_tab.cpp

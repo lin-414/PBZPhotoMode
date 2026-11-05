@@ -45,14 +45,12 @@ public:
     // 注册线程与框架渲染线程都会进来；写侧由 write_mutex_ 串行化。
     void RescanLanguages(const std::string& mod_dir, bool force);
 
+    // 选语言只走 id（SetLanguageById / CurrentId）：重扫词典可能重排语言表，
+    // 用下标会在重排后静默选错语言（原 LanguageId/LanguageDisplay/SetLanguage/CurrentIndex 已删）。
     int LanguageCount() const;
-    std::string LanguageId(int index) const;       // 越界返回空串
-    std::string LanguageDisplay(int index) const;  // 越界返回空串
     std::vector<LanguageInfo> Languages() const;   // 同一快照内的一致性列表
     int FindLanguage(const char* id) const;        // 未加载返回 -1（空串/nullptr 同）
-    void SetLanguage(int index);                   // 越界归位到 0（无词典时保持 0）
     void SetLanguageById(const std::string& id);    // 未找到归位到 0；重扫重排不会错位
-    int CurrentIndex() const;
     std::string CurrentId() const;
 
     // 查译：当前语言 → en-US → 原样返回键名。
