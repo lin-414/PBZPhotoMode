@@ -478,6 +478,9 @@ void PhotoModeMod::on_game_viewport_tick_post() {
     // MPC 快照必须在 World Tick 之后写：游戏在 World Tick 里会覆盖参数，写在 pre-tick 会被下一帧盖回去。
     mode_->reassert_mpc_hold_if_needed();
     port_->write_takeover_pov_now();
+    // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建：暗角/泛光这类被游戏镜头
+    // PostProcessSettings 覆盖的项必须在这里每帧重申（体积通道会被 POV 最后覆盖）。
+    port_->apply_look_to_camera_pov();
     // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建，AA/动态模糊/Lumen 覆盖也在这里重申。
     port_->post_process_override_tick();
 }

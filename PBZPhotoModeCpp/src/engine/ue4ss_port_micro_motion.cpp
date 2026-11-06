@@ -468,6 +468,10 @@ auto render_state_text() -> std::string {
                             "r.XeSS.Enabled",
                             "r.XeFG.Enabled",
                             "r.Tonemapper.Quality",
+                            // 暗角/泛光在 FSceneView::EndFinalPostprocessSettings 的最后一道闸门：
+                            // r.Tonemapper.Quality<2 会把 VignetteIntensity 清零；r.BloomQuality<=0
+                            // 会把 BloomIntensity 清零。打出来供排障（不改档位）。
+                            "r.BloomQuality",
                             "r.BackbufferQuantizationDitheringOverride"});
 }
 

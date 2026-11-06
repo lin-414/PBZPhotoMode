@@ -951,13 +951,29 @@ bool Ue4ssPort::ensure_post_volume() {
 
     post_volume_ = actor;
     // 无界 + 极高优先级 + 全权重：覆盖整张画面并压过关卡自带的体积。
-    (void)write_bool(find_property(actor, "bEnabled"), actor, true);
-    (void)write_bool(find_property(actor, "bUnbound"), actor, true);
-    (void)write_number(find_property(actor, "Priority"), actor, 10000.0);
-    (void)write_number(find_property(actor, "BlendWeight"), actor, 1.0);
+    const bool enabled_ok = write_bool(find_property(actor, "bEnabled"), actor, true);
+    const bool unbound_ok = write_bool(find_property(actor, "bUnbound"), actor, true);
+    const bool priority_ok = write_number(find_property(actor, "Priority"), actor, 10000.0);
+    const bool weight_ok = write_number(find_property(actor, "BlendWeight"), actor, 1.0);
+    // 体积是否真的成为「无界 + 启用」：bUnbound 写失败时 AVolume 没有 Brush，范围为空，
+    // Settings 里写什么都进不了画面（日志会看到「回读正常但画面无变化」）。这条诊断把该情况分开。
+    double enabled = -1.0, unbound = -1.0, priority = -1.0, weight = -1.0;
+    (void)read_number(find_property(actor, "bEnabled"), actor, enabled);
+    (void)read_number(find_property(actor, "bUnbound"), actor, unbound);
+    (void)read_number(find_property(actor, "Priority"), actor, priority);
+    (void)read_number(find_property(actor, "BlendWeight"), actor, weight);
     if (!post_volume_diag_logged_) {
         post_volume_diag_logged_ = true;
-        log(LogLevel::Info, "画面效果：已生成高优先级无界后处理体积（priority=10000），退出摄影模式时销毁");
+        char buf[220]{};
+        std::snprintf(buf, sizeof(buf),
+                      "画面效果：自建后处理体积 enabled=%.0f unbound=%.0f priority=%.0f blend=%.2f"
+                      "（写入=%d/%d/%d/%d）",
+                      enabled, unbound, priority, weight, enabled_ok ? 1 : 0, unbound_ok ? 1 : 0,
+                      priority_ok ? 1 : 0, weight_ok ? 1 : 0);
+        log(LogLevel::Info, buf);
+        if (unbound != 1.0 || enabled != 1.0) {
+            log(LogLevel::Warn, "画面效果：后处理体积的 bEnabled/bUnbound 回读不是 1，体积范围为空，画面效果可能不生效");
+        }
     }
     return true;
 }
@@ -973,7 +989,10 @@ void Ue4ssPort::destroy_post_volume() {
 }
 
 bool Ue4ssPort::set_look(const LookOptions& options) {
-    if (!options.any_active() && !look_active_) return true;
+    look_current_ = options;
+    const bool was_active = look_active_;
+    look_active_ = options.any_active();
+    if (!options.any_active() && !was_active) return true;
     // 复用景深那个自建后处理体积：本作 gameplay 视图里体积通道是唯一被证实能出画面的后处理路径
     // （探针第 2 段往它写 VignetteIntensity=3，用户看到「四周变暗」）。
     if (!ensure_post_volume()) return false;
@@ -1150,6 +1169,74 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
     }
 
     return true;
+}
+
+// 画面效果的「相机 POV」重申通道。
+// 为什么需要第二通道：UE 的最终后处理顺序是
+//   后处理体积（UWorld::AddPostProcessingSettings）
+//   → 相机 POV 的 PostProcessSettings（ULocalPlayer::CalcSceneView 里 weight=1 的 OverridePostProcessSettings，最后覆盖体积）
+//   → FSceneView::EndFinalPostprocessSettings（按 r.BloomQuality / r.Tonemapper.Quality / ShowFlags 做最后清零）
+// 本作的暗角/泛光强度在画面里始终存在（Phantom Tweaks 等工具也是通过改游戏自己的画质/镜头参数
+// 来关掉它们）；若强度来自相机 POV 的 PostProcessSettings，只写自建体积就会出现「体积里读回
+// 2.00/10.00 都成功，但渲染前被 POV 同名字段盖回去」的现象。即使强度不在 POV 上，POV 也是
+// 体积之后最后生效的一份设置，写这里能保证覆盖任何体积。POV 每帧被 UpdateCamera 整份重建，
+// 因此必须在本 Mod 已有的 GameViewportClient Tick 之后写点（UpdateCamera 之后、RedrawViewports
+// 之前）每帧重申。
+void Ue4ssPort::apply_look_to_camera_pov() {
+    if (!look_active_) return;
+    // 只有暗角/泛光需要 POV 通道；其余三项仍走体积（POV 每帧重建，不做无谓写入）。
+    if (!look_current_.vignette_active() && !look_current_.bloom_active()) return;
+
+    PovView pv;
+    if (!resolve_pov_view(pv)) return;
+    FProperty* settings = struct_member(pv.pov, "PostProcessSettings");
+    void* base = struct_member_base(settings, pv.base);
+    if (settings == nullptr || base == nullptr) return;
+
+    // 首帧先把游戏相机自己的值记下来：如果这里显示暗角/泛光的 bOverride=1 且值明显偏离 0，
+    // 就能直接证明「体积被相机 POV 覆盖」这个根因（只读，不写）。
+    double game_vignette = -1.0, game_bloom = -1.0, game_vignette_override = -1.0, game_bloom_override = -1.0;
+    double pov_blend_weight = -1.0;
+    if (!look_pov_logged_) {
+        (void)read_number(struct_member(settings, "VignetteIntensity"), base, game_vignette);
+        (void)read_number(struct_member(settings, "BloomIntensity"), base, game_bloom);
+        (void)read_number(struct_member(settings, "bOverride_VignetteIntensity"), base, game_vignette_override);
+        (void)read_number(struct_member(settings, "bOverride_BloomIntensity"), base, game_bloom_override);
+        (void)read_number(struct_member(pv.pov, "PostProcessBlendWeight"), pv.base, pov_blend_weight);
+    }
+
+    auto set_scalar = [&](const char* override_name, const char* value_name, double value) {
+        FProperty* override_prop = struct_member(settings, override_name);
+        FProperty* value_prop = struct_member(settings, value_name);
+        if (override_prop == nullptr || value_prop == nullptr) return false;
+        const bool override_ok = write_bool(override_prop, base, true);
+        const bool value_ok = write_number(value_prop, base, value);
+        return override_ok && value_ok;
+    };
+
+    bool wrote = false;
+    if (look_current_.vignette_active()) {
+        wrote = set_scalar("bOverride_VignetteIntensity", "VignetteIntensity", look_current_.vignette) || wrote;
+    }
+    if (look_current_.bloom_active()) {
+        wrote = set_scalar("bOverride_BloomIntensity", "BloomIntensity", look_current_.bloom) || wrote;
+    }
+    if (wrote && !look_pov_logged_) {
+        look_pov_logged_ = true;
+        double v = -1.0, b = -1.0, vf = -1.0, bf = -1.0;
+        (void)read_number(struct_member(settings, "VignetteIntensity"), base, v);
+        (void)read_number(struct_member(settings, "BloomIntensity"), base, b);
+        (void)read_number(struct_member(settings, "bOverride_VignetteIntensity"), base, vf);
+        (void)read_number(struct_member(settings, "bOverride_BloomIntensity"), base, bf);
+        char buf[480]{};
+        std::snprintf(buf, sizeof(buf),
+                      "画面效果：相机 POV 通道已启用（每帧写 CameraCache.POV.PostProcessSettings，优先于体积）；"
+                      "游戏 POV 原值 暗角=%.2f(覆盖%.0f) 泛光=%.2f(覆盖%.0f) PP权重=%.2f → "
+                      "回读 暗角=%.2f(覆盖%.0f) 泛光=%.2f(覆盖%.0f)",
+                      game_vignette, game_vignette_override, game_bloom, game_bloom_override, pov_blend_weight,
+                      v, vf, b, bf);
+        log(LogLevel::Info, buf);
+    }
 }
 
 bool Ue4ssPort::leave_camera_takeover() {

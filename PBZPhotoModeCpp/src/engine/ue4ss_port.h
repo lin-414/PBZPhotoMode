@@ -78,12 +78,19 @@ public:
     // RedrawViewports 之前）：这是唯一能把 POV 写进“本帧渲染”的时机。
     void write_takeover_pov_now();
 
-    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖）：全部写进自建后处理体积。
-    // 这条通道已实测在本作 gameplay 视图里生效（暗角探针证明）。
+    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖）：写进自建后处理体积。
+    // 体积之后还有相机 POV 的 PostProcessSettings（weight=1，最后覆盖体积）；本作画面里的暗角/泛光
+    // 由游戏自己的镜头/画质设置提供，因此 set_look 额外把这两项写进 CameraCache.POV，且在 GVC Tick 后每帧重申。
     bool set_look(const LookOptions& options) override;
+    // 画面效果：把暗角/泛光写进本帧相机 POV 的 PostProcessSettings（GameViewportClient Tick 之后、
+    // RedrawViewports 之前调用；POV 每帧由 UpdateCamera 重建，必须每帧重申）。
+    void apply_look_to_camera_pov();
     bool look_active_{false};
     bool look_logged_{false};
     bool look_missing_logged_{false};
+    // 最近一次 set_look 的参数：POV 每帧重申要用（体积只在值变化时写，POV 则每帧写）。
+    LookOptions look_current_{};
+    bool look_pov_logged_{false};
     // 每次“写入值发生变化”都回读一遍体积里的实际值：写入成功不等于引擎认账
     //（hotfix29 实机：色差 1.98 / 颗粒 7.68 / 饱和 0.74 / 对比 0.81 全都写了却没画面变化，
     //  必须先分清「没写进去」和「写进去了被引擎档位跳过」）。
