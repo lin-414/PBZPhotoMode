@@ -906,7 +906,20 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
         }
     }
 
+    // PBZFM 菜单是“同一进程内的覆盖窗”：Win32InputSource 的 foreground_is_ours()
+    // 对它同样返回真，而鼠标键走 GetAsyncKeyState 全量轮询（VK 1..255）——
+    // 菜单里的左键会直接命中 key_vertical_up（默认 MOUSE_LEFT）→ 相机上升。
+    // 菜单可见期间暂停采集（框架 v1+ 导出 PBZFM_IsMenuOpen），关菜单后恢复。
+    const bool pbzfm_menu_open = pbzfm_ != nullptr && pbzfm_->menu_open();
+    if (pbzfm_menu_open != menu_open_last_) {
+        menu_open_last_ = pbzfm_menu_open;
+        port_->log(LogLevel::Info,
+                   pbzfm_menu_open ? "PBZFM 菜单已打开：摄影模式输入暂停（菜单里的键鼠/手柄不再驱动相机）"
+                                   : "PBZFM 菜单已关闭：摄影模式输入恢复");
+    }
+
     if (input_source_ != nullptr) {
+        input_source_->set_ui_open(pbzfm_menu_open);
         input_source_->poll(input_, cfg.pad_enabled);
         // DInput 后端的一次性诊断（接入成功/初始化失败时各产出一条）
         std::string pad_diag;
@@ -950,7 +963,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     // 重要：**没进摄影模式时绝不碰引擎**。上一版（1.0.4）在这里无条件调用，
     // 结果游戏刚启动、UWorld 都还没有的时候就去 FindAllOf(PlayerController)，
     // 直接崩在 UE4SS.dll 里（crash_2026_10_30_09_49_58 那次）。
-    if (mode_ != nullptr && mode_->active()) {
+    if (mode_ != nullptr && mode_->active() && !pbzfm_menu_open) {
         if (port_->read_mouse_delta(engine_dx_, engine_dy_)) {
             engine_delta_ok_ = true;
             engine_delta_missing_accum_ = 0.0;
@@ -969,22 +982,31 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
         }
     } else {
         engine_delta_missing_accum_ = 0.0;  // 不在摄影模式不累计；再次进模式后重新计时
+        engine_dx_ = 0.0;                   // 菜单打开时不能残留上一帧的增量反复应用
+        engine_dy_ = 0.0;
     }
 
     // 引擎侧钩子的增量先并进来（同一帧内多条轴事件会被累加）
     {
         std::lock_guard<std::mutex> axis_lock(axis_mutex_);
-        if (axis_dx_ != 0.0 || axis_dy_ != 0.0) {
-            // InputAxis 的 MouseY 与引擎 GetInputMouseDelta 一样：正值 = 鼠标向上；
-            // Intent.look_dy 约定正值 = 鼠标向下（与 Win32 原始坐标一致），这里翻转 Y。
-            input_.on_mouse_move(axis_dx_, -axis_dy_);
-            axis_move_active_ = true;
+        if (pbzfm_menu_open) {
+            // 菜单打开：InputAxis 回调可能仍在写入，整帧丢弃，避免关菜单后累积跳变
             axis_dx_ = 0.0;
             axis_dy_ = 0.0;
-        }
-        if (axis_wheel_ != 0.0) {
-            input_.on_wheel(axis_wheel_);
             axis_wheel_ = 0.0;
+        } else {
+            if (axis_dx_ != 0.0 || axis_dy_ != 0.0) {
+                // InputAxis 的 MouseY 与引擎 GetInputMouseDelta 一样：正值 = 鼠标向上；
+                // Intent.look_dy 约定正值 = 鼠标向下（与 Win32 原始坐标一致），这里翻转 Y。
+                input_.on_mouse_move(axis_dx_, -axis_dy_);
+                axis_move_active_ = true;
+                axis_dx_ = 0.0;
+                axis_dy_ = 0.0;
+            }
+            if (axis_wheel_ != 0.0) {
+                input_.on_wheel(axis_wheel_);
+                axis_wheel_ = 0.0;
+            }
         }
     }
     if (engine_delta_ok_ && (engine_dx_ != 0.0 || engine_dy_ != 0.0)) {

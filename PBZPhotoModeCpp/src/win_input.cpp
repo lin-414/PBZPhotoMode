@@ -375,6 +375,14 @@ void Win32InputSource::discard_pending() {
     g_wheel_delta.store(0, std::memory_order_relaxed);
 }
 
+void Win32InputSource::set_ui_open(bool open) {
+    if (open == ui_open_) return;
+    ui_open_ = open;
+    // 菜单关闭后的第一帧：物理上仍按住的键（例如点关闭按钮的鼠标左键）只同步状态，
+    // 不产生「按下」边沿，否则关菜单的同一瞬间会触发一次相机升降/动作。
+    if (!open) resync_keys_ = true;
+}
+
 int Win32InputSource::pad_slot() const {
     return pad_slot_active_;
 }
@@ -703,7 +711,10 @@ unsigned long Win32InputSource::ll_wheel_events() const {
 
 void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
     foreground_ = foreground_is_ours();
-    const bool active = foreground_;
+    // PBZFM 菜单是进程内覆盖窗：foreground_is_ours() 判不出它，必须显式暂停采集。
+    const bool active = foreground_ && !ui_open_;
+    const bool resync = resync_keys_;
+    resync_keys_ = false;
 
     // 1) Raw Input 的累计值
     const long dx = g_dx.exchange(0);
@@ -764,6 +775,8 @@ void Win32InputSource::poll(InputLogic& logic, bool gamepad_enabled) {
         const bool next = active ? down : false;
         if (next == key_state_[vk]) continue;
         key_state_[vk] = next;
+        // 菜单刚关闭的首帧：只同步，不把“一直按住”的键变成一次新的按下
+        if (resync) continue;
         logic.on_key(vk, next);
     }
 

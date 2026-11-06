@@ -178,6 +178,12 @@ void PbzfmClient::sync_from_config(const Config& cfg) {
     ++mirror_generation_;  // 外部重载：丢弃渲染线程手里的旧草案，别让拖动中的值回写覆盖它
 }
 
+bool PbzfmClient::menu_open() const {
+    // alive_ 的 release/acquire 保证 api_ 在注册完成后才被读；注册前一律 false。
+    if (!alive_.load(std::memory_order_acquire)) return false;
+    return api_.IsMenuOpen != nullptr && api_.IsMenuOpen() != 0;
+}
+
 Config PbzfmClient::take_draft(std::uint64_t& generation_out) {
     std::lock_guard<std::mutex> lock(mirror_mutex_);
     generation_out = mirror_generation_;

@@ -48,6 +48,10 @@ public:
     void poll(InputLogic& logic, bool gamepad_enabled);
     // 引擎侧钩子已经在提供鼠标增量时，把系统层增量静音，避免同一段移动被算两次
     void set_mouse_muted(bool muted) { mouse_muted_ = muted; }
+    // PBZFM 菜单打开时暂停全部输入采集。菜单是**同一进程内的覆盖窗**，
+    // foreground_is_ours() 对它同样返回真；若不暂停，菜单里的左键会命中
+    // key_vertical_up（默认 MOUSE_LEFT）→ 相机自己上升。由引擎 Tick 每帧同步。
+    void set_ui_open(bool open);
 
     // 诊断用：鼠标位移事件计数（进模式时打一行日志，方便判断输入源是否活着）
     unsigned long mouse_event_count() const;
@@ -92,6 +96,8 @@ private:
     bool raw_seen_{false};
     bool raw_dead_{false};
     bool mouse_muted_{false};
+    bool ui_open_{false};      // PBZFM 菜单可见：所有输入按“未按下”处理
+    bool resync_keys_{false};  // 菜单刚关闭：第一帧只同步物理键状态，不产生按下边沿
     int cursor_move_frames_{0};
     bool foreground_{false};
 

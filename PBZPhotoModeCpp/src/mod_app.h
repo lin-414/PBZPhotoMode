@@ -136,6 +136,7 @@ private:
     bool pad_scan_logged_{false};       // 启动 10 秒后报一次扫描状态，证明轮询管线活着
     double pad_scan_log_timer_{0.0};
     bool input_diag_enabled_{false};    // 每秒输入诊断默认关（反射摘要+日志落盘有开销），mod 目录放 debug_input_diag.txt 开启
+    bool menu_open_last_{false};        // PBZFM 菜单开/关只在状态变化时打一行日志
 
     // ---- PBZFM 菜单框架客户端（可选组件；框架线程只写下面三个字段，引擎 Tick 消化） ----
     // 构造期即创建（start() 在引擎初始化时才调）：控制台面板首帧就能共用 lang() 词典
