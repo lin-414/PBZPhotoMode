@@ -20,7 +20,7 @@
 - **CineCamera 焦距联动**：包内有 `CineCameraActor` / `CineCameraComponent` / `CurrentFocalLength` / `Filmback`，改 FOV 同步真实焦距；`UCineCaptureComponent2D`（CineCameraSceneCapture 插件）未打进 Shipping，因此没有高品质无 UI 出图通道
 - **F7 画面定格（内置冻结渲染帧）**：正常画质预览构图 → `F7` 挂起游戏引擎线程（渲染/音频/逻辑；PBZFM/本模组输入钩子线程保留），屏幕停在最后一帧 → 从容截图 → 再按 `F7` 恢复。参考 PBZ Pause：`NtGetNextThread` 枚举 + `HeapLock` 防死锁、Wwise `Suspend/Wakeup` 协调、四个时间 API 的 IAT 补偿（恢复时扣掉定格时长，动画/物理/计时器不跳变）；安全阀默认 60 秒。定格期间相机不响应输入（预期取舍）。
 - **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；Wwise 音频在有逐 PlayingID 时逐语音真暂停（`PBZPausePlayingID` / `PBZResumePlayingID`，保住当前句位置）并跳过整引擎 Suspend，只有没截获到 ID 时才用整引擎 `Suspend(true,false)` 作静音兜底（当前 PBZ 从主程序静态导出解析，`wwise_engine_suspend` 默认开启）；对话/过场中的对话 Flow 可选择在冻结时停 Tick（`freeze_dialogue_flow` 默认开启，仅 `hide_subtitles=true` 时生效，保留相机）
-- **超宽屏支持**：进入摄影模式自动解除 16:9 画幅约束（游戏官方支持 21:9 / 32:9 超宽屏），两侧黑边消除，退出时还原
+- **超宽屏支持**：进入摄影模式自动解除 16:9 画幅约束（游戏官方支持 21:9 / 32:9 超宽屏），两侧黑边消除；暂停/处决演出把画幅重新锁成 16:9 时会在渲染前每帧压回，退出时按进入前状态还原
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
 - **隐藏 HUD**：进入摄影模式自动隐藏游戏 HUD（血条/快捷栏/任务提示等），退出时恢复原可见性。粗粒度走 `SetHideUIForPV` + `AHUD.bShowHUD` + UMG 根控件折叠；字幕/世界空间交互提示/锁定标记/对话 Flow 仍细粒度处理（有明确理由），存活判定用 `is_ok()`，避免扫描漏项导致控件永远停在 `Collapsed`
 - **隐藏交互提示**：进入摄影模式自动隐藏场景互物体旁的“E”键图标（世界空间 UMG），退出时恢复
@@ -32,6 +32,14 @@
 ## 当前版本
 
 > 各版本条目中的断言数字为当时快照；当前断言总数以 [docs/test_count.txt](PBZPhotoModeCpp/docs/test_count.txt) 为准（由脚本生成）。
+
+**2.0.2-cpp** —— 已编译（2026-11-06）：
+
+- **处决/过场残留 + 超宽屏暂停修复**：① 处决动画中进入摄影模式再退出后角色模型定格、只能重启：接近零的演出时间倍率不再被当成进入前原值保存，退出/解冻时清理玩家 Pawn 的 `CustomTimeDilation`、`bPauseAnims`、`bNoSkeletonUpdate` 与 `CinematicTimeDilation` 残留；② 21:9 超宽屏暂停时被游戏重新锁成 16:9：进入时即使未锁也保存画幅原值，每帧在渲染前重申解锁，退出按进入前状态还原（过场/处决的瞬时 16:9 锁不写回）。核心层 **5,155 项**测试全绿，详见 [CHANGELOG.md](PBZPhotoModeCpp/docs/CHANGELOG.md)。
+
+**2.0.1-cpp** —— 已编译（2026-11-06）：
+
+- **PBZFM 菜单打开期间暂停摄影模式输入**：PBZFM 覆盖菜单与游戏同进程，`foreground_is_ours()` 判不出它，菜单里的左键会被 `GetAsyncKeyState` 轮询命中 `key_vertical_up`（默认 `MOUSE_LEFT`）导致相机上升。本版每帧查询 `PBZFM_IsMenuOpen`，菜单可见时键鼠/手柄全部暂停，关闭首帧只同步物理键状态、不产生按下边沿。
 
 **2.0.0-cpp 正式版** —— 已编译（2026-11-05）：
 

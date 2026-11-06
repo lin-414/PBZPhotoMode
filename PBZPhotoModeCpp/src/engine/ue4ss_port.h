@@ -109,6 +109,8 @@ public:
 
     bool unlock_aspect_ratio() override;
     void restore_aspect_ratio() override;
+    void reassert_aspect_ratio() override;
+    void recover_character_after_photo_mode() override;
 
     double get_time_dilation() override;
     bool set_time_dilation(double dilation) override;
@@ -271,11 +273,17 @@ private:
     bool camera_is_cine_{false};
     bool camera_backend_probed_{false};
 
-    // 超宽屏画幅解锁：进入时保存的相机管理器原值（aspect_saved_=true 时有效）
+    // 超宽屏画幅解锁：进入时保存的相机管理器原值（aspect_saved_=true 时有效）。
+    // 注意：即使进入时游戏没锁画幅（false），也要保存——暂停/处决演出可能随后把锁打开，
+    // 退出时必须把“进入前就是解锁”的事实写回去，不能因为没改过就跳过恢复。
     bool aspect_saved_{false};
     bool aspect_original_constrain_{false};
     double aspect_original_value_{16.0 / 9.0};
     RC::Unreal::UObject* aspect_manager_{nullptr};
+    // 进入时 16:9 锁来自正在播放的过场/处决（瞬时状态）：退出时不能把这个锁当永久状态还原。
+    bool aspect_transient_cinematic_{false};
+    bool aspect_reassert_logged_{false};
+    bool aspect_reassert_warned_{false};
 
     // 世界身份令牌：UWorld/AWorldSettings 一变就换代，旧一代的原始值快照全部作废。
     WorldIdentity world_identity_;

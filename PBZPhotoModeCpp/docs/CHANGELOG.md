@@ -1,3 +1,48 @@
+## 2.0.2-cpp（2026-11-06）
+
+**两处实机问题收口：处决/过场中暂停后的角色定格，以及超宽屏暂停变 16:9。**
+
+### ① 处决动画中进入摄影模式 → 退出后角色模型卡住
+
+现象：处决/过场演出中按 F2 进入摄影模式（自动暂停）再退出，角色模型保持定格，
+只能重启游戏；有时暂停本身也会让角色随机冻住。
+
+根因是「演出瞬时状态被当成进入前的原值」：
+
+- `AWorldSettings.TimeDilation` / `CinematicTimeDilation` 在处决演出里会被压到接近 0
+  （Sequencer slomo / 命中停顿），原代码只在 `<= 0` 时兜底，`0.0005` 这类值会被存成
+  “进入前倍率”，退出时写回去 → 角色永久慢动作/定格；
+- 演出还会给玩家角色的 `AActor.CustomTimeDilation` 和 `SkeletalMeshComponent.bPauseAnims` /
+  `bNoSkeletonUpdate` 留下暂停状态；演出被摄影模式暂停后走不到自己的收尾，这些值就永久保留。
+
+修复：
+
+- `PhotoMode::enter()` 与 `toggle_freeze()` 统一把 `< 0.1` 的时间倍率视为演出瞬时值，按 1.0 还原；
+- 退出摄影模式或按 F 解冻时，引擎侧 `recover_character_after_photo_mode()` 只对玩家 Pawn
+  （及其骨骼网格）清理 `CustomTimeDilation`、`bPauseAnims`、`bNoSkeletonUpdate`，并清理
+  `AWorldSettings.CinematicTimeDilation` / `TimeDilation` 的接近零异常值；场景里原本静止的
+  NPC/物件不动。清理幂等，恢复失败的后台重试也会重复执行。
+
+### ② 21:9 超宽屏每次暂停随机变 16:9，退出也回不来
+
+根因：进入摄影模式时若 `bDefaultConstrainAspectRatio` 正好是 false（正常游玩超宽屏状态），
+旧实现认为「没锁，无需解锁」而不保存原值；随后 `SetPause`（暂停菜单/处决演出）把画幅锁
+打开，摄影模式里变成 16:9。退出时因为没保存过原值，`restore_aspect_ratio()` 直接返回，
+16:9 锁永久留下。
+
+修复：
+
+- 进入时无论 `bDefaultConstrainAspectRatio` 是 true 还是 false 都保存原值和比例；
+- `PhotoMode::reassert_aspect_ratio_if_needed()` 每帧在 `GameViewportClient Tick` 之后、
+  渲染之前把锁压回 false（`mod_app.cpp` 接线），暂停/演出中途再锁也能立即恢复超宽；
+- 退出时按进入前状态还原：原本就是超宽 → 写回 false；若进入时的 16:9 锁来自正在播放的
+  过场/处决，则视为演出瞬时锁，不当作永久状态写回。
+
+### 测试
+
+核心层 5,133 → **5,155 项**断言全绿；新增超宽屏每帧重申、处决/过场残留恢复、接近零时间
+倍率不写回、恢复失败重试等用例。
+
 ## 2.0.1-cpp（2026-11-06）
 
 **PBZFM 菜单打开期间暂停摄影模式输入** —— 修复「在菜单里按鼠标左键，相机触发上升」。

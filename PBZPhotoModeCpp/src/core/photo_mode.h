@@ -39,6 +39,8 @@ public:
     void toggle_freeze();
     // dilation 模式每帧重申：只在 frozen 且非 pause 时有动作（需要引擎 tick 后调用）
     void reassert_time_dilation_if_needed();
+    // 超宽屏画幅每帧重申：游戏在暂停/处决演出时会重新打开 16:9 锁，必须在渲染前压回。
+    void reassert_aspect_ratio_if_needed();
     // 冻结期每帧重申渲染对照目标值（游戏可能把 FG/DLSS/AA/tonemapper 改回去）
     void reassert_render_tuning_if_needed();
     // 冻结期在 World Tick 之后、渲染之前再写一次 MPC 快照（游戏在 World Tick 里会覆盖）

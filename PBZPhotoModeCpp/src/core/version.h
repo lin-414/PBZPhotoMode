@@ -11,7 +11,7 @@
 // 但它们全部打印同一个 "1.0.75-cpp"，用户发来的日志无法定位到底跑的哪个构建，
 // 只好在文档里另手写一个 "-hotfixNN" 版本号，于是出现两套并行版本串并且互相脱节。
 // 现在把热修序号收进编译期常量：发一个热修包就 +1，日志/UI/生成物自动带上。
-#define PBZPM_VERSION "2.0.1-cpp"
+#define PBZPM_VERSION "2.0.2-cpp"
 #define PBZPM_HOTFIX 0
 
 #define PBZPM_STRINGIZE_IMPL(x) #x

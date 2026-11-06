@@ -210,6 +210,12 @@ public:
     virtual bool unlock_aspect_ratio() = 0;
     virtual void restore_aspect_ratio() = 0;
 
+    // 冻结/暂停期间游戏可能重新给相机管理器打开 16:9 画幅锁（暂停菜单、处决演出都会）。
+    // 摄影模式每帧在 GameViewportClient Tick 之后（游戏改完、渲染之前）调用一次，把锁压回超宽。
+    // 默认不做事；失败由实现侧限流告警，不影响其他功能。
+    virtual void reassert_aspect_ratio() {}
+
+
     // 清除运行期函数查找缓存（GetInputMouseDelta / SetViewTargetWithBlend 等），下次调用重新探测。
     // 配置重载或重新进入摄影模式时调用，避免“函数暂时没就绪就永久标记缺失，只能重启”。
     virtual void refresh_function_caches() {}
@@ -315,6 +321,11 @@ public:
 
     // 世界暂停只读回读（冻结期每秒校验用；剧情等场景游戏可能擅自解除暂停）
     virtual bool world_paused() = 0;
+
+    // 退出摄影模式时调用：清理“处决/过场演出暂停”留给玩家角色的时间与动画残留。
+    // 实机症状：处决动画中进入摄影模式再退出后，角色模型定格、只能重启游戏。
+    // 只处理玩家 Pawn 及其骨骼网格（不碰场上本来静止的 NPC/场景物件），且必须幂等。
+    virtual void recover_character_after_photo_mode() {}
 
     // 剧情过场（Sequencer）播放器：冻结时一并暂停，解冻/退出时恢复。
     // 剧情系统常常绕过世界暂停与时间缩放自顾自更新（画面像冻住了、动作声音还在走），

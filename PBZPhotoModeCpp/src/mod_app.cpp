@@ -471,6 +471,9 @@ void PhotoModeMod::on_game_viewport_tick_post() {
     // GameViewportClient Tick 之后、RedrawViewports 之前每帧重申，否则人物会在
     // 两次每秒重申之间按正常速度移动（实机 19:58 日志：每秒“时间缩放被游戏改写”）。
     mode_->reassert_time_dilation_if_needed();
+    // 暂停/处决演出会让相机管理器重新打开 16:9 画幅锁：必须在世界 Tick 之后、渲染之前压回，
+    // 否则进入摄影模式后画面会突然变成 16:9，退出也无法恢复。
+    mode_->reassert_aspect_ratio_if_needed();
     mode_->reassert_render_tuning_if_needed();
     // MPC 快照必须在 World Tick 之后写：游戏在 World Tick 里会覆盖参数，写在 pre-tick 会被下一帧盖回去。
     mode_->reassert_mpc_hold_if_needed();
