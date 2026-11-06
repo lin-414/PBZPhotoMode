@@ -11,6 +11,8 @@
 胶片颗粒（取证在 `core/tuning.h`）。旧 `config.ini` 的废弃键会在首次进游戏时原子重写清掉。
 核心层 **5,133 项测试全绿**，DLL 2,155,008 字节、包内不带任何 `hotfix` 字样。详见「v2.0.0-cpp 正式版记录」。
 
+**PBZFM 菜单输入暂停（2026-11-06，2.0.1-cpp）**：PBZFM 覆盖菜单与游戏同进程，`foreground_is_ours()` 判不出它，菜单里的左键会被 `GetAsyncKeyState` 全量轮询命中 `key_vertical_up`（默认 `MOUSE_LEFT`）导致相机上升。本版每帧查询 `PBZFM_IsMenuOpen`，菜单可见期间键鼠/手柄全部暂停，关闭首帧只同步物理键状态、不产生按下边沿。核心层 **5,133 项**测试全绿。
+
 **处决/过场残留 + 超宽屏暂停修复（2026-11-06，2.0.2-cpp）**：处决动画中进入摄影模式再退出后角色模型定格、只能重启——`enter()/toggle_freeze()` 不再把 `<0.1` 的演出时间倍率当成原值保存，退出/解冻时清理玩家 Pawn 的 `CustomTimeDilation`、`SkeletalMeshComponent.bPauseAnims/bNoSkeletonUpdate` 与 `AWorldSettings.CinematicTimeDilation` 残留；21:9 超宽屏暂停后被游戏重新锁成 16:9——进入时即使未锁也保存画幅原值，`GameViewportClient Tick` 之后每帧重申解锁，退出按进入前状态还原（过场/处决瞬时锁不写回）。核心层 **5,155 项**测试全绿。
 
 **旧配置真清理（2026-11-05，2.0.0-cpp-hotfix35）**：hotfix34 删了色差/胶片颗粒，但旧 `config.ini`
