@@ -38,6 +38,9 @@ public:
     bool aspect_lock_active{true};  // 模拟游戏是否真的锁着 16:9
     int aspect_unlock_count{0};
     int aspect_restore_count{0};
+    int aspect_reassert_count{0};
+    // 退出摄影模式时对玩家角色时间/动画残留的清理调用次数（不在 calls 里，避免打乱严格序列断言）
+    int recover_character_calls{0};
 
     // 故障注入（隐藏/开启方向）
     bool fail_spawn{false};
@@ -260,6 +263,7 @@ public:
         calls.push_back("world_paused");
         return paused;
     }
+    void recover_character_after_photo_mode() override { ++recover_character_calls; }
 
     // 剧情播放器模拟：sequences_playing 同时表示“暂停时正在播放的数量”与“恢复时处于暂停态的数量”
     int sequences_found{0};
@@ -466,6 +470,11 @@ public:
         calls.push_back("restore_aspect");
         aspect_unlocked = false;
         ++aspect_restore_count;
+    }
+    void reassert_aspect_ratio() override {
+        // 模拟“游戏在暂停中重新锁 16:9”：重申后应重新变回解锁
+        ++aspect_reassert_count;
+        if (aspect_lock_active) aspect_unlocked = true;
     }
     void log(LogLevel level, const std::string& message) override {
         const char* tag = "?";

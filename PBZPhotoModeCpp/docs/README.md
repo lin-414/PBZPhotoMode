@@ -4,7 +4,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v2.0.0-cpp（**正式版**，2026-11-05） |
+| 版本 | v2.0.2-cpp（2026-11-06，处决/过场残留与超宽屏暂停修复） |
 | 核心层测试 | 当前断言总数见 [test_count.txt](test_count.txt)，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；**1.0.75 收口批次：接管当前相机、HUD 恢复重构实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
@@ -189,6 +189,7 @@ tools\build_tests.bat
 
 ## 最近的版本
 
+- **2.0.2-cpp**（2026-11-06）：**处决/过场演出残留修复 + 超宽屏暂停修复**。① 处决动画中进入摄影模式并在退出/解冻后角色模型定格：不再把 `TimeDilation` 的接近零演出值当成进入前原值；退出时对玩家 Pawn 清理 `CustomTimeDilation` / `SkeletalMeshComponent.bPauseAnims` / `bNoSkeletonUpdate` / `CinematicTimeDilation` 残留。② 21:9 超宽屏在暂停时被游戏重新锁成 16:9：进入时即使未锁也保存画幅原值，`GameViewportClient Tick` 之后每帧重申解锁，退出按进入前状态还原；来自过场/处决的瞬时 16:9 锁不写回。核心层 **5,155 项**全绿。
 - **2.0.0-cpp 正式版**（2026-11-05）：hotfix1~35 的成果收进 2.0 正式版号（`PBZPM_HOTFIX 35 → 0`，版本串不带 `-hotfixNN`）。内容见 [CHANGELOG.md](CHANGELOG.md) 的「2.0.0-cpp 正式版」一节：摄影模式本体（世界冻结/帧冻结、键位全可配、接管相机与独立相机双后端、画幅解锁、出图）、**画面效果五项全部实机生效**（暗角 / 饱和 / 对比 / 泛光 / 冷暖）、PBZFM 可选图形菜单、四语言。**明确不支持并已从界面移除**：引擎景深、色差、胶片颗粒（取证结论在 `core/tuning.h` 顶部）。核心层 **5,133 项**全绿；发行包 `PBZPhotoModeCpp_2.0.0-cpp.zip`。
 - **2.0.0-cpp-hotfix35**（2026-11-05）：**旧配置真清理**——hotfix34 删了色差/胶片颗粒，但旧 `config.ini` 里的残留键只是「提示一次然后忽略」，文件里那几行还在。本版给 `ConfigLoadResult` 加 `legacy_keys`，`PhotoModeMod::reload_config()` 拿到非空时用规范格式**原子重写一次 config.ini**（`.tmp` → rename），把 `[dof]` 段、`key_focus_*`/`key_aperture_*`/`pad_focus_*`/`pad_aperture_*`、`chromatic_aberration`、`film_grain` 从文件里物理删掉，并打一行 `配置清理：已从 config.ini 删除 N 个已废弃键并重写文件（…）`。告警文案改成「已忽略并将从 config.ini 清理」；**只在真命中废弃键时才写盘**（干净配置不会每次启动白重写，有单测盯着）；重写用 `config_ini_text()` 规范序列化，顺带把未知/拼错键也一并清掉。核心层 5,124 → **5,133 项**全绿（新增 `test_config_legacy_purge`）。
 - **2.0.0-cpp-hotfix34**（2026-11-05）：**色差与胶片颗粒整条删除**（按景深那套做法）——PBZFM「画面效果」组里 `色差` / `胶片颗粒` 两条滑条、`[look]` 段的 `chromatic_aberration` / `film_grain` 两键（含 `Config` 成员 / schema / `default_config_text()` 输出）、四语言两个标签键、`set_look()` 里的 `SceneFringeIntensity` / `FilmGrainIntensity` / `ChromaticAberrationStartOffset` 写入与下发回读字段、`log_look_gates()` 取证函数、`LookOptions` 两个字段一并移除。取证结论改由 `core/tuning.h` 顶部注释承担（档位依据、抬档被 cvar 优先级丢弃、console 不执行、UE4SS 无 `IConsoleManager`、补噪声纹理后颗粒仍不出现）。`[look]` 现在只剩 **暗角 / 饱和 / 对比 / 泛光 / 冷暖** 五项，全部实测生效。核心层 5,291 → **5,124 项**全绿。

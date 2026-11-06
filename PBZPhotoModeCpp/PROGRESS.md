@@ -11,6 +11,8 @@
 胶片颗粒（取证在 `core/tuning.h`）。旧 `config.ini` 的废弃键会在首次进游戏时原子重写清掉。
 核心层 **5,133 项测试全绿**，DLL 2,155,008 字节、包内不带任何 `hotfix` 字样。详见「v2.0.0-cpp 正式版记录」。
 
+**处决/过场残留 + 超宽屏暂停修复（2026-11-06，2.0.2-cpp）**：处决动画中进入摄影模式再退出后角色模型定格、只能重启——`enter()/toggle_freeze()` 不再把 `<0.1` 的演出时间倍率当成原值保存，退出/解冻时清理玩家 Pawn 的 `CustomTimeDilation`、`SkeletalMeshComponent.bPauseAnims/bNoSkeletonUpdate` 与 `AWorldSettings.CinematicTimeDilation` 残留；21:9 超宽屏暂停后被游戏重新锁成 16:9——进入时即使未锁也保存画幅原值，`GameViewportClient Tick` 之后每帧重申解锁，退出按进入前状态还原（过场/处决瞬时锁不写回）。核心层 **5,155 项**测试全绿。
+
 **旧配置真清理（2026-11-05，2.0.0-cpp-hotfix35）**：hotfix34 删了色差/胶片颗粒，但旧 `config.ini`
 里的残留键只是「提示一次然后忽略」，文件里那几行还在。本版给 `ConfigLoadResult` 加 `legacy_keys`，
 `PhotoModeMod::reload_config()` 拿到非空时用规范格式**原子重写一次 config.ini**（`.tmp` → rename），

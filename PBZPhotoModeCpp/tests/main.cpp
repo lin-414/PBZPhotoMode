@@ -2977,6 +2977,97 @@ void test_photo_mode_ultrawide() {
 }
 
 
+void test_photo_mode_aspect_reassert() {
+    section("PhotoMode 超宽屏画幅每帧重申");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    FakeEngine fe;
+    PhotoMode mode(fe, Config{});
+    CHECK(mode.enter());
+    CHECK_INT(fe.aspect_reassert_count, 0);
+    mode.reassert_aspect_ratio_if_needed();
+    CHECK_INT(fe.aspect_reassert_count, 1);
+    // 未进入 / 退出后不再重申
+    mode.leave("test");
+    mode.reassert_aspect_ratio_if_needed();
+    CHECK_INT(fe.aspect_reassert_count, 1);
+
+    // 配置关闭画幅解锁：从不重申
+    FakeEngine fe_off;
+    Config cfg;
+    cfg.ultrawide_unlock = false;
+    PhotoMode off(fe_off, cfg);
+    CHECK(off.enter());
+    off.reassert_aspect_ratio_if_needed();
+    CHECK_INT(fe_off.aspect_reassert_count, 0);
+    off.leave("test");
+}
+
+void test_photo_mode_cinematic_cleanup() {
+    section("PhotoMode 处决/过场演出残留恢复");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 暂停模式：退出时必须调用一次玩家角色清理（引擎侧负责清 CustomTimeDilation /
+    // SkeletalMesh bPauseAnims / CinematicTimeDilation，core 只负责在正确时机触发）
+    {
+        FakeEngine fe;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK_INT(fe.recover_character_calls, 0);
+        mode.leave("test");
+        CHECK_INT(fe.recover_character_calls, 1);
+    }
+
+    // 进入时读到接近 0 的全局倍率（处决/命中停顿的瞬时值）：不能把它当原值写回，
+    // 否则退出后角色会永久停在慢动作/定格。
+    {
+        FakeEngine fe;
+        fe.dilation = 0.0005;
+        Config cfg;
+        cfg.freeze_mode = FreezeMode::Dilation;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_NEAR(fe.dilation, cfg.freeze_dilation, 1e-12);
+        mode.leave("test");
+        CHECK_NEAR(fe.dilation, 1.0, 1e-12);  // 不是 0.0005
+    }
+
+    // 暂停被演出拒绝、回退时间缩放时同样不能把 0 写回
+    {
+        FakeEngine fe;
+        fe.fail_pause = true;
+        fe.dilation = 0.0;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        CHECK(mode.frozen());
+        CHECK_NEAR(fe.dilation, 0.0001, 1e-12);
+        mode.leave("test");
+        CHECK_NEAR(fe.dilation, 1.0, 1e-12);
+    }
+
+    // 恢复失败后重试也会重复触发清理（幂等），不会因为一次失败就丢失这条兜底
+    {
+        FakeEngine fe;
+        fe.fail_pause_restore = true;
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());
+        mode.leave("test");
+        CHECK(mode.recovery_pending());
+        CHECK_INT(fe.recover_character_calls, 1);
+        Intent none;
+        // tick_recovery 有单帧 0.25s 上限：四拍才到 1s 的首次重试
+        for (int i = 0; i < 4; ++i) mode.tick(none, 0.25);
+        CHECK_INT(fe.recover_character_calls, 2);
+        fe.fail_pause_restore = false;
+        // 第二次重试要再等 2s（再八拍）
+        for (int i = 0; i < 8 && mode.recovery_pending(); ++i) mode.tick(none, 0.25);
+        CHECK(!mode.recovery_pending());
+    }
+}
+
 void test_photo_mode_input_blocking() {
     section("PhotoMode 输入屏蔽与角色可见性");
     using namespace pbzpm;
@@ -4444,6 +4535,8 @@ int main() {
     test_photo_mode_live_toggles();
     test_camera_backend_switch();
     test_photo_mode_ultrawide();
+    test_photo_mode_aspect_reassert();
+    test_photo_mode_cinematic_cleanup();
     test_photo_mode_interact_prompt();
     test_photo_mode_enemy_health_bars();
     test_photo_mode_lockon_marker();

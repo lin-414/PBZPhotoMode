@@ -271,6 +271,9 @@ void Ue4ssPort::invalidate_world_scoped_state() {
     aspect_manager_ = nullptr;
     aspect_original_constrain_ = false;
     aspect_original_value_ = 16.0 / 9.0;
+    aspect_transient_cinematic_ = false;
+    aspect_reassert_logged_ = false;
+    aspect_reassert_warned_ = false;
     hud_widgets_.clear();
     pv_hide_active_ = false;
     prompt_components_.clear();
@@ -306,10 +309,35 @@ void Ue4ssPort::invalidate_world_scoped_state() {
 
 // ------------------------------------------------------------------ 超宽屏画幅解锁
 
+namespace {
+
+// 进入/重申画幅时判断当前是否有 Sequencer 在播。处决演出与过场都用 Sequencer，
+// 它们在演出期间会把相机管理器压成 16:9；这个锁属于演出瞬时状态，不能当“进入前原值”还原。
+auto any_sequence_playing() -> bool {
+    std::vector<UObject*> players;
+    RC::Unreal::UObjectGlobals::FindAllOf(STR("MovieSceneSequencePlayer"), players);
+    for (UObject* player : players) {
+        if (!is_ok(player)) continue;
+        if (narrow(player->GetFullName()).find("Default__") != std::string::npos) continue;
+        bool playing = false;
+        if (invoke_bool(player, "IsPlaying", [](ParamBlock&) { return true; }, playing) && playing) {
+            return true;
+        }
+    }
+    return false;
+}
+
+}  // namespace
+
 // 游戏把画幅锁在 16:9，超宽屏（21:9/32:9）两侧补黑边。UE 里这把锁最常挂在两处：
 // ① APlayerCameraManager.bDefaultConstrainAspectRatio / DefaultAspectRatio —— 对任何 ViewTarget 生效，
 //   就算 ViewTarget 换成摄影相机，黑边照样在（用户反馈的超宽屏黑边就是它）；
 // ② 相机组件自己的 bConstrainAspectRatio —— 我们生成的 CameraActor 默认不锁，显式再关一次保险。
+//
+// 关键教训（2.0.2 实机）：进入摄影模式时“没锁”不代表以后不会锁。游戏在 SetPause 之后
+// （暂停菜单/处决演出）会重新把 bDefaultConstrainAspectRatio 打开，所以：
+//   - 进入时无论锁没锁都要保存原值（false 也要保存），退出才能把“原本就是超宽”写回去；
+//   - 摄影模式每帧在渲染前重申一次解锁（reassert_aspect_ratio）。
 bool Ue4ssPort::unlock_aspect_ratio() {
     bool ok = false;
 
@@ -323,19 +351,25 @@ bool Ue4ssPort::unlock_aspect_ratio() {
             log(LogLevel::Warn,
                 "画幅解锁：相机管理器读不到 bDefaultConstrainAspectRatio/DefaultAspectRatio"
                 "（黑边若来自别的机制，把这条日志发回来）");
-        } else if (constrain == 0.0) {
-            log(LogLevel::Info, "画幅：相机管理器未锁定画幅，无需解锁");
-            ok = true;  // 没锁也算成功：退出时无需写回
         } else {
-            // 只在确实锁着时才记原值；还原前校验管理器还是同一个，防止换持有时把旧值写进新管理器
+            // 无论当前值 true 还是 false 都记账：暂停/处决演出很可能在接下来把它改成 true。
             aspect_saved_ = true;
-            aspect_original_constrain_ = true;
             aspect_manager_ = manager;
+            aspect_original_constrain_ = constrain != 0.0;
+            aspect_original_value_ = 16.0 / 9.0;
             if (!read_number(value_prop, manager, aspect_original_value_)) {
                 aspect_original_value_ = 16.0 / 9.0;
             }
-            if (write_bool(constrain_prop, manager, false)) {
-                char buf[96]{};
+            aspect_transient_cinematic_ = aspect_original_constrain_ && any_sequence_playing();
+            if (aspect_transient_cinematic_) {
+                log(LogLevel::Info,
+                    "画幅：进入时 16:9 锁来自正在播放的过场/处决演出，退出时按解锁状态还原（不保留演出锁）");
+            }
+            if (constrain == 0.0) {
+                log(LogLevel::Info, "画幅：相机管理器未锁定画幅，保持超宽（退出时仍会还原该状态）");
+                ok = true;
+            } else if (write_bool(constrain_prop, manager, false)) {
+                char buf[128]{};
                 std::snprintf(buf, sizeof(buf), "画幅解锁：已解除 16:9 锁定（原比例=%.3f），超宽屏黑边消除",
                               aspect_original_value_);
                 log(LogLevel::Info, buf);
@@ -357,29 +391,74 @@ bool Ue4ssPort::unlock_aspect_ratio() {
     return ok;
 }
 
+void Ue4ssPort::reassert_aspect_ratio() {
+    // 暂停菜单/处决演出会重新打开 bDefaultConstrainAspectRatio —— 每帧在渲染前压回 false。
+    UObject* manager = camera_manager();
+    if (is_ok(manager)) {
+        FProperty* constrain_prop = find_property(manager, "bDefaultConstrainAspectRatio");
+        double constrain = 0.0;
+        if (constrain_prop != nullptr && read_number(constrain_prop, manager, constrain) && constrain != 0.0) {
+            if (write_bool(constrain_prop, manager, false)) {
+                if (!aspect_reassert_logged_) {
+                    aspect_reassert_logged_ = true;
+                    log(LogLevel::Info,
+                        "画幅：游戏在暂停/演出中重新锁定了 16:9，已每帧压回超宽（退出时恢复进入前状态）");
+                }
+            } else if (!aspect_reassert_warned_) {
+                aspect_reassert_warned_ = true;
+                log(LogLevel::Warn, "画幅重申失败：bDefaultConstrainAspectRatio 写不回去（16:9 可能会短暂出现）");
+            }
+        }
+    }
+    // 独立相机组件自身的约束也一并保持关闭。
+    if (UObject* component = camera_component(); is_ok(component)) {
+        write_bool(find_property(component, "bConstrainAspectRatio"), component, false);
+    }
+}
+
 void Ue4ssPort::restore_aspect_ratio() {
     if (!aspect_saved_) return;
     aspect_saved_ = false;
 
     UObject* manager = camera_manager();
-    if (!is_ok(manager) || manager != aspect_manager_) {
-        // 管理器换了（重新持有等）：旧值属于旧对象，不能写进新管理器
+    const bool restore_lock = aspect_original_constrain_ && !aspect_transient_cinematic_;
+    if (!is_ok(manager)) {
+        log(LogLevel::Warn, "画幅还原：拿不到相机管理器，跳过写回（画面可能仍停在 16:9）");
+        aspect_manager_ = nullptr;
+        aspect_transient_cinematic_ = false;
+        aspect_reassert_logged_ = false;
+        aspect_reassert_warned_ = false;
+        return;
+    }
+
+    // 管理器换了（重新持有等）：只有“原本就没锁”可以安全地把 false 写给新管理器；
+    // 原本锁着的 16:9 原值属于旧对象，不能写进新管理器。
+    if (manager != aspect_manager_ && restore_lock) {
         log(LogLevel::Info, "画幅还原：相机管理器已不是进入时的对象，跳过写回");
         aspect_manager_ = nullptr;
+        aspect_transient_cinematic_ = false;
+        aspect_reassert_logged_ = false;
+        aspect_reassert_warned_ = false;
         return;
     }
     aspect_manager_ = nullptr;
+
     FProperty* constrain_prop = find_property(manager, "bDefaultConstrainAspectRatio");
-    if (write_bool(constrain_prop, manager, aspect_original_constrain_)) {
-        if (aspect_original_constrain_) {
+    if (write_bool(constrain_prop, manager, restore_lock)) {
+        if (restore_lock) {
             if (FProperty* value_prop = find_property(manager, "DefaultAspectRatio"); value_prop != nullptr) {
                 write_number(value_prop, manager, aspect_original_value_);
             }
             log(LogLevel::Info, "画幅还原：相机管理器已恢复 16:9 锁定");
+        } else {
+            log(LogLevel::Info, "画幅还原：已恢复进入前的解锁状态（超宽屏 21:9/32:9）");
         }
     } else {
         log(LogLevel::Warn, "画幅还原失败：bDefaultConstrainAspectRatio 写不回去");
     }
+    aspect_transient_cinematic_ = false;
+    aspect_reassert_logged_ = false;
+    aspect_reassert_warned_ = false;
 }
 
 void Ue4ssPort::set_log_level(LogLevel level) {

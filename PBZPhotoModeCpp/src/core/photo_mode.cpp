@@ -243,7 +243,10 @@ bool PhotoMode::enter() {
     }
 
     prev_dilation_ = time_pause_.get_time_dilation();
-    if (!(prev_dilation_ > 0.0) || prev_dilation_ > 10.0) prev_dilation_ = 1.0;  // 异常值兜底
+    // 异常值兜底：处决/处刑/命中停顿会把全局倍率压到接近 0（0、1e-4、0.05 都见过）。
+    // 若把这种“演出瞬时值”当成进入前的原始倍率，退出摄影模式后会把它写回去，角色就永久停在
+    // 慢动作/定格（实测必须重启）。只接受正常可玩区间；低于 0.1 一律按 1.0 还原。
+    if (!(prev_dilation_ >= 0.1) || prev_dilation_ > 10.0) prev_dilation_ = 1.0;
 
     camera_.apply_fov(fov_);
     camera_.apply_pose(pose_);
@@ -448,6 +451,11 @@ bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
         flow_dialog_frozen_ = false;
     }
 
+    // 处决/过场演出会把玩家角色的 CustomTimeDilation 或骨骼动画暂停标志留在演出状态；
+    // 冻结结束后演出可能已经不会再跑“收尾”，必须在退出时把玩家这一份显式恢复，
+    // 否则表现为「退出摄影模式后角色模型卡住，只能重启游戏」。
+    time_pause_.recover_character_after_photo_mode();
+
     // 进入模式时做的改动，逆序还原
     if (aspect_unlocked_) {
         camera_.restore_aspect_ratio();  // 无返回值：引擎侧无失败信号
@@ -620,7 +628,8 @@ void PhotoMode::toggle_freeze() {
         }
         if (!use_pause) {
             const double prev = time_pause_.get_time_dilation();
-            if (prev > 0.0 && prev <= 10.0) prev_dilation_ = prev;
+            // 与 enter() 同一套异常值兜底：处决/命中停顿的接近零倍率不能当原值保存。
+            if (prev >= 0.1 && prev <= 10.0) prev_dilation_ = prev;
             ok = time_pause_.set_time_dilation(cfg_.freeze_dilation);
         }
     } else if (use_pause) {
@@ -855,12 +864,22 @@ void PhotoMode::toggle_freeze() {
         log(LogLevel::Info, "对话 Flow 解冻：FlowDialog 恢复 Hidden 保 Tick");
     }
 
+    // 解冻时也清一次玩家角色的演出残留：处决动画里进入摄影模式后按 F 恢复时，
+    // 角色应当立刻能动，而不是等到退出模式才恢复。
+    if (!want) time_pause_.recover_character_after_photo_mode();
+
     log(LogLevel::Info, frozen_ ? "时间已冻结" : "时间已恢复");
 }
 
 void PhotoMode::reassert_time_dilation_if_needed() {
     if (!active_ || !frozen_ || frozen_with_pause_) return;
     time_pause_.reassert_time_dilation(cfg_.freeze_dilation);
+}
+
+void PhotoMode::reassert_aspect_ratio_if_needed() {
+    // 只在本次进入确实做过画幅解锁时重申；配置热重载关闭开关不影响本次会话的还原语义。
+    if (!active_ || !aspect_unlocked_) return;
+    camera_.reassert_aspect_ratio();
 }
 
 void PhotoMode::reassert_render_tuning_if_needed() {

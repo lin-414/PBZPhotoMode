@@ -44,6 +44,25 @@ auto write_world_camera_moveable(UObject* scene, bool value) -> bool {
     }
 }
 
+// 处决/过场演出会给玩家角色留下“时间暂停”残留：
+//   - AActor.CustomTimeDilation 被演出曲线压到 0（只冻角色，世界照常跑）；
+//   - SkeletalMeshComponent.bPauseAnims / bNoSkeletonUpdate 被演出置 true；
+//   - AWorldSettings.CinematicTimeDilation（Sequencer slomo track 的附加倍率）停在 0。
+// 演出被摄影模式暂停后可能再也走不到自己的收尾，这些值就会永久留着，表现为角色模型卡住。
+constexpr double kStuckDilationEpsilon = 0.001;
+
+auto read_property_number(UObject* object, const char* name, double& out) -> bool {
+    if (!is_ok(object)) return false;
+    FProperty* property = find_property(object, name);
+    return property != nullptr && read_number(property, object, out);
+}
+
+auto write_property_number(UObject* object, const char* name, double value) -> bool {
+    if (!is_ok(object)) return false;
+    FProperty* property = find_property(object, name);
+    return property != nullptr && write_number(property, object, value);
+}
+
 }  // namespace
 
 double Ue4ssPort::get_time_dilation() {
@@ -445,6 +464,80 @@ bool Ue4ssPort::read_is_game_paused(bool& out) {
 bool Ue4ssPort::world_paused() {
     bool paused = false;
     return read_is_game_paused(paused) && paused;
+}
+
+void Ue4ssPort::recover_character_after_photo_mode() {
+    int changed_meshes = 0;
+    int changed_time_values = 0;
+    double old_custom_dilation = 1.0;
+    double old_cinematic_dilation = 1.0;
+    double old_world_dilation = 1.0;
+
+    auto restore_mesh_animation = [&](UObject* component) {
+        if (!is_ok(component)) return;
+        bool changed = false;
+        FProperty* pause_prop = find_property(component, "bPauseAnims");
+        double pause_value = 0.0;
+        if (pause_prop != nullptr && read_number(pause_prop, component, pause_value) && pause_value != 0.0) {
+            if (write_bool(pause_prop, component, false)) changed = true;
+        }
+        FProperty* no_update_prop = find_property(component, "bNoSkeletonUpdate");
+        double no_update_value = 0.0;
+        if (no_update_prop != nullptr && read_number(no_update_prop, component, no_update_value) &&
+            no_update_value != 0.0) {
+            if (write_bool(no_update_prop, component, false)) changed = true;
+        }
+        if (changed) ++changed_meshes;
+    };
+
+    UObject* pawn = player_pawn();
+    if (is_ok(pawn)) {
+        // AActor.CustomTimeDilation：只处理接近 0 的“演出残留”，正常的慢动作（0.2 等）不动。
+        if (read_property_number(pawn, "CustomTimeDilation", old_custom_dilation) &&
+            old_custom_dilation >= 0.0 && old_custom_dilation <= kStuckDilationEpsilon) {
+            if (write_property_number(pawn, "CustomTimeDilation", 1.0)) ++changed_time_values;
+        }
+        // ACharacter.Mesh（玩家本体）+ 挂在玩家 Pawn 下的所有骨骼网格（服装/武器/替身）。
+        UObject* mesh = nullptr;
+        if (read_object(find_property(pawn, "Mesh"), pawn, mesh)) restore_mesh_animation(mesh);
+        const std::string pawn_name = narrow(pawn->GetName());
+        const std::string pawn_class_name = is_ok(pawn->GetClassPrivate()) ? narrow(pawn->GetClassPrivate()->GetName()) : "";
+        std::vector<UObject*> components;
+        RC::Unreal::UObjectGlobals::FindAllOf(STR("SkeletalMeshComponent"), components);
+        for (UObject* component : components) {
+            if (!is_ok(component)) continue;
+            const std::string component_name = narrow(component->GetFullName());
+            const bool owned_by_pawn =
+                component->GetOuterPrivate() == pawn ||
+                (!pawn_name.empty() && component_name.find(pawn_name) != std::string::npos) ||
+                // 处决演出会临时生成/复制一份玩家模型（名字带玩家类名的派生 Actor），
+                // 原 Pawn 身上的组件可能不是屏幕里那张卡住的模型；按类名兜住这一份。
+                (!pawn_class_name.empty() && component_name.find(pawn_class_name) != std::string::npos);
+            if (owned_by_pawn) restore_mesh_animation(component);
+        }
+    }
+
+    // AWorldSettings.CinematicTimeDilation 是 Sequencer slomo track 的附加倍率（UE5.7）。
+    // 演出被中途打断时它可能停在 0，世界/角色看起来就像定格；只清“接近 0”的异常值。
+    if (UObject* settings = world_settings(); is_ok(settings)) {
+        if (read_property_number(settings, "CinematicTimeDilation", old_cinematic_dilation) &&
+            old_cinematic_dilation >= 0.0 && old_cinematic_dilation <= kStuckDilationEpsilon) {
+            if (write_property_number(settings, "CinematicTimeDilation", 1.0)) ++changed_time_values;
+        }
+        if (read_property_number(settings, "TimeDilation", old_world_dilation) && old_world_dilation >= 0.0 &&
+            old_world_dilation <= 0.0001) {
+            if (write_property_number(settings, "TimeDilation", 1.0)) ++changed_time_values;
+        }
+    }
+
+    if (changed_meshes > 0 || changed_time_values > 0) {
+        char buf[240]{};
+        std::snprintf(buf, sizeof(buf),
+                      "玩家角色状态恢复：清理处决/过场演出残留（CustomTimeDilation %.4f→1.0，CinematicTimeDilation "
+                      "%.4f→1.0，World TimeDilation %.4f→1.0，骨骼动画 %d 个）",
+                      old_custom_dilation, old_cinematic_dilation, old_world_dilation, changed_meshes);
+        log(LogLevel::Info, buf);
+    }
 }
 
 // 剧情过场（Sequencer）播放器：世界暂停与时间缩放拦不住剧情系统的自主更新
