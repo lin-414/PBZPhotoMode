@@ -125,6 +125,11 @@ public:
     // 词典实例：UE4SS 控制台诊断面板与自绘页共用同一份（外部 languages/*.json）
     PbzmI18n& lang() { return lang_; }
 
+    // 框架菜单当前是否可见（PBZFM_IsMenuOpen；框架未接入/旧版返回 false）。
+    // 引擎 Tick 线程每帧调用：摄影模式在菜单打开期间暂停输入采集，
+    // 否则菜单里的鼠标左键会被 GetAsyncKeyState 当成 key_vertical_up（上升）。
+    bool menu_open() const;
+
 private:
     static void RenderSettingsThunk(void* userdata);   // 0.4.x 回退：整页（语言 + 全部分组）
     static void RenderLanguageThunk(void* userdata);   // 0.5.0+ 分类树：设置分类页（语言切换）
