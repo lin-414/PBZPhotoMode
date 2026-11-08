@@ -2,6 +2,7 @@
 
 #ifdef PBZPM_WITH_UE4SS
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -12,6 +13,7 @@
 #include <imgui.h>
 
 #include "core/input_logic.h"
+#include "core/look_preset.h"
 #include "core/version.h"
 #include "pbzfm_schema_map.h"
 
@@ -46,6 +48,93 @@ PbzfmClient* g_client_self = nullptr;
 
 double SteadySeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// 原子写小文本文件（风格预设槽位）：临时文件 + 原子替换（save_config_file 同款语义，
+// 但落盘内容由调用方给定，不是整份 config.ini）。
+bool save_text_file_atomic(const std::string& path, const std::string& text, std::string* error) {
+    const std::string tmp = path + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
+        if (!out) {
+            if (error) *error = "无法创建临时文件：" + tmp;
+            return false;
+        }
+        out.write(text.data(), static_cast<std::streamsize>(text.size()));
+        out.flush();
+        if (!out) {
+            out.close();
+            std::error_code remove_ec;
+            std::filesystem::remove(tmp, remove_ec);
+            if (error) *error = "写入临时文件失败：" + tmp;
+            return false;
+        }
+    }
+    std::error_code rename_ec;
+    std::filesystem::rename(tmp, path, rename_ec);
+    if (rename_ec) {
+        std::error_code remove_ec;
+        std::filesystem::remove(tmp, remove_ec);
+        if (error) *error = "原子替换失败：" + path + "（" + rename_ec.message() + "）";
+        return false;
+    }
+    return true;
+}
+
+// 读小文本文件（风格预设槽位）：失败/不存在返回空串（BOM 剥离，pbzfm_client_lang.cpp 同款）。
+std::string read_text_file(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) return {};
+    std::string out;
+    char buf[4096];
+    while (in.read(buf, sizeof(buf)) || in.gcount() > 0) out.append(buf, static_cast<size_t>(in.gcount()));
+    if (out.size() >= 3 && (unsigned char)out[0] == 0xEF && (unsigned char)out[1] == 0xBB &&
+        (unsigned char)out[2] == 0xBF) {
+        out.erase(0, 3);
+    }
+    return out;
+}
+
+// ---- 风格预设文件（<mod>/look_preset_<编号>.ini）的枚举与编号 ----
+// 编号从文件名后缀解析；保存永远用「最大编号 + 1」，绝不覆盖已有预设（删除走菜单下拉行的
+// 「删除预设」按钮，两击确认——见 render_look_presets）。
+
+int preset_index_from_path(const std::string& path) {
+    const std::string name = std::filesystem::path(path).stem().string();
+    if (name.rfind("look_preset_", 0) != 0) return -1;
+    const std::string digits = name.substr(12);
+    if (digits.empty() || digits.find_first_not_of("0123456789") != std::string::npos) return -1;
+    return std::atoi(digits.c_str());
+}
+
+// 枚举 <mod>/look_preset_*.ini，按编号升序（编号缺失/非法的排最后，按文件名兜底）。
+// 目录条目极少，逐帧枚举可接受：外部手动增删文件即时反映，无需缓存与失效逻辑。
+std::vector<std::string> list_look_presets(const std::string& mod_dir) {
+    std::vector<std::string> out;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(mod_dir, ec), end; !ec && it != end; it.increment(ec)) {
+        const std::string name = it->path().filename().string();
+        if (name.rfind("look_preset_", 0) == 0 && name.size() > 4 &&
+            name.compare(name.size() - 4, 4, ".ini") == 0) {
+            out.push_back(it->path().string());
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const std::string& a, const std::string& b) {
+        const int ia = preset_index_from_path(a);
+        const int ib = preset_index_from_path(b);
+        if (ia >= 0 && ib >= 0 && ia != ib) return ia < ib;
+        return a < b;
+    });
+    return out;
+}
+
+std::string next_look_preset_path(const std::string& mod_dir) {
+    int max_index = 0;
+    for (const std::string& path : list_look_presets(mod_dir)) {
+        const int index = preset_index_from_path(path);
+        if (index > max_index) max_index = index;
+    }
+    return (std::filesystem::path(mod_dir) / ("look_preset_" + std::to_string(max_index + 1) + ".ini")).string();
 }
 
 // ImGui 1.92 applies the framework's panel zoom / UI scale through
@@ -182,6 +271,12 @@ bool PbzfmClient::menu_open() const {
     // alive_ 的 release/acquire 保证 api_ 在注册完成后才被读；注册前一律 false。
     if (!alive_.load(std::memory_order_acquire)) return false;
     return api_.IsMenuOpen != nullptr && api_.IsMenuOpen() != 0;
+}
+
+bool PbzfmClient::request_close_menu() {
+    if (api_.CloseMenu == nullptr) return false;  // 旧框架：没有程序化关菜单
+    api_.CloseMenu();
+    return true;
 }
 
 Config PbzfmClient::take_draft(std::uint64_t& generation_out) {
@@ -528,21 +623,29 @@ void PbzfmClient::render_language_controls(Config& draft) {
         }
     }
     const std::string auto_label = lang_.T("#lang_auto");
-    const std::string lang_preview = lang_idx >= 0 ? languages[static_cast<size_t>(lang_idx)].display : auto_label;
-    if (ImGui::BeginCombo(lang_.T("#language").c_str(), lang_preview.c_str())) {
-        if (ImGui::Selectable(auto_label.c_str(), lang_idx < 0) && lang_idx >= 0) {
+    // 框架风格下拉：0 号位固定为"跟随 PBZFM"，其后逐个语言词典。
+    // 窄下拉（SetNextItemWidth），给右侧"重扫词典"按钮留位。
+    std::vector<std::string> lang_items;
+    lang_items.push_back(auto_label);
+    for (const auto& info : languages) lang_items.push_back(info.display);
+    std::vector<const char*> lang_ptrs;
+    lang_ptrs.reserve(lang_items.size());
+    for (const auto& text : lang_items) lang_ptrs.push_back(text.c_str());
+    int sel = lang_idx < 0 ? 0 : lang_idx + 1;
+    const float rescan_w = ImGui::CalcTextSize(lang_.T("#rescan_dicts").c_str()).x +
+                           ImGui::GetStyle().FramePadding.x * 2.0f;
+    ImGui::SetNextItemWidth(std::max(120.0f, ImGui::GetContentRegionAvail().x -
+                                                 rescan_w - ImGui::GetStyle().ItemSpacing.x));
+    if (api_.Combo(lang_.T("#language").c_str(), &sel, lang_ptrs.data(),
+                   static_cast<int>(lang_ptrs.size()))) {
+        if (sel == 0) {
             draft.menu_language = "auto";
             commit_settings(draft, "语言：跟随 PBZFM");
+        } else if (sel - 1 < static_cast<int>(languages.size())) {
+            draft.menu_language = languages[static_cast<size_t>(sel - 1)].id;
+            commit_settings(draft, std::string("语言：") + languages[static_cast<size_t>(sel - 1)].id);
+            lang_.SetLanguageById(languages[static_cast<size_t>(sel - 1)].id);
         }
-        for (size_t i = 0; i < languages.size(); ++i) {
-            const bool selected = static_cast<int>(i) == lang_idx;
-            if (ImGui::Selectable(languages[i].display.c_str(), selected) && !selected) {
-                draft.menu_language = languages[i].id;
-                commit_settings(draft, std::string("语言：") + languages[i].id);
-                lang_.SetLanguageById(languages[i].id);
-            }
-        }
-        ImGui::EndCombo();
     }
     ImGui::SameLine();
     if (ImGui::Button(lang_.T("#rescan_dicts").c_str())) {
@@ -550,7 +653,7 @@ void PbzfmClient::render_language_controls(Config& draft) {
     }
 }
 
-// 单个字段的控件 + 提交语义（Bool/Enum/键位即时提交，Float 松手提交）
+// 单个字段的控件 + 提交语义（Bool/Enum/键位即时提交；Float 拖动实时预览、松手落盘提交）
 // 读值统一走 pbzfm_read_field（schema_map 里的唯一实现，测试已覆盖）。此前这里把四个
 // case 各内联重写了一遍，Key 支漏了 key_fallback——ini 里写了别名的键在菜单显示 "?"，
 // 而引擎实际用的是回退默认键（14 个 Key(...) 的 fallback lambda 因此全部失效）。
@@ -558,25 +661,89 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
     switch (f.kind) {
         case PbzfmFieldKind::Bool: {
             bool b = pbzfm_read_field(f, draft, keys) != 0.0;
-            if (ImGui::Checkbox(lang_.T(f.label).c_str(), &b)) {
-                f.set_bool(draft, b);
+            int bv = b ? 1 : 0;
+            // 框架自绘药丸开关（v0.7.0 PBZFM_Checkbox 通道，行高与原 Checkbox 一致）
+            if (api_.Checkbox(lang_.T(f.label).c_str(), &bv)) {
+                f.set_bool(draft, bv != 0);
                 commit_settings(draft, lang_.T(f.label));
             }
             break;
         }
         case PbzfmFieldKind::Float: {
+            const std::string label_text = lang_.T(f.label);
+            const std::string reset_text = lang_.T("#reset_item");
+            const ImGuiStyle& style = ImGui::GetStyle();
+            const float scale = style.FontSizeBase > 0.0f ? ImGui::GetFontSize() / style.FontSizeBase : 1.0f;
+            // 画面效果五项才有独立开关（f.get_enabled 非空）；其它数值滑块只有重置按钮。
+            const bool has_switch = f.get_enabled != nullptr && f.set_enabled != nullptr;
+            bool enabled = has_switch ? pbzfm_read_enabled(f, draft) : true;
+
+            if (has_switch) {
+                // 独立开关走框架药丸（隐藏标签只画开关；EndGroup 后 IsItemHovered
+                // 覆盖整组，tooltip 语义不变）
+                int en = enabled ? 1 : 0;
+                if (api_.Checkbox((std::string("##toggle_") + f.key).c_str(), &en)) {
+                    if (pbzfm_write_enabled(f, en != 0, draft)) {
+                        enabled = en != 0;
+                        commit_settings(draft, label_text + " " +
+                                            lang_.T(enabled ? "#switch_on" : "#switch_off"));
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", lang_.T("#switch_tip").c_str());
+                ImGui::SameLine();
+            }
+
+            // 旧框架没有 v4 SliderFloatEx 时回退原生滑条：恢复"标签在左"的旧行布局
+            const bool use_fw = api_.SliderFloatEx != nullptr;
+            if (!use_fw) {
+                ImGui::AlignTextToFramePadding();
+                ImGui::TextUnformatted(label_text.c_str());
+                ImGui::SameLine();
+            }
+
             float v = static_cast<float>(pbzfm_read_field(f, draft, keys));
-            // 跨数量级的字段（对焦距离 1..100000cm、对焦步进 1..5000cm）走对数刻度：
-            // 线性刻度下 1 像素 ≈ 500cm，可用的 300~1500cm 根本拖不到（实机反馈「怎么调都没景深」
-            // 的根因之一就是焦点被拖到几万 cm，物理上等于无穷远、CoC≈0）。
-            ImGuiSliderFlags flags = ImGuiSliderFlags_AlwaysClamp;
-            if (f.logarithmic && f.mn > 0.0) flags |= ImGuiSliderFlags_Logarithmic;
-            if (ImGui::SliderFloat(lang_.T(f.label).c_str(), &v, static_cast<float>(f.mn), static_cast<float>(f.mx),
-                                   f.fmt, flags)) {
-                f.set_num(draft, v);  // 拖动中先落 draft，松手才提交（与框架 schema 同语义）
+            const float reset_w =
+                ImGui::CalcTextSize(reset_text.c_str()).x + style.FramePadding.x * 2.0f + 2.0f * scale;
+            const float avail = ImGui::GetContentRegionAvail().x;
+            ImGui::SetNextItemWidth(std::max(80.0f * scale, avail - reset_w - style.ItemSpacing.x));
+            if (!enabled) ImGui::BeginDisabled();
+            const bool changed =
+                use_fw
+                    // 框架自绘滑条：标签画在轨道内（金色进度填充 + Ctrl+点击弹输入框）
+                    ? api_.SliderFloatEx(label_text.c_str(), &v, static_cast<float>(f.mn),
+                                         static_cast<float>(f.mx), f.fmt,
+                                         f.logarithmic ? PBZFM_SLIDER_LOGARITHMIC : 0) != 0
+                    : ImGui::SliderFloat((std::string("##slider_") + f.key).c_str(), &v,
+                                         static_cast<float>(f.mn), static_cast<float>(f.mx),
+                                         f.fmt,
+                                         ImGuiSliderFlags_AlwaysClamp |
+                                             (f.logarithmic && f.mn > 0.0 ? ImGuiSliderFlags_Logarithmic
+                                                                          : 0)) != 0;
+            if (!enabled) ImGui::EndDisabled();
+            // 拖动实时预览：草案直接推引擎（引擎 Tick 应用，下一帧上屏），不写盘不打日志；
+            // 松手 IsItemDeactivatedAfterEdit 再走完整提交（落盘 + 正式日志 + 再次应用）。
+            // 松手帧 ImGui 的 SliderBehaviorT 先 ClearActiveID 再返回（imgui_widgets.cpp：
+            // `if (!MouseDown[0]) ClearActiveID()` 在取值更新之前），所以该帧 changed 恒为
+            // false——提交不能挂在 changed 上，必须在 DeactivatedAfterEdit 上无条件做。
+            // （曾试过用帧内局部 pending_commit 把两帧缝起来：IsItemActive 与
+            //   IsItemDeactivatedAfterEdit 互斥，局部变量跨不过帧边界，提交永远丢失。）
+            // 框架自绘滑条的 Ctrl+点击输入框在弹窗里改值（轨道已非活动项），changed 且
+            // 轨道不在拖动态时直接提交，与"松手提交"同语义；此时 DeactivatedItemData.ID
+            // 是输入框不是滑条，两个分支不会对同一次编辑双提交。
+            if (changed) {
+                f.set_num(draft, v);
+                host_->submit_config_preview(draft);
+                if (!ImGui::IsItemActive()) commit_settings(draft, label_text);
             }
             if (ImGui::IsItemDeactivatedAfterEdit()) {
-                commit_settings(draft, lang_.T(f.label));
+                commit_settings(draft, label_text);
+            }
+            ImGui::SameLine();
+            if (ImGui::Button((reset_text + "##reset_" + f.key).c_str())) {
+                if (pbzfm_reset_field(f, draft)) {
+                    enabled = pbzfm_read_enabled(f, draft);
+                    commit_settings(draft, label_text + " " + reset_text);
+                }
             }
             break;
         }
@@ -589,7 +756,8 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
                 opt_text[i] = lang_.T(f.options[i]);
                 opts[i] = opt_text[i].c_str();
             }
-            if (ImGui::Combo(lang_.T(f.label).c_str(), &idx, opts, n)) {
+            // 框架风格下拉：标签在轨道内、值在右、鎏金箭头、选中行朱砂条
+            if (api_.Combo(lang_.T(f.label).c_str(), &idx, opts, n)) {
                 f.set_enum(draft, idx);
                 commit_settings(draft, lang_.T(f.label));
             }
@@ -622,6 +790,11 @@ void PbzfmClient::render_settings_page() {
     for (const PbzfmField& f : pbzfm_fields()) {
         if (current_group == nullptr || std::strcmp(current_group, f.group) != 0) {
             ImGui::SeparatorText(lang_.T(f.group).c_str());
+            if (std::strcmp(f.group, "#group_look") == 0) {
+                ImGui::TextDisabled(lang_.T("#look_defaults_hint").c_str());
+                render_look_presets(draft);  // 0.4.x 整页回退：预设区与分组页同款
+                ImGui::Separator();
+            }
             current_group = f.group;
         }
         render_field_widget(f, draft, keys);
@@ -656,12 +829,154 @@ void PbzfmClient::render_group_page(const char* group) {
     std::uint64_t draft_gen = 0;
     Config draft = take_draft(draft_gen);
     const KeyMap keys = build_keymap(draft, nullptr);  // 键位回退表（同 render_settings_page）
+    if (std::strcmp(group, "#group_look") == 0) {
+        ImGui::TextDisabled(lang_.T("#look_defaults_hint").c_str());
+        ImGui::Separator();
+        render_look_presets(draft);  // 风格预设：保存 + 下拉套用（0.5.0+ 分组页）
+        ImGui::Separator();
+    }
     for (const PbzfmField& f : pbzfm_fields()) {
         if (std::strcmp(f.group, group) != 0) continue;
         render_field_widget(f, draft, keys);
     }
     store_draft(draft, draft_gen);  // Float 拖动值跨帧保持（松手提交前不能丢）
     if (font_pushed) ImGui::PopFont();
+}
+
+// 「画面效果」组页的风格预设区：保存预设按钮 + 预设下拉框（选中即套用）+ 删除按钮。
+// 演进（2026-11-08 同日）：5 个写死初值按钮 → 3 固定槽位导入导出 → 保存/下拉 → +删除
+//（两击确认防误删：第一击进入确认态，5 秒不点自动复位——与改键捕获 kCaptureTimeoutSec 同节奏）。
+// 不走 schema（PbzfmField 没有「一次写多字段」的类型）：直接改 draft 走 commit_settings
+//（mirror + saver 队列 + submit_config，与滑条松手提交同一管线），预设文件文本的真源在
+// core/look_preset.h（look_preset_<编号>.ini，只含 [look] 的 14 个风格字段）。preset_msg_ /
+// preset_selected_ / preset_delete_* 是框架渲染线程独占状态（pbzfm_client.h 线程归属）。
+void PbzfmClient::render_look_presets(Config& draft) {
+    auto file_text = [this](const char* key, const std::string& path) {
+        const std::string fmt = lang_.T(key);
+        char buf[256]{};
+        std::snprintf(buf, sizeof(buf), fmt.c_str(), path.c_str());
+        return std::string(buf);
+    };
+    // 显示名：look_preset_<n>.ini → 「预设 n」（#preset_name）；编号缺失/非法退回文件名
+    auto display_label = [this](const std::string& path) {
+        const int index = preset_index_from_path(path);
+        char buf[64]{};
+        if (index >= 0) {
+            const std::string fmt = lang_.T("#preset_name");
+            std::snprintf(buf, sizeof(buf), fmt.c_str(), index);
+            return std::string(buf);
+        }
+        std::snprintf(buf, sizeof(buf), "%s", std::filesystem::path(path).filename().string().c_str());
+        return std::string(buf);
+    };
+
+    const std::string mod_dir = host_->mod_dir();
+    const std::vector<std::string> paths = list_look_presets(mod_dir);
+    std::vector<std::string> labels;
+    labels.reserve(paths.size());
+    for (const std::string& path : paths) labels.push_back(display_label(path));
+
+    // ---- 保存预设：写「最大编号 + 1」（绝不覆盖已有预设），成功后选中新项 ----
+    if (ImGui::Button(lang_.T("#preset_save").c_str())) {
+        const std::string path = next_look_preset_path(mod_dir);
+        std::string err;
+        if (save_text_file_atomic(path, look_preset_ini_text(draft), &err)) {
+            preset_msg_ = file_text("#preset_saved_to", std::filesystem::path(path).filename().string());
+            // 本帧枚举发生在保存前，不能直接用 paths.size() 当新项下标：目录里若有合法名但
+            // 非法序号的文件（如 look_preset_backup.ini），它们排在有效序号之后，新预设会插在
+            // 中间。重枚举一次按路径定位；刚写完的文件目录迭代器立即可见，找不到再退回末尾。
+            const std::vector<std::string> fresh = list_look_presets(mod_dir);
+            const auto it = std::find(fresh.begin(), fresh.end(), path);
+            preset_selected_ =
+                it != fresh.end() ? static_cast<int>(it - fresh.begin()) : static_cast<int>(fresh.size());
+            host_->log(LogLevel::Info, "PBZFM 菜单：风格预设已保存 " + path);
+        } else {
+            preset_msg_ = err;
+            host_->log(LogLevel::Warn, "PBZFM 菜单：风格预设保存失败：" + err);
+        }
+    }
+    ImGui::SameLine();
+
+    // ---- 预设下拉：逐帧枚举（外部手删文件即时反映）；选中即套用（滑条跳值就是反馈）----
+    std::vector<std::string> combo_items = labels;
+    if (combo_items.empty()) combo_items.push_back(lang_.T("#preset_none"));  // 空列表占位（禁用）
+    int selection = preset_selected_;
+    if (selection >= static_cast<int>(combo_items.size())) selection = -1;  // 外部删除后的残留索引
+    const bool has_presets = !paths.empty();
+    if (!has_presets) {
+        selection = 0;
+        ImGui::BeginDisabled();
+    }
+    // 框架风格下拉（api_.Combo 取 items 数组；逐帧物化指针，字符串本体活到 EndPopup 后）
+    std::vector<const char*> item_ptrs;
+    item_ptrs.reserve(combo_items.size());
+    for (const auto& text : combo_items) item_ptrs.push_back(text.c_str());
+    // 删除按钮先量宽（确认态会换文案，取两态最大值给下拉留位，避免按钮换字时下拉宽度跳变）
+    const ImGuiStyle& style = ImGui::GetStyle();
+    const float del_width =
+        std::max(ImGui::CalcTextSize(lang_.T("#preset_delete").c_str()).x,
+                 ImGui::CalcTextSize(lang_.T("#preset_delete_confirm").c_str()).x) +
+        style.FramePadding.x * 2.0f + 2.0f;
+    ImGui::SetNextItemWidth(std::max(140.0f, ImGui::GetContentRegionAvail().x - del_width - style.ItemSpacing.x));
+    if (api_.Combo("##look_preset_select", &selection, item_ptrs.data(),
+                   static_cast<int>(item_ptrs.size())) &&
+        has_presets && selection >= 0 && selection < static_cast<int>(paths.size())) {
+        preset_selected_ = selection;
+        const std::string& path = paths[static_cast<size_t>(selection)];
+        const std::string text = read_text_file(path);
+        if (text.empty() || !parse_look_preset_ini(text, draft)) {
+            preset_msg_ = file_text("#preset_missing", std::filesystem::path(path).filename().string());
+            host_->log(LogLevel::Warn, "PBZFM 菜单：风格预设套用失败（文件为空或无 [look] 段）：" + path);
+        } else {
+            const std::string what = file_text("#preset_loaded", display_label(path));
+            commit_settings(draft, what);
+            preset_msg_ = what;
+        }
+    } else if (has_presets) {
+        preset_selected_ = selection;
+    }
+
+    // ---- 删除预设：两击确认（目标按文件路径锁定，换选中即失效），删文件本体 ----
+    if (!preset_delete_target_.empty() && SteadySeconds() >= preset_delete_deadline_) {
+        preset_delete_target_.clear();  // 超时懒复位：确认态只由这两个成员表达
+        preset_delete_deadline_ = 0.0;
+    }
+    const bool can_delete =
+        has_presets && preset_selected_ >= 0 && preset_selected_ < static_cast<int>(paths.size());
+    const bool confirming = can_delete && !preset_delete_target_.empty() &&
+                            preset_delete_target_ == paths[static_cast<size_t>(preset_selected_)];
+    ImGui::SameLine();  // 删除按钮与下拉同行（del_width 已给下拉留位）
+    if (!can_delete) ImGui::BeginDisabled();
+    if (ImGui::Button((confirming ? lang_.T("#preset_delete_confirm") : lang_.T("#preset_delete")).c_str())) {
+        if (confirming) {
+            const std::string path = preset_delete_target_;  // 拷贝：清空确认态不能让引用失效
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+            if (ec) {
+                preset_msg_ = "删除失败：" + ec.message();
+                host_->log(LogLevel::Warn, "PBZFM 菜单：风格预设删除失败：" + ec.message() + "：" + path);
+            } else {
+                preset_msg_ = file_text("#preset_deleted", display_label(path));
+                host_->log(LogLevel::Info, "PBZFM 菜单：风格预设已删除 " + path);
+                preset_selected_ = -1;  // 该项已不存在：清选中，防止残留索引指向列表里的下一项
+            }
+            preset_delete_target_.clear();
+            preset_delete_deadline_ = 0.0;
+        } else {
+            preset_delete_target_ = paths[static_cast<size_t>(preset_selected_)];
+            preset_delete_deadline_ = SteadySeconds() + kCaptureTimeoutSec;
+        }
+    }
+    if (!can_delete) ImGui::EndDisabled();
+
+    if (!has_presets) {
+        ImGui::EndDisabled();
+        preset_selected_ = -1;
+    }
+
+    if (!preset_msg_.empty()) {
+        ImGui::TextDisabled("%s", preset_msg_.c_str());
+    }
 }
 
 void PbzfmClient::render_key_field(const PbzfmField& f, Config& draft, const KeyMap& keys) {

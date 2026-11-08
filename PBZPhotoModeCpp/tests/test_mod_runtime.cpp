@@ -144,6 +144,262 @@ void test_enter_tick_config_leave() {
     CHECK(f.engine.logs_contain("退出摄影模式"));
 }
 
+
+// ---- 景深/胶片（DofPort）：门控不可用拒绝启用 → 重进重新探测 → 生效与退出释放 ----
+void test_dof_gate_lifecycle() {
+    section("ModRuntime 集成：景深门控生命周期");
+    Fixture f;
+
+    // 门控不可用：启用请求被拒绝（每会话探测一次），参数不下发，退出干净无 pending
+    f.engine.dof_gate_available = false;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    Config with_dof = f.cfg;
+    with_dof.dof_enabled = true;
+    f.runtime.apply_config(with_dof);
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, 0);
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    CHECK(!f.mode.recovery_pending());
+
+    // 重进（enter 会清「本会话不可用」标记重新探测）：门控可用后 ensure → apply
+    f.engine.dof_gate_available = true;
+    const int ensures_before = static_cast<int>(f.engine.dof_calls.size());
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    f.runtime.dispatch(Intent{}, 0.016);  // dof_enabled 仍在配置里：进入后自动启用
+    CHECK(static_cast<int>(f.engine.dof_calls.size()) > ensures_before);
+    CHECK(f.engine.dof_calls[ensures_before] == "ensure_dof_gate(dof,-)");
+    CHECK(f.engine.dof_apply_calls >= 1);
+    CHECK(f.engine.last_dof.dof_enabled);
+    // 参数不变不重复下发
+    const int applies_after_first = f.engine.dof_apply_calls;
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, applies_after_first);
+    // 退出：门控释放，无残留
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    CHECK(!f.mode.recovery_pending());
+    bool released = false;
+    for (const std::string& c : f.engine.dof_calls) released |= (c == "release_dof_gate");
+    CHECK(released);
+}
+
+// ---- 门控释放失败 → recovery_pending，退避重试成功后清账 ----
+void test_dof_gate_release_retry() {
+    section("ModRuntime 集成：景深门控释放失败走退避重试");
+    Fixture f;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    Config with_dof = f.cfg;
+    with_dof.dof_enabled = true;
+    f.runtime.apply_config(with_dof);
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK(f.engine.dof_apply_calls >= 1);
+
+    f.engine.fail_dof_release = true;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    CHECK(f.mode.recovery_pending());  // 门控未释放：保持待恢复，1s/2s/4s/8s 退避重试
+    f.engine.fail_dof_release = false;
+    // dt 被夹紧到 kMaxFrameDt(0.25s)：按帧推进积累到首个退避周期（1s）
+    for (int i = 0; i < 5; ++i) f.runtime.dispatch(Intent{}, 0.25);
+    CHECK(!f.mode.recovery_pending());
+}
+
+// ---- 胶片闸门延迟补建：首启色差/颗粒全 0 时胶片 cvar 组被跳过，之后调大必须放行补建 ----
+// （2026-11-07 实机：ensure_dof_ready 早退挡死补建 → 组件 PP 写入成功但 r.SceneColorFringeQuality
+//   等仍是游戏默认 0，pass 不渲染，色差/颗粒滑条动了画面没反应）
+void test_dof_film_gate_late_build() {
+    section("ModRuntime 集成：胶片闸门延迟补建");
+    Fixture f;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+
+    // 首启：DOF 开、色差/颗粒 0 → 只建 DOF 闸门（need_film=false）
+    Config with_dof = f.cfg;
+    with_dof.dof_enabled = true;
+    f.runtime.apply_config(with_dof);
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK(f.engine.dof_apply_calls >= 1);
+    int film_ensures = 0;
+    for (const std::string& c : f.engine.dof_calls) film_ensures += (c == "ensure_dof_gate(dof,film)");
+    CHECK_INT(film_ensures, 0);
+
+    // 菜单调大色差：必须再 ensure 一次带 film（早退挡死 = 本测试红）；apply 照常下发
+    Config with_ca = with_dof;
+    with_ca.chromatic_aberration = 0.5;
+    const int applies_before = f.engine.dof_apply_calls;
+    f.runtime.apply_config(with_ca);
+    f.runtime.dispatch(Intent{}, 0.016);
+    film_ensures = 0;
+    for (const std::string& c : f.engine.dof_calls) film_ensures += (c == "ensure_dof_gate(dof,film)");
+    CHECK_INT(film_ensures, 1);
+    CHECK_INT(f.engine.dof_apply_calls, applies_before + 1);
+    CHECK(f.engine.last_dof.chromatic_aberration == 0.5);
+    // 闸门已建：参数不变不重复 ensure/apply
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, applies_before + 1);
+    film_ensures = 0;
+    for (const std::string& c : f.engine.dof_calls) film_ensures += (c == "ensure_dof_gate(dof,film)");
+    CHECK_INT(film_ensures, 1);
+
+    // 退出释放清账；重进后 CA>0：首启建控即带 film
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    f.runtime.apply_config(with_ca);
+    f.runtime.dispatch(Intent{}, 0.016);
+    film_ensures = 0;
+    for (const std::string& c : f.engine.dof_calls) film_ensures += (c == "ensure_dof_gate(dof,film)");
+    CHECK_INT(film_ensures, 2);
+}
+
+// ---- apply_dof 持续失败：按 kDofApplyRetryBackoffSec 退避重试，不每帧重入 SEH 写入 ----
+void test_dof_apply_backoff() {
+    section("ModRuntime 集成：景深下发失败退避重试");
+    Fixture f;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    Config with_dof = f.cfg;
+    with_dof.dof_enabled = true;
+    f.runtime.apply_config(with_dof);
+
+    f.engine.fail_dof_apply = true;
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, 1);  // 首次尝试即失败，进入退避
+    for (int i = 0; i < 20; ++i) f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, 1);  // 退避窗口（0.5s）内不重入写入
+    f.runtime.dispatch(Intent{}, 0.25);
+    CHECK_INT(f.engine.dof_apply_calls, 2);  // dt 上限 0.25s 两帧跨过窗口：重试（仍失败）
+    for (int i = 0; i < 10; ++i) f.runtime.dispatch(Intent{}, 0.016);
+    CHECK_INT(f.engine.dof_apply_calls, 2);
+
+    f.engine.fail_dof_apply = false;
+    f.runtime.dispatch(Intent{}, 0.25);  // 还在退避窗口内：跳过
+    CHECK_INT(f.engine.dof_apply_calls, 2);
+    f.runtime.dispatch(Intent{}, 0.25);  // 退避到期：成功下发
+    CHECK_INT(f.engine.dof_apply_calls, 3);
+    CHECK(f.engine.last_dof.dof_enabled);
+    f.runtime.dispatch(Intent{}, 0.25);  // 成功后参数不变：不再下发
+    CHECK_INT(f.engine.dof_apply_calls, 3);
+
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    CHECK(!f.mode.recovery_pending());
+}
+
+// ---- NLP 过场渲染档严格跟随景深主开关（2026-11-08 实机取证；独立键已删并入总开关）----
+// 取证：档位是全局渲染档，游戏原生过场景深随它渲染（游戏自己的对焦逻辑、随镜头移动、本 mod
+// 参数管不到），景深总开关关着也压不住（组件通道 Scale=0 只压我们自己写的那一份）；实机同时
+// 证伪「仅靠 ShowFlag/画质闸门就能出景深」（gates-only 无画面）——档位遂并入总开关、无独立键。
+// 契约：① 引擎端只在 need_dof 时请求 NLP（胶片建控不开档）；② 主开关关掉立即释放档位（只发
+// 一次）；③ 主开关再开时补建（早退被 nlp_owed 放行）；④ 开启失败置 exhausted 不再重试；
+// ⑤ 释放失败按退避重试，不每帧重入。
+void test_dof_nlp_follows_master() {
+    section("ModRuntime 集成：NLP 档跟随景深主开关");
+
+    // ① 主开关关 + 色差开（胶片建控，取证复现路径）：不得请求 NLP
+    {
+        Fixture f;
+        Config cfg = f.cfg;
+        cfg.chromatic_aberration = 0.5;
+        CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(f.engine.dof_apply_calls >= 1);
+        CHECK(!f.engine.nlp_active);       // 胶片建控没开档
+        int releases = 0;
+        for (const std::string& c : f.engine.dof_calls) releases += (c == "release_nlp_profile");
+        CHECK_INT(releases, 0);
+        CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+        CHECK(!f.mode.recovery_pending());
+    }
+
+    // ② 主开关开（档位随建控开启）→ 关（立即释放、只发一次）→ 再开（欠账补建）
+    {
+        Fixture f;
+        Config cfg = f.cfg;
+        cfg.dof_enabled = true;
+        cfg.chromatic_aberration = 0.5;
+        CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(f.engine.nlp_active);
+
+        // 关（走 apply_config：与 F8 菜单 live 映射同一条路径）
+        cfg.dof_enabled = false;
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(!f.engine.nlp_active);
+        int releases = 0;
+        for (const std::string& c : f.engine.dof_calls) releases += (c == "release_nlp_profile");
+        CHECK_INT(releases, 1);
+        f.runtime.dispatch(Intent{}, 0.016);  // 已释放：不重复发
+        releases = 0;
+        for (const std::string& c : f.engine.dof_calls) releases += (c == "release_nlp_profile");
+        CHECK_INT(releases, 1);
+
+        // 再开：胶片闸门已建、早退被 nlp_owed 放行 → 补建请求 NLP
+        cfg.dof_enabled = true;
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(f.engine.nlp_active);
+        CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+        CHECK(!f.mode.recovery_pending());
+    }
+
+    // ③ NLP 请求失败置 exhausted：本会话不再重试（后续参数变化也不补建），参数下发不受影响
+    {
+        Fixture f;
+        Config cfg = f.cfg;
+        cfg.dof_enabled = true;
+        f.engine.fail_nlp_enable = true;
+        CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(!f.engine.nlp_active);
+        CHECK(f.engine.nlp_exhausted);
+        CHECK(f.engine.dof_apply_calls >= 1);  // 门控 cvar 闸门可用：参数照常下发
+        const int ensures_after_fail = static_cast<int>(f.engine.dof_calls.size());
+        const int applies_after_fail = f.engine.dof_apply_calls;
+        cfg.dof_focal_distance = 500.0;  // 参数变化触发 apply 路径：不得再尝试 NLP
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK_INT(static_cast<int>(f.engine.dof_calls.size()), ensures_after_fail);
+        CHECK_INT(f.engine.dof_apply_calls, applies_after_fail + 1);
+        CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+    }
+
+    // ④ 释放失败退避重试（kDofApplyRetryBackoffSec=0.5，dt 夹紧 0.25）：不每帧重入
+    {
+        Fixture f;
+        Config cfg = f.cfg;
+        cfg.dof_enabled = true;
+        CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(f.engine.nlp_active);
+
+        f.engine.fail_nlp_release = true;
+        cfg.dof_enabled = false;
+        f.runtime.apply_config(cfg);
+        f.runtime.dispatch(Intent{}, 0.016);
+        CHECK(f.engine.nlp_active);  // 释放失败：档位仍记账，退避开始
+        auto release_count = [&] {
+            int n = 0;
+            for (const std::string& c : f.engine.dof_calls) n += (c == "release_nlp_profile");
+            return n;
+        };
+        CHECK_INT(release_count(), 1);
+        for (int i = 0; i < 5; ++i) f.runtime.dispatch(Intent{}, 0.016);
+        CHECK_INT(release_count(), 1);       // 退避窗口（累计 0.08s）内不重入
+        f.runtime.dispatch(Intent{}, 0.25);
+        CHECK_INT(release_count(), 1);       // 窗口未跨过（累计 0.33s）：仍不重入
+        f.runtime.dispatch(Intent{}, 0.25);
+        CHECK_INT(release_count(), 2);       // 退避到期：重试（仍失败）
+
+        f.engine.fail_nlp_release = false;
+        f.runtime.dispatch(Intent{}, 0.25);  // 还在窗口内：跳过
+        CHECK(f.engine.nlp_active);
+        f.runtime.dispatch(Intent{}, 0.25);  // 窗口到期：释放成功
+        CHECK(!f.engine.nlp_active);
+        CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+        CHECK(!f.mode.recovery_pending());
+    }
+}
+
 // ---- 进入被拒绝 ----
 void test_enter_rejected() {
     section("ModRuntime 进入被拒绝");
@@ -301,6 +557,11 @@ void test_config_tick_concurrency() {
 void run_mod_runtime_tests() {
     test_live_toggle_plan();
     test_enter_tick_config_leave();
+    test_dof_gate_lifecycle();
+    test_dof_gate_release_retry();
+    test_dof_film_gate_late_build();
+    test_dof_apply_backoff();
+    test_dof_nlp_follows_master();
     test_enter_rejected();
     test_live_toggle_failures();
     test_recovery_retry_limit();

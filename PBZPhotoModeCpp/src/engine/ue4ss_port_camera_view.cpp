@@ -7,6 +7,7 @@
 
 #include <cstring>
 
+#include "core/input_logic.h"
 #include "core/tuning.h"
 
 namespace pbzpm {
@@ -1032,7 +1033,13 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
         names[2] = rgba ? "B" : "Z";
         names[3] = rgba ? "A" : "W";
     };
-    auto set_vector = [&](const char* override_name, const char* value_name, bool on, double value) {
+    // off_rgb：失活时 RGB 三通道写回的中性值（乘算字段=1，加算字段=0）；
+    // w_value：第 4 通道的值。乘算字段（饱和/对比/增益/伽马）引擎默认 (1,1,1,1)，W=1 正确；
+    // 加算字段（ColorOffset 黑位）引擎默认 (0,0,0,0)，必须写 W=0——preview1 曾对偏移也写
+    // W=1.0（与方向无关的常量），实机正负两方向都发白，是该常量的头号嫌疑（preview3 验证：
+    // 若 W=0 后仍双向发白，则游戏自定义烘焙对偏移另有滥用如 abs()，届时黑位判死收成两件）。
+    auto set_vector = [&](const char* override_name, const char* value_name, bool on, double value,
+                          double off_rgb = 1.0, double w_value = 1.0) {
         FProperty* override_prop = struct_member(settings, override_name);
         FProperty* value_prop = struct_member(settings, value_name);
         if (override_prop == nullptr || value_prop == nullptr) {
@@ -1043,17 +1050,28 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
         const char* channels[4]{};
         vector_channels(value_prop, channels);
         (void)write_bool(override_prop, base, on);
-        const double channel_value = on ? value : 1.0;
+        const double channel_value = on ? value : off_rgb;
         for (int i = 0; i < 3; ++i) {
             (void)write_number(struct_member(value_prop, channels[i]), vector_base, channel_value);
         }
-        (void)write_number(struct_member(value_prop, channels[3]), vector_base, 1.0);
+        (void)write_number(struct_member(value_prop, channels[3]), vector_base, w_value);
     };
 
     set_scalar("bOverride_VignetteIntensity", "VignetteIntensity", options.vignette_active(), options.vignette);
     set_scalar("bOverride_BloomIntensity", "BloomIntensity", options.bloom_active(), options.bloom);
     set_vector("bOverride_ColorSaturation", "ColorSaturation", options.saturation_active(), options.saturation);
     set_vector("bOverride_ColorContrast", "ColorContrast", options.contrast_active(), options.contrast);
+
+    // 调色·进阶三件（2026-11-08 批次）：ColorGrading LUT 每通道家族，与饱和/对比同一 pass，
+    // 实机验证有效。同批十项（分区调色/胶片曲线/白平衡/泛光阈值软膝）当日探针判死移除
+    //（字段缺失或写入成功引擎不消费，取证在 tuning.h）。
+    // 中性值语义见 look.h：滑条在默认值时 *_active()=false，set_vector 会把 bOverride_ 写回
+    // false（值字段同时归一/归零，仅本模组自己的体积，不影响游戏侧）。
+    set_vector("bOverride_ColorGain", "ColorGain", options.color_gain_active(), options.color_gain);
+    set_vector("bOverride_ColorGamma", "ColorGamma", options.color_gamma_active(), options.color_gamma);
+    // 黑位是加算字段：激活写 (v,v,v,0)，失活写回引擎默认 (0,0,0,0)——W 通道不写 1（见 set_vector 注释）
+    set_vector("bOverride_ColorOffset", "ColorOffset", options.color_offset_active(), options.color_offset,
+               0.0, 0.0);
 
     // 冷暖：SceneColorTint（FLinearColor 乘算）。t>0 偏暖（压蓝），t<0 偏冷（压红）。
     {
@@ -1073,10 +1091,10 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
         }
     }
 
-    // 颜色分级（饱和度/对比度）由引擎的「颜色分级 LUT」承载：本作若把 ColorGradingIntensity 压成 0，
-    // LUT 整个不参与合成，饱和/对比写得再准也不会进画面。只在用户真动这两项时把强度钉成 1
-    //（LUT 内容仍由引擎按当前设置生成，不是外挂一张自己的 LUT）。
-    if (options.saturation_active() || options.contrast_active()) {
+    // 颜色分级（饱和度/对比度 + 调色·进阶的增益/伽马/黑位/分区/白平衡）由引擎的「颜色分级 LUT」
+    // 承载：本作若把 ColorGradingIntensity 压成 0，LUT 整个不参与合成，这些项写得再准也不会进画面。
+    // 只在用户真动其中任一项时把强度钉成 1（LUT 内容仍由引擎按当前设置生成，不是外挂一张自己的 LUT）。
+    if (options.color_grading_active()) {
         FProperty* override_prop = struct_member(settings, "bOverride_ColorGradingIntensity");
         FProperty* value_prop = struct_member(settings, "ColorGradingIntensity");
         if (override_prop == nullptr || value_prop == nullptr) {
@@ -1165,6 +1183,10 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
         read_vector("饱和", "bOverride_ColorSaturation", "ColorSaturation");
         read_vector("对比", "bOverride_ColorContrast", "ColorContrast");
         read_scalar("颜色分级", "bOverride_ColorGradingIntensity", "ColorGradingIntensity");
+        // 调色·进阶三件回读（写进去了 ≠ 引擎肯画；回读只回答前半个问题）
+        read_vector("增益", "bOverride_ColorGain", "ColorGain");
+        read_vector("伽马", "bOverride_ColorGamma", "ColorGamma");
+        read_vector("黑位", "bOverride_ColorOffset", "ColorOffset");
         log(LogLevel::Info, text);
     }
 
@@ -1179,13 +1201,25 @@ bool Ue4ssPort::set_look(const LookOptions& options) {
 // 本作的暗角/泛光强度在画面里始终存在（Phantom Tweaks 等工具也是通过改游戏自己的画质/镜头参数
 // 来关掉它们）；若强度来自相机 POV 的 PostProcessSettings，只写自建体积就会出现「体积里读回
 // 2.00/10.00 都成功，但渲染前被 POV 同名字段盖回去」的现象。即使强度不在 POV 上，POV 也是
-// 体积之后最后生效的一份设置，写这里能保证覆盖任何体积。POV 每帧被 UpdateCamera 整份重建，
-// 因此必须在本 Mod 已有的 GameViewportClient Tick 之后写点（UpdateCamera 之后、RedrawViewports
-// 之前）每帧重申。
+// 体积之后最后生效的一份设置，写这里能保证覆盖任何体积。POV 在正常运行时每帧被 UpdateCamera
+// 整份重建，因此必须在本 Mod 已有的 GameViewportClient Tick 之后写点（UpdateCamera 之后、
+// RedrawViewports 之前）每帧重申；但摄影模式定格/独立相机下 UpdateCamera 不跑、POV 不重建，
+// 所以失活（重置/开关/滑回 0）后本函数还要把上一帧写下的 覆盖1+旧值 显式回写成 覆盖0，
+// 否则残留值永远压过体积（2026-11-07 实机：重置后体积回读全对、画面停在旧值）。
 void Ue4ssPort::apply_look_to_camera_pov() {
-    if (!look_active_) return;
-    // 只有暗角/泛光需要 POV 通道；其余三项仍走体积（POV 每帧重建，不做无谓写入）。
-    if (!look_current_.vignette_active() && !look_current_.bloom_active()) return;
+    // 本帧目标状态 + 残留判定：定格/独立相机下 POV 不被 UpdateCamera 重建（这正是需要每帧
+    // 重申的原因），因此失活后重申一停，上一帧写下的「覆盖1+旧值」会永远钉在 POV 上压过
+    // 体积——重置/开关按钮画面不动的根因。所以失活后还要继续跑到 POV 把 bOverride 写回
+    // false 撤残留，撤干净（两个闩锁都落下）才允许早退。
+    const bool want_vignette = look_active_ && look_current_.vignette_active();
+    const bool want_bloom = look_active_ && look_current_.bloom_active();
+    // 调色·进阶诊断（一次性）：即使用户没动暗角/泛光，只要用了调色项也要放行过这个早退，
+    // 读一遍游戏 POV 对三件调色字段的覆盖标志（只读，不写；读完即记，后续帧恢复早退）。
+    const bool pro_diag_pending =
+        !look_pov_pro_logged_ && look_active_ && look_current_.color_pro_active();
+    if (!want_vignette && !pov_vignette_latched_ && !want_bloom && !pov_bloom_latched_ && !pro_diag_pending) {
+        return;
+    }
 
     PovView pv;
     if (!resolve_pov_view(pv)) return;
@@ -1205,21 +1239,77 @@ void Ue4ssPort::apply_look_to_camera_pov() {
         (void)read_number(struct_member(pv.pov, "PostProcessBlendWeight"), pv.base, pov_blend_weight);
     }
 
-    auto set_scalar = [&](const char* override_name, const char* value_name, double value) {
+    // 调色·进阶诊断（一次性，只读）：游戏 POV 对三件存活字段的 bOverride_* 标志 + 原值。
+    // 2026-11-08 实机判据已用掉一轮：当时 13 项全部 覆盖0（排除 POV 压制），十项判死定案；
+    // 保留三件的一次性日志供游戏更新后复查（字段若被游戏 override，需按暗角/泛光的
+    // 闩锁模式扩 POV 重申通道）。
+    if (pro_diag_pending && !look_pov_pro_logged_) {
+        // FVector4 项取首通道（X 或 R，与 set_look 的 vector_channels 同语义，只读无日志副作用）。
+        auto first_channel_value = [&](const char* value_name, double& out) {
+            FProperty* vector_prop = struct_member(settings, value_name);
+            if (vector_prop == nullptr) return false;
+            void* vector_base = struct_member_base(vector_prop, base);
+            const bool rgba = struct_member(vector_prop, "R") != nullptr;
+            return read_number(struct_member(vector_prop, rgba ? "R" : "X"), vector_base, out);
+        };
+        struct ProField {
+            const char* label;
+            const char* override_name;
+            const char* value_name;
+        };
+        static const ProField kProFields[] = {
+            {"增益", "bOverride_ColorGain", "ColorGain"},
+            {"伽马", "bOverride_ColorGamma", "ColorGamma"},
+            {"黑位", "bOverride_ColorOffset", "ColorOffset"},
+        };
+        std::string text = "画面效果·进阶：游戏 POV 覆盖标志（覆盖1=游戏镜头自己 override 该项，"
+                           "体积写入会被压住）";
+        for (const ProField& f : kProFields) {
+            double o = 0.0;
+            double v = 0.0;
+            const bool flag_ok = read_number(struct_member(settings, f.override_name), base, o);
+            const bool value_ok = first_channel_value(f.value_name, v);
+            if (flag_ok && value_ok) {
+                char part[48]{};
+                std::snprintf(part, sizeof(part), " %s=%.2f(覆盖%.0f)", f.label, v, o);
+                text += part;
+            } else {
+                text += std::string(" ") + f.label + "=<读不到>";
+            }
+        }
+        look_pov_pro_logged_ = true;
+        log(LogLevel::Info, text);
+    }
+
+    auto set_scalar = [&](const char* override_name, const char* value_name, bool on, double value) {
         FProperty* override_prop = struct_member(settings, override_name);
         FProperty* value_prop = struct_member(settings, value_name);
         if (override_prop == nullptr || value_prop == nullptr) return false;
-        const bool override_ok = write_bool(override_prop, base, true);
-        const bool value_ok = write_number(value_prop, base, value);
+        const bool override_ok = write_bool(override_prop, base, on);
+        const bool value_ok = write_number(value_prop, base, on ? value : 0.0);
         return override_ok && value_ok;
     };
 
     bool wrote = false;
-    if (look_current_.vignette_active()) {
-        wrote = set_scalar("bOverride_VignetteIntensity", "VignetteIntensity", look_current_.vignette) || wrote;
+    bool cleared = false;
+    // 失活那一帧走的是「撤残留」分支：把上一帧的 覆盖1+旧值 回写成 覆盖0（体积通道的
+    // set_look 里同名 lambda 就是这个语义，照搬）。写成功才落闩，失败下一帧重试。
+    const bool clear_vignette = !want_vignette && pov_vignette_latched_;
+    const bool clear_bloom = !want_bloom && pov_bloom_latched_;
+    if (want_vignette || clear_vignette) {
+        if (set_scalar("bOverride_VignetteIntensity", "VignetteIntensity", want_vignette,
+                       look_current_.vignette)) {
+            pov_vignette_latched_ = want_vignette;
+            wrote = true;
+            cleared = clear_vignette;
+        }
     }
-    if (look_current_.bloom_active()) {
-        wrote = set_scalar("bOverride_BloomIntensity", "BloomIntensity", look_current_.bloom) || wrote;
+    if (want_bloom || clear_bloom) {
+        if (set_scalar("bOverride_BloomIntensity", "BloomIntensity", want_bloom, look_current_.bloom)) {
+            pov_bloom_latched_ = want_bloom;
+            wrote = true;
+            cleared = cleared || clear_bloom;
+        }
     }
     if (wrote && !look_pov_logged_) {
         look_pov_logged_ = true;
@@ -1237,6 +1327,12 @@ void Ue4ssPort::apply_look_to_camera_pov() {
                       v, vf, b, bf);
         log(LogLevel::Info, buf);
     }
+    if (cleared && !pov_look_clear_logged_) {
+        pov_look_clear_logged_ = true;
+        log(LogLevel::Info,
+            "画面效果：暗角/泛光失活，已把相机 POV 上的残留覆盖回写为 覆盖0"
+            "（定格/独立相机下 POV 不被 UpdateCamera 重建，残留必须显式撤除，否则压过体积）");
+    }
 }
 
 bool Ue4ssPort::leave_camera_takeover() {
@@ -1253,13 +1349,108 @@ bool Ue4ssPort::leave_camera_takeover() {
     return true;
 }
 
+bool Ue4ssPort::read_ignore_flag(bool look, bool& out) {
+    UObject* pc = controller();
+    if (!is_ok(pc)) return false;
+    bool value = false;
+    if (!invoke_bool(pc, look ? "IsLookInputIgnored" : "IsMoveInputIgnored",
+                     [](ParamBlock&) { return true; }, value)) {
+        return false;
+    }
+    out = value;
+    return true;
+}
+
+// IgnoreLookInput / IgnoreMoveInput 是 uint8 堆叠计数，且不是 UPROPERTY，反射层读不到计数，
+// 只能通过 Is*InputIgnored() 读布尔锁状态。进入前若游戏自己已持有同类锁，配对的一次
+// Set(false) 只会把 2 减成 1，退出后仍被判定为“忽略输入”——视角完全不能转。
+// 这里按进入前/当前布尔状态校正：必要时 Reset* 清掉全部残留，或补回进入前那把锁。
+bool Ue4ssPort::reconcile_ignore_flag(bool look, UObject* pc) {
+    const bool saved = look ? input_look_state_saved_ : input_move_state_saved_;
+    if (!saved) return true;
+    const bool was_ignored = look ? input_look_was_ignored_ : input_move_was_ignored_;
+    const char* label = look ? "Look" : "Move";
+    if (!is_ok(pc)) {
+        log(LogLevel::Warn, std::string("恢复输入屏蔽：") + label + " 目标对象已失效，无法校正锁状态");
+        return false;
+    }
+
+    bool now_ignored = false;
+    if (!invoke_bool(pc, look ? "IsLookInputIgnored" : "IsMoveInputIgnored",
+                     [](ParamBlock&) { return true; }, now_ignored)) {
+        // 读不到状态时不能赌：直接 Reset* 兜底，宁可清掉一把可能的游戏锁，也不能让玩家视角永久卡死。
+        log(LogLevel::Warn, std::string("恢复输入屏蔽：读不到 ") + label + " 锁状态，执行 Reset 兜底");
+        const bool reset_ok =
+            invoke(pc, look ? "ResetIgnoreLookInput" : "ResetIgnoreMoveInput", [](ParamBlock&) { return true; });
+        if (!reset_ok) return false;
+        if (look) {
+            input_look_state_saved_ = false;
+        } else {
+            input_move_state_saved_ = false;
+        }
+        return true;
+    }
+
+    const IgnoreLockRestore action = plan_ignore_lock_restore(was_ignored, now_ignored);
+    bool ok = true;
+    if (action == IgnoreLockRestore::Reset) {
+        ok = invoke(pc, look ? "ResetIgnoreLookInput" : "ResetIgnoreMoveInput", [](ParamBlock&) { return true; });
+    } else if (action == IgnoreLockRestore::Relock) {
+        ok = invoke(pc, look ? "SetIgnoreLookInput" : "SetIgnoreMoveInput", [&](ParamBlock& params) {
+            if (look) {
+                return params.set_bool("bNewLookInput", true) || params.set_bool("bIgnore", true) ||
+                       params.set_bool("NewLookInput", true);
+            }
+            return params.set_bool("bNewMoveInput", true) || params.set_bool("bIgnore", true) ||
+                   params.set_bool("NewMoveInput", true);
+        });
+    }
+    if (!ok) {
+        log(LogLevel::Warn, std::string("恢复输入屏蔽：") + label + " 锁校正失败，保留待重试");
+        return false;
+    }
+    if (action != IgnoreLockRestore::None) {
+        log(LogLevel::Info, std::string("恢复输入屏蔽：") + label + " 锁残留已校正（进入前=" +
+                                (was_ignored ? "锁定" : "未锁") + "，退出时=" +
+                                (now_ignored ? "锁定" : "未锁") + "）");
+    }
+    if (look) {
+        input_look_state_saved_ = false;
+    } else {
+        input_move_state_saved_ = false;
+    }
+    return true;
+}
+
 bool Ue4ssPort::set_ignore_move_input(bool ignore) {
     UObject* pc = controller();
     if (!is_ok(pc)) return false;
-    return invoke(pc, "SetIgnoreMoveInput", [&](ParamBlock& params) {
-        return params.set_bool("bNewMoveInput", ignore) || params.set_bool("bIgnore", ignore) ||
-               params.set_bool("NewMoveInput", ignore);
+    if (ignore) {
+        bool pre_ignored = false;
+        const bool pre_read = read_ignore_flag(false, pre_ignored);
+        const bool invoked = invoke(pc, "SetIgnoreMoveInput", [&](ParamBlock& params) {
+            return params.set_bool("bNewMoveInput", true) || params.set_bool("bIgnore", true) ||
+                   params.set_bool("NewMoveInput", true);
+        });
+        if (invoked && !input_move_state_saved_) {
+            // 读不到 IsMoveInputIgnored 时按“进入前未锁”记录，退出时若仍锁定就 Reset 兜底。
+            input_move_was_ignored_ = pre_read ? pre_ignored : false;
+            input_move_state_saved_ = true;
+            if (!pre_read) {
+                log(LogLevel::Warn, "屏蔽输入：读不到 IsMoveInputIgnored（退出时将 Reset 兜底）");
+            } else if (pre_ignored) {
+                log(LogLevel::Info, "屏蔽输入：进入前 Move 已被游戏锁定（退出时会恢复为锁定）");
+            }
+        }
+        return invoked;
+    }
+
+    const bool invoked = invoke(pc, "SetIgnoreMoveInput", [&](ParamBlock& params) {
+        return params.set_bool("bNewMoveInput", false) || params.set_bool("bIgnore", false) ||
+               params.set_bool("NewMoveInput", false);
     });
+    if (!invoked) return false;
+    return reconcile_ignore_flag(false, pc);
 }
 
 // M-2：只在确实写成功时记录目标对象身份。name 用于恢复前二次确认（指针失效后再分配
@@ -1302,11 +1493,13 @@ bool Ue4ssPort::restore_blocked_object(BlockedObject& record, UObject* current_o
         ok = write_bool(find_property(record.object, "bBlockInput"), record.object, false) && ok;
     }
     if ((record.written_bits & 0x4) != 0) {
-        ok = invoke(record.object, "SetIgnoreLookInput", [&](ParamBlock& params) {
-                 return params.set_bool("bNewLookInput", false) || params.set_bool("bIgnore", false) ||
-                        params.set_bool("NewLookInput", false);
-             }) &&
-             ok;
+        bool look_ok = invoke(record.object, "SetIgnoreLookInput", [&](ParamBlock& params) {
+            return params.set_bool("bNewLookInput", false) || params.set_bool("bIgnore", false) ||
+                   params.set_bool("NewLookInput", false);
+        });
+        // 单次 Set(false) 只把堆叠计数 -1：进入前游戏已有锁时会残留 1。按进入前布尔状态校正。
+        if (look_ok) look_ok = reconcile_ignore_flag(true, record.object);
+        ok = look_ok && ok;
     }
     if ((record.written_bits & 0x8) != 0) {
         UObject* pc = controller();
@@ -1327,6 +1520,7 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
         bool ok = true;
         const UObject* pc = controller();
         const UObject* pawn = player_pawn();
+        const bool had_look_bit = (input_block_pc_.written_bits & 0x4) != 0;
         // 注意：&& 右侧必须执行，不能短路（每个对象都要尝试恢复）
         if (!restore_blocked_object(input_block_pc_, const_cast<UObject*>(pc), "PlayerController")) ok = false;
         if (!restore_blocked_object(input_block_pawn_, const_cast<UObject*>(pawn), "Pawn")) ok = false;
@@ -1338,6 +1532,9 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
                                     "Pawn.InputComponent")) {
             ok = false;
         }
+        // 没有实际加过 Look 锁（或记录已因对象换代被跳过）时，清掉可能遗留的保存态，
+        // 避免污染下一次进入的“进入前状态”。
+        if (!had_look_bit || input_block_pc_.written_bits == 0) input_look_state_saved_ = false;
         return ok;
     }
 
@@ -1382,6 +1579,9 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
     // 2) 视角轴一起关掉：否则游戏仍会消耗鼠标位移、把玩家的控制旋转算进去
     UObject* pc = controller();
     if (is_ok(pc)) {
+        // 先记进入前的布尔锁状态（游戏暂停/过场可能已经持有一把锁，不能当成 0）。
+        bool pre_look_ignored = false;
+        const bool pre_look_read = read_ignore_flag(true, pre_look_ignored);
         if (invoke(pc, "SetIgnoreLookInput", [&](ParamBlock& params) {
                 return params.set_bool("bNewLookInput", true) || params.set_bool("bIgnore", true) ||
                        params.set_bool("NewLookInput", true);
@@ -1389,6 +1589,16 @@ bool Ue4ssPort::set_game_input_blocked(bool blocked) {
             touched = true;
             fallback_any = true;
             remember_blocked_object(input_block_pc_, pc, pc, 0x4);
+            if (!input_look_state_saved_) {
+                // 读不到 IsLookInputIgnored 时按“进入前未锁”记录，退出时若仍锁定就 Reset 兜底。
+                input_look_was_ignored_ = pre_look_read ? pre_look_ignored : false;
+                input_look_state_saved_ = true;
+                if (!pre_look_read) {
+                    log(LogLevel::Warn, "屏蔽输入：读不到 IsLookInputIgnored（退出时将 Reset 兜底）");
+                } else if (pre_look_ignored) {
+                    log(LogLevel::Info, "屏蔽输入：进入前 Look 已被游戏锁定（退出时会恢复为锁定）");
+                }
+            }
         }
 
         // 3) 最后一道闸：把 PC 与 Pawn 的 InputComponent 直接停用。

@@ -53,7 +53,7 @@ struct ImFont;
 
 namespace pbzpm {
 
-class PbzfmField;
+struct PbzfmField;
 struct KeyMap;
 
 // 诊断页动作：框架渲染线程提交，引擎 Tick 线程执行（引擎调用全部留在游戏线程）
@@ -102,6 +102,10 @@ public:
         virtual std::string mod_dir() = 0;                  // mod 目录（config.ini / languages 路径）
         virtual Config current_config() = 0;                // 线程安全取当前配置副本
         virtual void submit_config(const Config& cfg) = 0;  // 菜单改动 → 引擎 Tick 应用
+        // 滑条拖动实时预览：把拖动中的草案推给引擎（引擎 Tick 应用，下一帧上屏），但宿主侧
+        // 不打「已应用」日志；写盘由菜单侧跳过（见 commit_settings）。默认空实现：测试桩
+        // 与未接预览的宿主无需理会，菜单侧对其无返回值假设。同一草案随后必有完整提交兜底。
+        virtual void submit_config_preview(const Config& cfg) { (void)cfg; }
         virtual void submit_command(const PbzfmCommand& cmd) = 0;
         virtual void log(LogLevel level, const std::string& msg) = 0;
     };
@@ -126,9 +130,11 @@ public:
     PbzmI18n& lang() { return lang_; }
 
     // 框架菜单当前是否可见（PBZFM_IsMenuOpen；框架未接入/旧版返回 false）。
+    bool menu_open() const;
+    // 请求框架关闭菜单（PBZFM_CloseMenu，v3 可选导出；旧框架返回 false）。延迟到帧边界生效。
+    bool request_close_menu();
     // 引擎 Tick 线程每帧调用：摄影模式在菜单打开期间暂停输入采集，
     // 否则菜单里的鼠标左键会被 GetAsyncKeyState 当成 key_vertical_up（上升）。
-    bool menu_open() const;
 
 private:
     static void RenderSettingsThunk(void* userdata);   // 0.4.x 回退：整页（语言 + 全部分组）
@@ -149,7 +155,12 @@ private:
     void refresh_language();             // menu_language（auto=跟随 PBZFM.ini）→ lang_ 生效
     void render_settings_page();                       // 0.4.x 回退整页
     void render_language_page();                       // 0.5.0+：设置分类页（语言切换 + 词典）
-    void render_group_page(const char* group);         // 0.5.0+：单个分组的字段
+    void render_group_page(const char* group);
+    // 「画面效果」组页的风格预设区（0.4.x 整页与 0.5.0+ 分组页共用）：保存预设按钮 + 预设
+    // 下拉框（选中即套用 <mod>/look_preset_<编号>.ini）+ 删除按钮（两击确认删当前选中项）。
+    // 不走 schema，直接改 draft 走 commit_settings；文件文本真源在 core/look_preset.h。
+    void render_look_presets(Config& draft);
+    // 0.5.0+：单个分组的字段
     // 单个字段的控件 + 提交语义。keys 只用于 pbzfm_read_field 的 Key 回退（键名解析失败 → 默认键）
     void render_field_widget(const PbzfmField& f, Config& draft, const KeyMap& keys);
     void render_language_controls(Config& draft);                  // 语言下拉 + 词典重扫（两处共用）
@@ -157,8 +168,9 @@ private:
     void render_diag_page();
     void render_key_field(const PbzfmField& f, Config& draft, const KeyMap& keys);
     void commit_settings(const Config& draft, const std::string& what);
-    // 页面每帧从 mirror_ 取一份草案。Float 滑条拖动中只改草案、松手才提交，所以草案
-    // 必须写回 mirror_ 才能跨帧保持——否则每帧重新拷贝会让滑条弹回原位、松手提交旧值。
+    // 页面每帧从 mirror_ 取一份草案。Float 滑条拖动中改草案 + 推预览到引擎、松手才落盘
+    // 提交，所以草案必须写回 mirror_ 才能跨帧保持——否则每帧重新拷贝会让滑条弹回原位、
+    // 松手提交旧值。
     // 写回前校验代次：期间发生过配置重载/其它提交就放弃，避免旧草案覆盖新配置。
     Config take_draft(std::uint64_t& generation_out);
     void store_draft(const Config& draft, std::uint64_t generation);
@@ -207,6 +219,10 @@ private:
     bool key_capturing_{false};          // 改键捕获进行中
     const PbzfmField* key_capture_field_{nullptr};  // 捕获中的字段（指向静态字段表）
     double key_capture_started_{0.0};    // 捕获开始时间（steady 秒，用于 5 秒超时）
+    std::string preset_msg_;             // 预设保存/套用/删除的最近一次结果提示（渲染线程独占；空=不显示）
+    int preset_selected_{-1};            // 下拉框当前选中的预设下标（渲染线程独占；-1=未选）
+    std::string preset_delete_target_;   // 删除两击确认的待删文件路径（渲染线程独占；空=无待确认）
+    double preset_delete_deadline_{0.0}; // 确认态截止时刻（steady 秒）；超时/完成后清空回到普通删除钮
 
     // 分类树节点名（注册时按启动语言；语言变化后经 RenameSection 热改名）
     //   "language"/"status" = 固定顶层节点；"#group_*" = 六个分组顶层节点的当前显示名

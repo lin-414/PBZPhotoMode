@@ -619,37 +619,61 @@ ClothFreezeReport Ue4ssPort::freeze_cloth(bool frozen) {
     if (!frozen) {
         int restored = 0;
         int failed = 0;
+        int dropped_invalid = 0;  // 我们挂起过、但对象已随关卡销毁：无从恢复，必须留痕
+        int tick_restored = 0;
         std::string failures;
         std::vector<ClothComponentState> remaining;
-        for (const ClothComponentState& state : cloth_states_) {
-            if (!state.suspended_by_us) continue;
-            if (!is_ok(state.component)) continue;  // 旧世界对象已随关卡销毁，无需恢复
-            const char* resume = state.chaos ? kClothResumeChaos : kClothResumeSkeletal;
-            const char* suspended = state.chaos ? kClothSuspendedChaos : kClothSuspendedSkeletal;
-            bool called = invoke_void(state.component, resume, [](ParamBlock&) { return true; });
-            bool still_suspended = false;
-            const bool query_ok =
-                invoke_bool(state.component, suspended, [](ParamBlock&) { return true; }, still_suspended);
-            const bool ok = called && (!query_ok || !still_suspended);
+        for (ClothComponentState& state : cloth_states_) {
+            if (!state.suspended_by_us && !state.tick_disabled_by_us) continue;
+            if (!is_ok(state.component)) {
+                // 静默跳过会让「挂起了却没恢复」变成不可见泄漏——下一场它只会出现在
+                // 「原本已暂停」里。这里计数打日志：数字频繁且对象其实还活着时说明 is_ok 误判。
+                if (state.suspended_by_us) ++dropped_invalid;
+                continue;  // 旧世界对象已随关卡销毁，无需恢复
+            }
+            // 闸门停掉的 Tick 先还原：不还原 Tick，Resume 了模拟也不会走
+            if (state.tick_disabled_by_us) {
+                if (invoke_set_bool(state.component, "SetComponentTickEnabled", true)) {
+                    state.tick_disabled_by_us = false;
+                    ++tick_restored;
+                }
+            }
+            bool ok = !state.tick_disabled_by_us;
+            if (state.suspended_by_us && ok) {
+                const char* resume = state.chaos ? kClothResumeChaos : kClothResumeSkeletal;
+                const char* suspended = state.chaos ? kClothSuspendedChaos : kClothSuspendedSkeletal;
+                const bool called = invoke_void(state.component, resume, [](ParamBlock&) { return true; });
+                bool still_suspended = false;
+                const bool query_ok =
+                    invoke_bool(state.component, suspended, [](ParamBlock&) { return true; }, still_suspended);
+                ok = called && (!query_ok || !still_suspended);
+                if (!ok && failures.size() < 240) {
+                    if (!failures.empty()) failures += "；";
+                    failures += state.chaos ? "ChaosCloth" : "SkeletalMesh";
+                    // 与冻结侧同款区分：反射没命中 vs 调了但组件仍处于挂起态
+                    failures += called ? " 恢复后回读仍挂起" : " Resume 调用未生效（反射未命中）";
+                }
+            }
             if (ok) {
                 ++restored;
             } else {
                 ++failed;
                 remaining.push_back(state);
-                if (failures.size() < 240) {
-                    if (!failures.empty()) failures += "；";
-                    failures += state.chaos ? "ChaosCloth" : "SkeletalMesh";
-                    failures += " 恢复失败";
-                }
             }
         }
         cloth_states_ = remaining;
         report.found = restored + failed;
         report.acted = restored;
         report.ok = failed == 0;
-        if (restored > 0) {
+        if (restored > 0 || tick_restored > 0) {
+            char buf[160]{};
+            std::snprintf(buf, sizeof(buf), "布料恢复：恢复 %d 个布料模拟，还原 %d 个被闸门停用的 Tick",
+                          restored, tick_restored);
+            log(LogLevel::Info, buf);
+        }
+        if (dropped_invalid > 0) {
             char buf[128]{};
-            std::snprintf(buf, sizeof(buf), "布料恢复：恢复 %d 个布料模拟", restored);
+            std::snprintf(buf, sizeof(buf), "布料恢复：%d 个已挂起组件随对象销毁丢弃（未恢复）", dropped_invalid);
             log(LogLevel::Info, buf);
         }
         if (failed > 0) log(LogLevel::Warn, "布料恢复部分失败：" + failures);
@@ -710,7 +734,14 @@ ClothFreezeReport Ue4ssPort::freeze_cloth(bool frozen) {
                 ++sk_acted;
                 cloth_states_.push_back({component, false, false, true});
             } else {
-                remember_failure("SkeletalMesh", component, "SuspendClothingSimulation 未生效");
+                // 区分「反射没命中/调用链断」与「调了但组件仍非挂起态」：后者是冻结期
+                // 最可能被游戏侧翻成活模拟的一类，闸门要盯防（也要登记进闸门名单）。
+                remember_failure("SkeletalMesh", component,
+                                 called ? "调用成功但回读仍非挂起态" : "SuspendClothingSimulation 调用未生效（反射未命中）");
+                ClothComponentState tracked{};
+                tracked.component = component;
+                tracked.suspend_failed = true;
+                cloth_states_.push_back(tracked);
             }
         }
     }
@@ -745,7 +776,13 @@ ClothFreezeReport Ue4ssPort::freeze_cloth(bool frozen) {
                 ++chaos_acted;
                 cloth_states_.push_back({component, true, false, true});
             } else {
-                remember_failure("ChaosCloth", component, "SuspendSimulation 未生效");
+                remember_failure("ChaosCloth", component,
+                                 called ? "调用成功但回读仍非挂起态" : "SuspendSimulation 调用未生效（反射未命中）");
+                ClothComponentState tracked{};
+                tracked.component = component;
+                tracked.chaos = true;
+                tracked.suspend_failed = true;
+                cloth_states_.push_back(tracked);
             }
         }
     }
@@ -766,6 +803,46 @@ ClothFreezeReport Ue4ssPort::freeze_cloth(bool frozen) {
     }
     if (!failures.empty()) log(LogLevel::Warn, "布料冻结部分失败：" + failures);
     return report;
+}
+
+int Ue4ssPort::cloth_gate_tick() {
+    if (cloth_states_.empty()) return 0;
+    int caught = 0;
+    for (ClothComponentState& state : cloth_states_) {
+        if (!is_ok(state.component)) continue;
+        if (state.tick_disabled_by_us) continue;  // 已停 Tick：模拟不可能在跑，恢复时统一还原
+        const char* suspended = state.chaos ? kClothSuspendedChaos : kClothSuspendedSkeletal;
+        bool still_suspended = false;
+        // 查询不可用（反射缺失/组件异常）不妄动：没有证据就不重挂，交给下一秒再探
+        if (!invoke_bool(state.component, suspended, [](ParamBlock&) { return true; }, still_suspended)) continue;
+        if (still_suspended) continue;
+        // 冻结期仍处于模拟态：被游戏侧翻回来了（或挂起从未真正生效）。先重挂；
+        // 成功后无论原来归谁，解冻都由我们恢复（挂起的是我们，恢复权就得跟过来）。
+        ++caught;
+        const char* suspend = state.chaos ? kClothSuspendChaos : kClothSuspendSkeletal;
+        const bool called = invoke_void(state.component, suspend, [](ParamBlock&) { return true; });
+        bool now_suspended = false;
+        const bool query_ok = invoke_bool(state.component, suspended, [](ParamBlock&) { return true; }, now_suspended);
+        if (called && (!query_ok || now_suspended)) {
+            state.suspended_by_us = true;
+            state.suspend_failed = false;
+            continue;
+        }
+        // 重挂仍失败：停用组件 Tick 兜底（签名校验过的单 bool 通道，与相机修饰器同款）。
+        // 模拟不再被驱动，冻结期不会再拉伸；恢复时先还原 Tick 再 Resume。
+        if (invoke_set_bool(state.component, "SetComponentTickEnabled", false)) {
+            state.tick_disabled_by_us = true;
+        }
+        if (!state.gate_warned) {
+            state.gate_warned = true;
+            std::string full_name = narrow(state.component->GetFullName());
+            if (full_name.size() > 88) full_name = "…" + full_name.substr(full_name.size() - 86);
+            log(LogLevel::Warn,
+                "冻结期布料闸门：组件仍在模拟（重挂" +
+                    std::string(called ? "仍未生效" : "调用未生效") + "），已停用其 Tick 兜底，解冻还原：" + full_name);
+        }
+    }
+    return caught;
 }
 
 SkeletalAnimationFreezeReport Ue4ssPort::freeze_skeletal_animation(bool frozen) {
@@ -906,9 +983,26 @@ RenderTuningReport Ue4ssPort::freeze_render_tuning(bool frozen, bool disable_aa,
         for (const RenderCvarSnapshot& snapshot : render_cvar_snapshots_) {
             bool restored = false;
             int current = 0;
-            if (exec_console_command(snapshot.name + " " + std::to_string(snapshot.original), world()) &&
-                get_cvar_int(snapshot.name, current) && current == snapshot.original) {
+            if (snapshot.via_tag) {
+                // tagged 写入的项：优先解绑标签（值回到打标签前原值），不走 exec（它当年就是写不进去才换的通道）。
+                // 11-08 取证学费②（tuning.h）：UnsetConsoleVariablesWithTag 对模组 tag 可能确定性无效
+                //（写入 verified 但解不掉、Has 恒真）——此时退回 neutralize：同一 tag 写回快照原值再校验。
+                // neutralize 后 tag 留在注册表里把原值钉住（Set 覆盖语义），效果等价于未动过；
+                // 代价是游戏此后对同一 cvar 的主动调整会被钉住，属取证记录在案的已接受取舍。
+                if (unset_cvars_tagged(snapshot.tag) && get_cvar_int(snapshot.name, current) &&
+                    current == snapshot.original) {
+                    restored = true;
+                } else if (write_cvar_tagged(snapshot.name, std::to_string(snapshot.original), snapshot.tag) &&
+                           get_cvar_int(snapshot.name, current) && current == snapshot.original) {
+                    restored = true;
+                    log(LogLevel::Info, "渲染对照：" + snapshot.name + " tag 解绑未生效（11-08 取证同款），"
+                                        "已按同 tag 写回原值 neutralize（值已还原，标签留存在注册表）");
+                }
+            } else if (exec_console_command(snapshot.name + " " + std::to_string(snapshot.original), world()) &&
+                       get_cvar_int(snapshot.name, current) && current == snapshot.original) {
                 restored = true;
+            }
+            if (restored) {
                 ++report.restored;
                 if (!restored_text.empty()) restored_text += "；";
                 restored_text += snapshot.name + " 恢复 " + std::to_string(snapshot.original);
@@ -1022,13 +1116,30 @@ RenderTuningReport Ue4ssPort::freeze_render_tuning(bool frozen, bool disable_aa,
                                     " ms（疑似渲染线程排空）");
         }
         int current = 0;
-        if (!get_cvar_int(target.name, current) || current != target.value) {
-            if (!failed_text.empty()) failed_text += "；";
-            failed_text += std::string(target.name) + " 回读不是目标值";
-            continue;
+        if (get_cvar_int(target.name, current) && current == target.value) {
+            render_cvar_snapshots_.push_back({target.name, original, target.value});
+        } else {
+            // exec 通道写入未生效（本作 ExecuteConsoleCommand 有「返回成功但 cvar 不变」的实机记录；
+            // 2026-11-07 又见于 r.Streamline.DLSSG.Enable / r.PBZ.SuppressFrameGen，11-03 同代码可用）：
+            // 改走游戏自带 SetConsoleVariableTagged 兜底（DOF 门控实证可用），回读验证后按标签还原。
+            // 若 tagged 也未生效，说明游戏从内部状态重设该 cvar，与写入通道无关——日志给出判据。
+            ++render_tag_serial_;
+            const std::string tag = "PBZPM.RT." + std::to_string(render_tag_serial_);
+            if (write_cvar_tagged(target.name, std::to_string(target.value), tag) &&
+                get_cvar_int(target.name, current) && current == target.value) {
+                render_cvar_snapshots_.push_back({target.name, original, target.value, true, tag});
+                log(LogLevel::Info, "渲染对照：" + std::string(target.name) + " exec 通道未生效，已用 tagged 通道写入"
+                                        "（原值 " + std::to_string(original) + " → " + std::to_string(target.value) +
+                                        "，回读已验证；解冻按标签还原）");
+            } else {
+                log(LogLevel::Warn, "渲染对照：" + std::string(target.name) + " exec 与 tagged 通道都未生效（当前=" +
+                                        std::to_string(current) + " 目标=" + std::to_string(target.value) +
+                                        "）——游戏可能在从内部状态重设，写入通道无关");
+                if (!failed_text.empty()) failed_text += "；";
+                failed_text += std::string(target.name) + " 回读不是目标值";
+                continue;
+            }
         }
-
-        render_cvar_snapshots_.push_back({target.name, original, target.value});
         ++report.applied;
         if (!applied_text.empty()) applied_text += "；";
         applied_text += std::string(target.name) + " " + std::to_string(original) + "→" +
@@ -1069,7 +1180,13 @@ void Ue4ssPort::render_reassert_tick() {
         int current = 0;
         if (!get_cvar_int(snapshot.name, current)) continue;
         if (current == snapshot.target) continue;
-        if (!exec_console_command(snapshot.name + " " + std::to_string(snapshot.target), world())) continue;
+        // 按当年写入成功的通道压回：tagged 项走同标签重设（SetConsoleVariableTagged 对已有标签
+        // 重复 Set 即覆盖），其余仍走 exec。若游戏每帧重写，这里会持续命中并计入重申日志。
+        const bool written =
+            snapshot.via_tag
+                ? write_cvar_tagged(snapshot.name, std::to_string(snapshot.target), snapshot.tag)
+                : exec_console_command(snapshot.name + " " + std::to_string(snapshot.target), world());
+        if (!written) continue;
         int after = 0;
         if (get_cvar_int(snapshot.name, after) && after == snapshot.target) ++changed;
     }

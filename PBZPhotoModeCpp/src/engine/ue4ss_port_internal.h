@@ -1240,6 +1240,45 @@ inline auto exec_console_command(const std::string& command, UObject* world) -> 
     return true;
 }
 
+// ---- Tagged cvar 写入通道（游戏自带接口：PBZBlueprintFunctionLibrary）----
+// 背景：ExecuteConsoleCommand 在本作有「返回成功但 cvar 完全不变」的实机记录（2026-11-03 前后
+// 一直可用，2026-11-07 又见于 r.Streamline.DLSSG.Enable / r.PBZ.SuppressFrameGen 写入后回读不变）。
+// SetConsoleVariableTagged / UnsetConsoleVariablesWithTag 是景深门控（ue4ss_port_dof.cpp）在同一
+// 构建实证可用的写入通道，这里作为渲染对照的兜底通道共享。写入是否生效一律由调用方回读验证。
+inline auto tagged_cvar_library() -> UObject* {
+    return find_object("/Script/ProjectPBZ.Default__PBZBlueprintFunctionLibrary");
+}
+
+inline auto write_cvar_tagged(const std::string& name, const std::string& value_text,
+                              const std::string& tag) -> bool {
+    UObject* library = tagged_cvar_library();
+    if (!is_ok(library)) return false;
+    UFunction* function = find_function(library, "SetConsoleVariableTagged");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* name_property = cvar_param_or_null(params, {"CVarName", "Name", "VariableName"});
+    if (!write_text(name_property, params.data(), name)) return false;
+    FProperty* value_property = cvar_param_or_null(params, {"Value", "NewValue", "InValue"});
+    if (!write_text(value_property, params.data(), value_text)) return false;
+    FProperty* tag_property = cvar_param_or_null(params, {"Tag", "OwnerTag", "InTag"});
+    if (!write_text(tag_property, params.data(), tag)) return false;
+    return seh_process_event(library, function, params.data());
+}
+
+// 解绑标签下全部 cvar（值回到打标签前的原值）。是否解干净由调用方回读验证。
+inline auto unset_cvars_tagged(const std::string& tag) -> bool {
+    UObject* library = tagged_cvar_library();
+    if (!is_ok(library)) return false;
+    UFunction* function = find_function(library, "UnsetConsoleVariablesWithTag");
+    if (function == nullptr) return false;
+    ParamBlock params(function);
+    if (!params.valid()) return false;
+    FProperty* tag_property = cvar_param_or_null(params, {"Tag", "OwnerTag", "InTag"});
+    if (!write_text(tag_property, params.data(), tag)) return false;
+    return seh_process_event(library, function, params.data());
+}
+
 }  // namespace detail
 }  // namespace pbzpm
 

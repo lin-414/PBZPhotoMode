@@ -481,6 +481,8 @@ void PhotoModeMod::on_game_viewport_tick_post() {
     // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建：暗角/泛光这类被游戏镜头
     // PostProcessSettings 覆盖的项必须在这里每帧重申（体积通道会被 POV 最后覆盖）。
     port_->apply_look_to_camera_pov();
+    // 景深/胶片活动期间每帧 ForceUpdateCameraView：世界时钟停住时原生镜头/视图不会自动刷新。
+    mode_->dof_frame_tick();
     // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建，AA/动态模糊/Lumen 覆盖也在这里重申。
     port_->post_process_override_tick();
 }
@@ -606,8 +608,28 @@ void PhotoModeMod::render_tab_impl() {
 
 void PhotoModeMod::handle_toggle() {
     if (!runtime_) return;
+    const bool entering = mode_ != nullptr && !mode_->active();
+    const Config before = cfg_;
+    bool look_reset = false;
+    if (entering) {
+        // [look] 五项画面效果每次打开摄影模式都恢复默认参数（数值 + 五个独立开关）。
+        // 先落到 ModRuntime 的 cfg_ / PhotoMode 的副本，enter() 成功后再写回 config.ini
+        // 并刷新 PBZFM 菜单显示，避免“引擎已用默认值、菜单还显示上次拖的值”。
+        look_reset = reset_look_defaults(cfg_);
+        if (look_reset) runtime_->apply_config(cfg_);
+    }
     const ToggleOutcome outcome = runtime_->toggle();
     if (outcome == ToggleOutcome::Entered) {
+        if (look_reset) {
+            const std::filesystem::path ini_path = std::filesystem::path(mod_directory()) / "config.ini";
+            std::string save_error;
+            if (save_config_file(ini_path.string(), cfg_, &save_error)) {
+                port_->log(LogLevel::Info, "画面效果：[look] 五项已恢复默认参数，config.ini 已更新");
+            } else {
+                port_->log(LogLevel::Warn, "画面效果：五项已恢复默认参数，但写回 config.ini 失败：" + save_error);
+            }
+            if (pbzfm_) pbzfm_->sync_from_config(cfg_);
+        }
         // 每次进入摄影模式都当作一个新的探测窗口：清掉引擎输入钩子的退避计数，
         // 让它在下一帧就重新尝试一次（不必等满 8 秒的封顶间隔）
         axis_hook_failures_ = 0;
@@ -620,6 +642,11 @@ void PhotoModeMod::handle_toggle() {
             port_->log(LogLevel::Info, std::string("鼠标输入源 raw=") + (input_source_->raw_ready() ? "1" : "0") +
                                            " 事件计数=" + std::to_string(input_source_->mouse_event_count()));
         }
+    } else if (outcome == ToggleOutcome::EnterFailed && look_reset) {
+        // 进入失败：把刚才预置的默认值撤回，保持用户在菜单里设的值不变。
+        cfg_ = before;
+        runtime_->apply_config(cfg_);
+        if (pbzfm_) pbzfm_->sync_from_config(cfg_);
     }
     // 进入失败时 ModRuntime 已打 Error 日志（含 PhotoMode::last_error()）
     input_.reset();
@@ -638,6 +665,17 @@ auto PhotoModeMod::submit_config(const Config& cfg) -> void {
     std::lock_guard<std::mutex> lock(pbzfm_mutex_);
     pbzfm_pending_cfg_ = cfg;
     pbzfm_cfg_dirty_ = true;
+    pbzfm_cfg_preview_ = false;
+}
+
+// 滑条拖动实时预览（pbzfm_client Float 控件每帧调用）：与 submit_config 同一条队列，
+// 引擎 Tick 消化时按预览处理——应用照常（实时开关有差异比对，重复应用零副作用），
+// 只是不打「已应用并写回 config.ini」日志；写盘由菜单侧直接跳过（见 pbzfm_client）。
+auto PhotoModeMod::submit_config_preview(const Config& cfg) -> void {
+    std::lock_guard<std::mutex> lock(pbzfm_mutex_);
+    pbzfm_pending_cfg_ = cfg;
+    pbzfm_cfg_dirty_ = true;
+    pbzfm_cfg_preview_ = true;
 }
 
 auto PhotoModeMod::submit_command(const PbzfmCommand& cmd) -> void {
@@ -654,12 +692,15 @@ auto PhotoModeMod::log(LogLevel level, const std::string& msg) -> void {
 void PhotoModeMod::pbzfm_apply_pending() {
     Config incoming{};
     bool has_config = false;
+    bool is_preview = false;  // 滑条拖动预览：照常应用，只是不打日志（每帧一条会刷爆控制台）
     std::vector<PbzfmCommand> commands;
     {
         std::lock_guard<std::mutex> lock(pbzfm_mutex_);
         if (pbzfm_cfg_dirty_) {
             incoming = pbzfm_pending_cfg_;
             pbzfm_cfg_dirty_ = false;
+            is_preview = pbzfm_cfg_preview_;
+            pbzfm_cfg_preview_ = false;
             has_config = true;
         }
         commands.swap(pbzfm_commands_);
@@ -671,8 +712,10 @@ void PhotoModeMod::pbzfm_apply_pending() {
         // 与实际情况一致），而不是让用户点开一个必然失效的开关。
         if (!gvc_tick_hook_ok_ && incoming.takeover_current_camera) {
             incoming.takeover_current_camera = false;
-            port_->log(LogLevel::Warn,
-                       "接管不可用（缺 GameViewportClientTickPost 钩子）：菜单里的接管开关已按关闭处理");
+            if (!is_preview) {
+                port_->log(LogLevel::Warn,
+                           "接管不可用（缺 GameViewportClientTickPost 钩子）：菜单里的接管开关已按关闭处理");
+            }
         }
         // 需要实时通道的开关由 ModRuntime 按差异就地生效（含相机后端热切换）；
         // 其余字段走 set_config（下一轮冻结/下次进入/每秒重试路径按新配置执行）
@@ -684,12 +727,25 @@ void PhotoModeMod::pbzfm_apply_pending() {
         frame_freeze_timeout_ms_.store(
             static_cast<unsigned long long>(std::clamp(incoming.frame_freeze_timeout_seconds, 5.0, 300.0) * 1000.0),
             std::memory_order_relaxed);
-        port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
+        if (!is_preview) port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
     }
 
     for (const PbzfmCommand& cmd : commands) {
         switch (cmd.action) {
             case PbzfmAction::ToggleMode:
+                // 从菜单进入摄影模式：先关菜单、推迟一帧再进，让 enter 跑在「菜单已关」
+                // 的帧上（与 F2 进入完全同态；10:45 实机：菜单开着进模式，冻结+NLP 状态下
+                // 游戏原生代码读 -1 崩溃）。重试上限防框架未关成功时死循环。
+                if (mode_ != nullptr && !mode_->active() && pbzfm_ != nullptr && pbzfm_->menu_open()) {
+                    if (pbzfm_->request_close_menu() && pbzfm_menu_defer_count_ < 10) {
+                        ++pbzfm_menu_defer_count_;
+                        submit_command(cmd);
+                        break;
+                    }
+                    pbzfm_menu_defer_count_ = 0;
+                    port_->log(LogLevel::Warn, "PBZFM 菜单未按预期关闭，直接进入摄影模式");
+                }
+                pbzfm_menu_defer_count_ = 0;
                 handle_toggle();
                 break;
             case PbzfmAction::ToggleFreeze:

@@ -4,6 +4,7 @@
 #include <string>
 
 #include "core/look.h"
+#include "core/dof_math.h"
 #include "core/config.h"
 #include "core/math3.h"
 
@@ -240,13 +241,73 @@ public:
     // 连续若干帧发现 POV 被游戏覆盖时返回 true（接管失效）；core 据此自动回退独立相机。
     virtual bool takeover_view_lost() const { return false; }
 
-    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖）：写进自建的后处理体积。
+    // 画面效果（暗角/饱和/对比/泛光/冷暖）：写进自建的后处理体积。
     // 这条通道在本作 gameplay 视图里实测生效（暗角探针证明），其余项走同一套 bOverride_ 机制。
     virtual bool set_look(const LookOptions& options) {
         (void)options;
         return true;
     }
 };
+
+// 景深/对焦/色差：渲染门控 + CineCamera 组件通道（2.1 复活；背景见 core/dof_math.h 与
+// core/tuning.h 顶部）。与 set_look 的后处理体积通道是两条独立链路：
+//   门控 = NLP 过场渲染档 + tagged cvar（写 ShowFlag.DepthOfField / r.DepthOfFieldQuality /
+//          r.Tonemapper.Quality 等，全部回读校验）；
+//   画面 = spawn 出的 CineCameraActor 的 CineCameraComponent.PostProcessSettings（权重 1），
+//          进门控前先把管理器 POV 的 PostProcessSettings 整份拷过去保留游戏原调色。
+class DofPort {
+public:
+    virtual ~DofPort() = default;
+
+    // 确保渲染门控可用并保持打开。幂等；need_dof / need_film 分别声明要哪组闸门。
+    // 返回 false = 门控不可用（游戏没提供 NLP/Tagged cvar 接口，或 CineCamera 类缺失），
+    // core 据此拒绝启用并只告警一次；实现侧保证只打一次详细日志。
+    virtual bool ensure_dof_gate(bool need_dof, bool need_film) {
+        (void)need_dof;
+        (void)need_film;
+        return false;
+    }
+
+    // 释放门控（逆序：解 tagged cvar → 关 NLP 档）。幂等；全部释放干净返回 true，
+    // 失败项由 core 按退避重试（与其它恢复步骤同一套语义）。
+    virtual bool release_dof_gate() { return true; }
+
+    // bokeh gate cvar 取证开关（2026-11-07 崩溃二分）：false=不写 r.DOF.{Gather,Recombine}.EnableBokehSettings
+    // 与 r.DOF.Recombine.Quality——bokeh 路径是崩溃嫌疑首位（shipping 可能无实现，崩溃点=call rdx→全零页）。
+    virtual void set_bokeh_gate_enabled(bool enabled) { (void)enabled; }
+
+    // 把景深/胶片参数写进 CineCamera 组件通道。要求 ensure_dof_gate 已成功；值变化时才调用。
+    virtual bool apply_dof(const DofParams& params) {
+        (void)params;
+        return false;
+    }
+
+    // 胶片 cvar 闸门（r.SceneColorFringeQuality 等）当前是否已建。首启建控时色差常为 0
+    //（0=不覆盖），胶片组会被整块跳过；core 据此判断「胶片闸门还没建」要不要放行补建一次
+    //（否则组件 PP 写入成功但引擎质量闸门关着，滑条动了画面没反应）。
+    virtual bool film_gate_active() const { return false; }
+
+    // NLP 过场渲染档当前是否开着（2026-11-08 主开关跟随同步用）。档位是全局渲染档：
+    // 开着它，游戏原生过场景深（游戏自己的对焦逻辑，随镜头移动）就在画面里，本 mod
+    // 参数管不到——所以它必须严格跟随景深主开关，见 apply_dof_if_needed 与 ensure_dof_ready。
+    virtual bool nlp_profile_active() const { return false; }
+
+    // NLP 开启方向本会话已失败过一次（接口缺失/类缺失/AV 闩，全是永久性失败）：
+    // true = 不再尝试开启。core 的 nlp_owed 早退放行靠它收口，避免每帧解冻重请求。
+    // 退出摄影模式（release_dof_gate）清零，重进重新探测。
+    virtual bool nlp_enable_exhausted() const { return false; }
+
+    // 释放 NLP 过场渲染档（景深主开关关掉时的每帧同步；幂等，未开时返回 true）。
+    // 实现侧自带暂停态解冻窗口（与 release_dof_gate 同一纪律）；失败由 core 按退避重试，
+    // 退出路径 release_dof_gate 也会兜底重试。
+    virtual bool release_nlp_profile() { return true; }
+
+    // 景深/胶片活动时的每帧钩子（GameViewportClient Tick 之后调用）：原生镜头/视图刷新依赖
+    // 暂停期常规相机更新（ForceUpdateCameraView 在本环境已停用，见 ue4ss_port_dof.cpp），
+    // 门控延迟回读探针也在这里消化。
+    virtual void dof_frame_tick() {}
+};
+
 
 // 输入接管：只动摄影模式需要的键鼠输入，不碰其他系统
 class InputPort {
@@ -382,6 +443,15 @@ public:
     // （保留最后一次模拟姿态），恢复=Resume...。原本就处于暂停态的组件不重复处理。
     virtual ClothFreezeReport freeze_cloth(bool frozen) = 0;
 
+    // 冻结期布料闸门（core 约每秒调用一次，仅 cloth 冻结生效期间）：
+    // 游戏侧的布料管理按渲染可见性/距离翻转状态，可能在冻结期把布料重新恢复——
+    // 活的 Chaos solver 对着被 bPauseAnims/bNoSkeletonUpdate 钉死的骨骼，
+    // 飘带会被越拉越远（实机表现：部件离身数米、中间拉成直条，解冻后仍是坏姿态）。
+    // 实现：复核冻结时登记的全部布料组件，发现仍在模拟的先重挂；
+    // 重挂仍失败的停用其 Tick 兜底（恢复时还原），并把组件名记一次日志。
+    // 返回本次发现「冻结期仍在模拟」的组件数（0=全部安分）。
+    virtual int cloth_gate_tick() { return 0; }
+
     // 骨骼动画：世界暂停不一定停住 SkeletalMesh 的 AnimBP/骨骼 pose；角色 cape 若
     // 由骨骼驱动，会继续产生位移。冻结=对全部 SkeletalMesh 写 bPauseAnims=true、
     // bNoSkeletonUpdate=true（记录原值），解冻恢复；默认实现不做事。
@@ -480,6 +550,7 @@ public:
 // 聚合接口：Ue4ssPort / FakeEngine 统一实现，mod_app 只在构造 PhotoMode 时使用。
 class EnginePort : public WorldPort,
                    public CameraViewPort,
+                   public DofPort,
                    public InputPort,
                    public HudPort,
                    public TimePausePort,

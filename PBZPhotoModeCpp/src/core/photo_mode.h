@@ -22,6 +22,10 @@ public:
     void tick(const Intent& intent, double dt);
 
     bool active() const { return active_; }
+    // 景深/胶片活动时的每帧钩子（GameViewportClient Tick 之后调用）：原生镜头/视图刷新依赖
+    // 暂停期常规相机更新（ForceUpdateCameraView 在本环境已停用，见 ue4ss_port_dof.cpp），
+    // 门控延迟回读探针也在这里消化。
+    void dof_frame_tick();
     // 「已冻结」= 冻结生效且没有被游戏侧改写夺走。freeze_lost_ 为 true 时内部 frozen_ 仍保留
     // （退出时仍要还原），但 UI 必须显示「冻结已失效」，不能再假装画面是停住的。
     bool frozen() const { return frozen_ && !freeze_lost_; }
@@ -65,12 +69,38 @@ public:
 private:
     bool apply_pose_if_dirty();
 
-    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖，全部走后处理体积通道）：值变化时才下发。
+    // 画面效果（暗角/饱和/对比/泛光/冷暖，走后处理体积通道）：值变化时才下发。
     void apply_look_if_needed();
     LookOptions look_applied_{};
     bool look_applied_valid_{false};
     bool look_logged_{false};
     bool look_warn_logged_{false};
+    // 景深/胶片（门控 + CineCamera 组件通道，见 dof_math.h）：值变化才下发。
+    // 色差的配置键在 [look]，但下发走 DofParams（与景深共用组件通道与胶片闸门）。
+    void apply_dof_if_needed(double dt);
+    // 对焦/光圈键位的处理（mult 为 Shift/Ctrl 变速倍率）
+    void handle_focus_intent(const Intent& intent, double mult);
+    // 景深/胶片启用前置：必要时就地切独立相机后端（CineCamera 组件通道的前提）+ 打开门控。
+    // 返回 false = 门控不可用（本次会话置 dof_unavailable_，不再尝试）。
+    bool ensure_dof_ready(bool need_dof, bool need_film);
+    // ensure_dof_ready 的实际建控过程（外层包一层解冻/复冻，理由见 .cpp）
+    bool ensure_dof_ready_impl(bool need_dof, bool need_film);
+    DofParams dof_applied_{};
+    bool dof_applied_valid_{false};
+    bool dof_logged_{false};
+    bool dof_warn_logged_{false};
+    // apply_dof 失败后的重试退避累计（秒；>0 期间不下发，见 tuning.h kDofApplyRetryBackoffSec）
+    double dof_apply_retry_accum_{0.0};
+    // NLP 档释放失败后的重试退避累计（秒，同 kDofApplyRetryBackoffSec）：
+    // 景深主开关关掉后每帧尝试释放 NLP 档（游戏原生过场景深随档位渲染，参数管不到），
+    // 失败不每帧重入（每次释放都要走解冻窗口），等退避到期再试
+    double nlp_release_retry_accum_{0.0};
+    bool nlp_release_warn_logged_{false};
+    // 门控已打开（NLP 档 + tagged cvar）；leave 时逆序释放（胶片闸门 → 景深闸门 → NLP 档）
+    bool dof_gate_active_{false};
+    // 本会话已确认门控/CineCamera 不可用：不再重试（重进摄影模式会重新探测）
+    bool dof_unavailable_{false};
+    bool dof_unavailable_logged_{false};
     // 后端热切换/自动回退后重新下发 FOV：成功路径与回滚路径都必须走这里。
     void reapply_visuals_live();
     void log(LogLevel level, const std::string& message);
@@ -87,6 +117,7 @@ private:
     // 只持有实际用到的子接口：构造时从 EnginePort 聚合接口一次性接线，
     // 让状态机看不到与摄影模式无关的引擎细节。
     CameraViewPort& camera_;
+    DofPort& dof_;
     InputPort& input_;
     HudPort& hud_;
     TimePausePort& time_pause_;
@@ -162,6 +193,9 @@ private:
     double freeze_check_accum_{0.0};
     int freeze_reassert_count_{0};
     bool freeze_reassert_gave_up_{false};
+    // 冻结期布料闸门累加器：每秒复核登记的布料组件是否仍处于挂起态（见 engine_port.h
+    // cloth_gate_tick 注释）。游戏侧布料管理可能在冻结期按可见性/距离把布料翻回活模拟。
+    double cloth_gate_accum_{0.0};
     // 冻结诊断日志节流：状态翻转立即输出，持续期每 kFreezeDiagIntervalSec 秒最多一条
     double freeze_diag_seconds_{0.0};
     bool freeze_diag_has_last_{false};

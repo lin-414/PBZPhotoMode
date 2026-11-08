@@ -43,7 +43,14 @@ struct Config {
     std::string key_boost{"SHIFT"};    // 加速（原写死 Shift）
     std::string key_slow{"CONTROL"};   // 减速（原写死 Ctrl；也决定 slow_look_mult 是否生效）
     std::string key_free_look{"ALT"};  // 自由转视角门控键（原写死 Alt；free_look_requires_alt=false 时不使用）
-    // 景深/对焦（仅摄影模式内生效）：[ 开大光圈（F 值减小、更虚化）、] 收小光圈（更实）
+    // 景深/对焦（仅摄影模式内生效；走门控+CineCamera 组件通道，见 core/dof_math.h）：
+    // G 总开关；,/. 对焦拉近/拉远（步进语义见 [dof] dof_focus_step）；
+    // [ 开大光圈（F 值减小、更虚化）、] 收小光圈（更实）
+    std::string key_dof_toggle{"G"};
+    std::string key_focus_near{"COMMA"};
+    std::string key_focus_far{"PERIOD"};
+    std::string key_aperture_open{"OEM_4"};
+    std::string key_aperture_close{"OEM_6"};
 
     // ---- [control] ----
     double move_speed{400.0};        // 单位/秒
@@ -82,8 +89,16 @@ struct Config {
     std::string pad_slow{"RS"};               // 减速（原写死 RS=右摇杆按下）
     std::string pad_vertical_up{"RT"};        // 升降上（原写死 RT，模拟量）
     std::string pad_vertical_down{"LT"};      // 升降下（原写死 LT，模拟量）
-    // 景深/对焦（必须带肩键的组合，避免单按 BACK/START 误触）：
-    // LB+BACK 拉近 / LB+START 拉远；RB+BACK 开光圈 / RB+START 收光圈
+    // 景深/对焦（沿用旧版默认；必须带肩键的组合，避免单按 BACK/START 误触）：
+    // LB+BACK 拉近 / LB+START 拉远；RB+BACK 开光圈 / RB+START 收光圈。
+    // 注意 LB/RB 单按默认是滚转，组合取焦期间会连带滚转（旧版同款行为，可改键避开）。
+    std::string pad_focus_near{"LB+BACK"};
+    std::string pad_focus_far{"LB+START"};
+    std::string pad_aperture_open{"RB+BACK"};
+    std::string pad_aperture_close{"RB+START"};
+    // 新增键默认 NONE（显式解绑，手柄用户按需配置）
+    std::string pad_dof_toggle{"NONE"};
+
     double pad_look_speed{60.0};      // 右摇杆满行程的转速（度/秒）
     double pad_move_scale{1.0};       // 左摇杆移动占 move_speed 的比例
     double pad_deadzone{0.15};        // 摇杆死区（0~0.5）
@@ -98,12 +113,45 @@ struct Config {
     // 进入时接管失败会在同一次 enter 内自动回退到独立相机。设 false 可强制走旧路径做对比。
     bool takeover_current_camera{true};
 
-    // 画面效果（[look] 段）：全部走自建后处理体积，本作 gameplay 视图里实测只有这条通道能出画面
+    // ---- [dof] 景深/对焦（2.1 轮复活：门控 + CineCamera 组件通道，见 core/dof_math.h）----
+    // 距离单位 cm（沿用旧版语义）。dof_focus_step 是「最小步进」：实际步进 =
+    // max(配置步进, 当前距离 × 10%)，Shift 粗调 / Ctrl 微调照常生效。
+    // 启用任一项（含 [look] 的色差）会自动切到独立相机后端并打开渲染门控。
+    bool dof_enabled{false};
+    double dof_focal_distance{tuning::kDofDefaultFocalCm};
+    double dof_fstop{tuning::kDofFstopDefault};
+    double dof_sensor_width{tuning::kDofSensorDefaultMm};
+    double dof_focus_step{tuning::kDofFocusStepDefaultCm};
+    double dof_aperture_step{tuning::kDofApertureStepDefault};
+    // NLP 过场渲染档已并入景深总开关（2026-11-08 用户决策，键登记 Deprecated）：
+    // 总开关开 = 闸门 + NLP 档 + 组件通道一体（564 同款形态），关 = 全无。取证记录见 tuning.h。
+    // bokeh gate cvar 二分开关（默认 false）：true 才写 r.DOF.{Gather,Recombine}.EnableBokehSettings /
+    // Recombine.Quality。2026-11-07 崩溃二分用：第 5/6 次崩溃逐字节同址（call rdx→全零页），bokeh 路径
+    // 是嫌疑首位（shipping 可能无实现）；false 时 DOF 仍走 ShowFlag/画质/kernel 闸门+组件通道。
+    bool dof_bokeh_gate{false};
+
+    // 画面效果（[look] 段）：全部走自建后处理体积，本作 gameplay 视图里实测只有这条通道能出画面。
+    // 每项有一个独立开关；关掉只停用这一项，滑块值仍保留。每次进入摄影模式时五项会恢复默认参数。
     double vignette = tuning::kVignetteDefault;           // 暗角 0~4（0=关闭）
     double saturation = 1.0;                              // 饱和度倍率（1=原样）
     double contrast = 1.0;                                // 对比度倍率（1=原样）
     double bloom = 0.0;                                   // 泛光强度（0=不覆盖）
     double temperature = 0.0;                             // 冷暖 -1~1（0=不覆盖）
+    bool vignette_enabled{true};                          // 暗角开关（false=停用但不改滑块值）
+    bool saturation_enabled{true};                        // 饱和度开关
+    bool contrast_enabled{true};                          // 对比度开关
+    bool bloom_enabled{true};                             // 泛光开关
+    bool temperature_enabled{true};                       // 冷暖开关
+    // 调色·进阶三件（2026-11-08 批次）：无独立开关——值回到中性（= 默认）即「不覆盖该项」，
+    // 交还游戏自己的设置；离开中性才写 bOverride_* + 绝对值。与饱和/对比同一 ColorGrading LUT
+    // 每通道家族（本 build 实机验证只消费这五件）；同批试过的分区调色/胶片曲线/白平衡/泛光
+    // 阈值软膝十项判死移除（取证在 tuning.h）。每次进入摄影模式随 [look] 一起恢复默认。
+    double color_gain = tuning::kColorGainDefault;              // 亮度 0~4（1=原样）
+    double color_gamma = tuning::kColorGammaDefault;            // 伽马 0.25~4（1=原样）
+    double color_offset = tuning::kColorOffsetDefault;          // 黑位 -0.2~0.2（0=原样，-压黑/+提灰）
+    // 色差（2.1 复活）：0 = 不覆盖。与五项不同，它走门控 + CineCamera 组件通道
+    //（tuning.h kFilmGate*），只在独立相机后端可用；每次进入摄影模式随 [look] 一起恢复默认。
+    double chromatic_aberration = 0.0;                    // 色差 0~5
 
     // ---- [effects] ----
     bool hide_player{false};
@@ -174,6 +222,10 @@ struct ConfigLoadResult {
     // **一次性重写 config.ini**，把这些键从文件里物理删掉（只告警不清理会一直留着，见 hotfix35）。
     std::vector<std::string> legacy_keys{};
 };
+
+// 把 [look] 五项画面效果恢复为默认参数（数值 + 五个开关）。每次进入摄影模式时调用；
+// 返回是否真的发生了变化（调用方据此决定是否写回 config.ini / 刷新菜单镜像）。
+bool reset_look_defaults(Config& cfg);
 
 // 解析 INI 文本。未知键 / 非法值只累积 warning，保留对应默认值。
 ConfigLoadResult parse_config(const std::string& ini_text, const char* source = "config.ini");

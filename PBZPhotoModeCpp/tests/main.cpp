@@ -16,6 +16,7 @@
 #include "core/hook_registry.h"
 #include "core/i18n_logic.h"
 #include "core/input_logic.h"
+#include "core/look_preset.h"
 #include "core/math3.h"
 #include "core/photo_mode.h"
 #include "core/retry_policy.h"
@@ -102,6 +103,21 @@ void test_config_defaults_and_parse() {
     CHECK_NEAR(empty.cfg.pitch_speed, 30.0, 1e-9);  // 俯仰默认 30 度/秒（方向键与十字键上/下）
     CHECK_NEAR(empty.cfg.slow_look_mult, 0.1, 1e-9);  // Ctrl/RS 按下时视角速度倍率（1.0.37 新增）
     CHECK_NEAR(empty.cfg.yaw_speed, 90.0, 1e-9);  // 方向键/十字键转向速度（1.0.46 起左右键转视角）
+    // [look] 五项画面效果的默认参数（每次进入摄影模式都会恢复到这里）与独立开关
+    CHECK_NEAR(empty.cfg.vignette, 0.0, 1e-9);
+    CHECK_NEAR(empty.cfg.saturation, 1.0, 1e-9);
+    CHECK_NEAR(empty.cfg.contrast, 1.0, 1e-9);
+    CHECK_NEAR(empty.cfg.bloom, 0.0, 1e-9);
+    CHECK_NEAR(empty.cfg.temperature, 0.0, 1e-9);
+    CHECK(empty.cfg.vignette_enabled);
+    CHECK(empty.cfg.saturation_enabled);
+    CHECK(empty.cfg.contrast_enabled);
+    CHECK(empty.cfg.bloom_enabled);
+    CHECK(empty.cfg.temperature_enabled);
+    // [look] 调色·进阶三件默认=中性值（中性=不覆盖该项；见 tuning.h。同批十项判死移除）
+    CHECK_NEAR(empty.cfg.color_gain, tuning::kColorGainDefault, 1e-9);
+    CHECK_NEAR(empty.cfg.color_gamma, tuning::kColorGammaDefault, 1e-9);
+    CHECK_NEAR(empty.cfg.color_offset, 0.0, 1e-9);
     CHECK_STR(empty.cfg.key_pitch_up, "UP");    // 方向键上/下 = 俯仰（1.0.27 起从 Z/X 改来）
     CHECK_STR(empty.cfg.key_pitch_down, "DOWN");
     CHECK_STR(empty.cfg.key_yaw_left, "LEFT");   // 方向键左/右 = 左右转视角（1.0.46 起从平移改来）
@@ -193,6 +209,19 @@ fov_min = 20
 fov_max = 120
 ultrawide_unlock = false
 
+[look]
+vignette = 2.5
+vignette_enabled = false
+saturation = 0.4
+saturation_enabled = false
+contrast = 1.6
+bloom = 6
+temperature = -0.5
+temperature_enabled = false
+color_gain = 1.8
+color_gamma = 0.8
+color_offset = -0.15
+
 [effects]
 auto_pause_time = false
 freeze_sequences = false
@@ -252,6 +281,19 @@ log_level = debug
     CHECK_NEAR(parsed.cfg.yaw_speed, 120.0, 1e-9);
     CHECK_NEAR(parsed.cfg.fov_default, 75.0, 1e-9);
     CHECK(!parsed.cfg.ultrawide_unlock);
+    CHECK_NEAR(parsed.cfg.vignette, 2.5, 1e-9);
+    CHECK(!parsed.cfg.vignette_enabled);
+    CHECK_NEAR(parsed.cfg.saturation, 0.4, 1e-9);
+    CHECK(!parsed.cfg.saturation_enabled);
+    CHECK_NEAR(parsed.cfg.contrast, 1.6, 1e-9);
+    CHECK(parsed.cfg.contrast_enabled);  // 未写的开关保持默认开启
+    CHECK_NEAR(parsed.cfg.bloom, 6.0, 1e-9);
+    CHECK_NEAR(parsed.cfg.temperature, -0.5, 1e-9);
+    CHECK(!parsed.cfg.temperature_enabled);
+    // 调色·进阶三件解析（越界夹紧在 test_config_color_pro_keys 覆盖）
+    CHECK_NEAR(parsed.cfg.color_gain, 1.8, 1e-9);
+    CHECK_NEAR(parsed.cfg.color_gamma, 0.8, 1e-9);
+    CHECK_NEAR(parsed.cfg.color_offset, -0.15, 1e-9);
     CHECK(!parsed.cfg.auto_pause_time);
     CHECK(!parsed.cfg.freeze_sequences);
     CHECK(!parsed.cfg.freeze_dialogue_flow);
@@ -337,31 +379,102 @@ this line has no equals
     CHECK_STR(missing.cfg.key_toggle, "F2");
 }
 
-// 已废弃键（[dof] 段、色差/胶片颗粒）只收集到 legacy_keys、交给调用方一次性重写 config.ini，
-// 不会刷「未知配置项」，重写出来的文本里也绝不会再出现这些键（hotfix35）。
-void test_config_legacy_purge() {
-    section("parse_config 已废弃键清理");
+// 景深/色差/颗粒键名复活（2.1）：判死时期（hotfix32/34）曾进 legacy 清单的键重新成为正式键。
+// 旧 config.ini 里残留的这些键按原值继续生效，不再收集/清理；legacy 机制保留但当前为空。
+void test_config_revived_dof_keys() {
+    section("parse_config 景深/胶片键复活");
     using namespace pbzpm;
 
-    const ConfigLoadResult legacy = parse_config(
-        "[dof]\ndof_enabled = true\ndof_fstop = 1.4\nkey_focus_near = LEFT_BRACKET\n"
-        "[look]\nvignette = 2\nchromatic_aberration = 3\nfilm_grain = 7\n",
-        "legacy.ini");
-    // 五个废弃键全部收集（dof_enabled / dof_fstop / key_focus_near / chromatic_aberration / film_grain），
-    // 有效键照常解析
-    CHECK_INT(static_cast<int>(legacy.legacy_keys.size()), 5);
-    CHECK_NEAR(legacy.cfg.vignette, 2.0, 1e-9);
-    // 只按组告警（dof 一条 + look 一条），不会每个键刷一行
-    CHECK(legacy.warnings.size() <= 2);
-    // 重写出来的文本是「干净」的规范格式：没有废弃键、没有 [dof] 段，有效值保留
-    const std::string text = config_ini_text(legacy.cfg);
-    CHECK(text.find("chromatic_aberration") == std::string::npos);
-    CHECK(text.find("film_grain") == std::string::npos);
-    CHECK(text.find("[dof]") == std::string::npos);
-    CHECK(text.find("dof_fstop") == std::string::npos);
-    CHECK(text.find("vignette = 2") != std::string::npos);
-    // 干净的配置不会被判定成「需要清理」（否则每次启动都白重写一遍）
-    CHECK_INT(static_cast<int>(parse_config(text, "clean.ini").legacy_keys.size()), 0);
+    const ConfigLoadResult revived = parse_config(
+        "[dof]\ndof_enabled = true\ndof_fstop = 1.4\ndof_focal_distance = 450\nkey_focus_near = COMMA\n"
+        "pad_focus_near = LB+BACK\n"
+        "[look]\nvignette = 2\nchromatic_aberration = 3\n",
+        "revived.ini");
+    // 全部按正式键解析进 Config（不再有 legacy 收集）
+    CHECK_INT(static_cast<int>(revived.legacy_keys.size()), 0);
+    CHECK(revived.cfg.dof_enabled);
+    CHECK_NEAR(revived.cfg.dof_fstop, 1.4, 1e-9);
+    CHECK_NEAR(revived.cfg.dof_focal_distance, 450.0, 1e-9);
+    CHECK_STR(revived.cfg.key_focus_near, "COMMA");
+    CHECK_STR(revived.cfg.pad_focus_near, "LB+BACK");
+    CHECK_NEAR(revived.cfg.vignette, 2.0, 1e-9);
+    CHECK_NEAR(revived.cfg.chromatic_aberration, 3.0, 1e-9);
+    // 越界夹紧：对焦距离/光圈按 tuning 范围收口
+    const ConfigLoadResult clamped = parse_config("dof_focal_distance = 9999999\ndof_fstop = 0.01\n", "clamp.ini");
+    CHECK(clamped.cfg.dof_focal_distance >= tuning::kDofFocalMinCm &&
+          clamped.cfg.dof_focal_distance <= tuning::kDofFocalMaxCm);
+    CHECK_NEAR(clamped.cfg.dof_fstop, tuning::kDofFstopMin, 1e-9);
+    // 序列化往返：复活键出现在规范输出里，再解析值不变
+    const std::string text = config_ini_text(revived.cfg);
+    CHECK(text.find("[dof]") != std::string::npos);
+    CHECK(text.find("dof_fstop = 1.4") != std::string::npos);
+    CHECK(text.find("chromatic_aberration = 3") != std::string::npos);
+    const ConfigLoadResult roundtrip = parse_config(text, "roundtrip.ini");
+    CHECK_INT(static_cast<int>(roundtrip.warnings.size()), 0);
+    CHECK(roundtrip.cfg.dof_enabled);
+    CHECK_NEAR(roundtrip.cfg.dof_focal_distance, 450.0, 1e-9);
+    // reset_look_defaults 把色差/颗粒连同五项一起归默认（每次进入摄影模式恢复）
+    Config reset_cfg = revived.cfg;
+    (void)reset_look_defaults(reset_cfg);
+    CHECK_NEAR(reset_cfg.chromatic_aberration, 0.0, 1e-9);
+    CHECK_NEAR(reset_cfg.vignette, 0.0, 1e-9);
+    CHECK(reset_cfg.dof_enabled);  // [dof] 参数不随进入重置（用户配置），与 [look] 不同
+}
+
+// 调色·进阶三件（2026-11-08 批次；实机探针后由 13 项收缩而来）：解析/越界夹紧/往返/reset +
+// 中性值语义。中性值=恒等值（gain/gamma 1、offset 0），中性=不覆盖该项（bOverride 不下发）。
+// 判死十项的取证结论在 tuning.h 顶部（此处只钉存活项）。
+void test_config_color_pro_keys() {
+    section("parse_config 调色·进阶三件");
+    using namespace pbzpm;
+
+    const ConfigLoadResult pro = parse_config(
+        "[look]\ncolor_gain = 1.8\ncolor_gamma = 0.8\ncolor_offset = -0.15\n", "pro.ini");
+    CHECK(pro.warnings.empty());
+    CHECK_NEAR(pro.cfg.color_gain, 1.8, 1e-9);
+    CHECK_NEAR(pro.cfg.color_gamma, 0.8, 1e-9);
+    CHECK_NEAR(pro.cfg.color_offset, -0.15, 1e-9);
+
+    // 中性值语义：全默认的 LookOptions 不活跃；离中性即活跃，且进 ColorGrading LUT 家族
+    LookOptions neutral{};
+    CHECK(!neutral.color_pro_active());
+    CHECK(!neutral.color_grading_active());
+    LookOptions touched{};
+    touched.color_gain = 1.5;
+    touched.color_offset = -0.1;
+    CHECK(touched.color_pro_active());
+    CHECK(touched.color_grading_active());
+    // 相等比较覆盖新字段（值变了必须能看出来）
+    CHECK(!look_options_equal(neutral, touched));
+
+    // 越界夹紧：下限/上限各取一头
+    const ConfigLoadResult clamped = parse_config(
+        "[look]\ncolor_gain = -5\ncolor_gamma = 99\ncolor_offset = 9\n", "clamp.ini");
+    CHECK(clamped.warnings.size() >= 3);
+    CHECK_NEAR(clamped.cfg.color_gain, tuning::kColorGainMin, 1e-9);
+    CHECK_NEAR(clamped.cfg.color_gamma, tuning::kColorGammaMax, 1e-9);
+    CHECK_NEAR(clamped.cfg.color_offset, tuning::kColorOffsetMax, 1e-9);
+
+    // 非法文本保留默认
+    const ConfigLoadResult bad = parse_config("[look]\ncolor_gain = abc\n", "bad.ini");
+    CHECK(bad.warnings.size() >= 1);
+    CHECK_NEAR(bad.cfg.color_gain, tuning::kColorGainDefault, 1e-9);
+
+    // 序列化往返：新键出现在规范输出里，再解析值不变、零告警
+    const std::string text = config_ini_text(pro.cfg);
+    CHECK(text.find("color_gain = 1.8") != std::string::npos);
+    CHECK(text.find("color_offset = -0.15") != std::string::npos);
+    const ConfigLoadResult roundtrip = parse_config(text, "roundtrip.ini");
+    CHECK(roundtrip.warnings.empty());
+    CHECK_NEAR(roundtrip.cfg.color_gain, 1.8, 1e-9);
+    CHECK_NEAR(roundtrip.cfg.color_offset, -0.15, 1e-9);
+
+    // reset_look_defaults 把三件连同老五项一起归中性（每次进入摄影模式恢复）
+    Config reset_cfg = pro.cfg;
+    CHECK(reset_look_defaults(reset_cfg));
+    CHECK_NEAR(reset_cfg.color_gain, tuning::kColorGainDefault, 1e-9);
+    CHECK_NEAR(reset_cfg.color_offset, 0.0, 1e-9);
+    CHECK(!reset_look_defaults(reset_cfg));  // 已是默认，再 reset 无变化
 }
 
 // schema 表驱动：每个数值键的 0 / 负值 / 极大 / 非法文本边界；section 归属；告警去重
@@ -513,16 +626,25 @@ void test_config_default_text_roundtrip() {
     CHECK(text.find("wwise_engine_suspend") != std::string::npos);
     CHECK(text.find("freeze_dialogue_flow") != std::string::npos);
     CHECK(text.find("takeover_current_camera") != std::string::npos);
-    // 景深功能已整体移除：默认配置里不应再出现与它相关的键
-    CHECK(text.find("key_focus_near") == std::string::npos);
-    CHECK(text.find("pad_focus_near") == std::string::npos);
-    CHECK(text.find("[dof]") == std::string::npos);
+    // 景深/对焦复活（2.1）：默认配置里有 [dof] 段与对焦/光圈键位（默认关闭）
+    CHECK(text.find("key_focus_near") != std::string::npos);
+    CHECK(text.find("pad_focus_near") != std::string::npos);
+    CHECK(text.find("[dof]") != std::string::npos);
+    CHECK(text.find("dof_enabled = false") != std::string::npos);
+    CHECK(text.find("chromatic_aberration = 0") != std::string::npos);
+    CHECK(text.find("key_dof_toggle") != std::string::npos);
     CHECK(text.find("key_move_forward") != std::string::npos);  // 2.0.0-cpp-hotfix9
     CHECK(text.find("key_boost") != std::string::npos);
     CHECK(text.find("key_free_look") != std::string::npos);
     CHECK(text.find("wheel_fov") != std::string::npos);
     CHECK(text.find("pad_boost") != std::string::npos);
     CHECK(text.find("pad_vertical_up") != std::string::npos);
+    CHECK(text.find("vignette_enabled") != std::string::npos);  // 画面效果五项独立开关随配置序列化
+    CHECK(text.find("temperature_enabled") != std::string::npos);
+    // 调色·进阶三件随配置序列化（中性默认：增益/伽马 1、黑位 0）
+    CHECK(text.find("color_gain") != std::string::npos);
+    CHECK(text.find("color_gamma") != std::string::npos);
+    CHECK(text.find("color_offset") != std::string::npos);
     const ConfigLoadResult parsed = parse_config(text, "generated");
     CHECK_INT(parsed.warnings.size(), 0);
     CHECK_STR(parsed.cfg.key_toggle, "F2");
@@ -1126,6 +1248,99 @@ void test_photo_mode_happy_path() {
     fe.reset_calls();
     mode.leave("again");
     CHECK_INT(fe.calls.size(), 0);
+}
+
+// [look] 五项画面效果：每次进入摄影模式都从默认参数开始（数值归中性、五个开关归默认），
+// 且首次 tick 下发的 LookOptions 必须已经是默认值，不能把上一轮拖出来的效果带进新会话。
+void test_photo_mode_look_defaults_on_enter() {
+    section("画面效果五项进入时恢复默认");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    FakeEngine fe;
+    Config cfg;
+    cfg.vignette = 3.2;
+    cfg.saturation = 0.35;
+    cfg.contrast = 1.7;
+    cfg.bloom = 8.5;
+    cfg.temperature = -0.75;
+    cfg.vignette_enabled = false;
+    cfg.saturation_enabled = false;
+    cfg.contrast_enabled = false;
+    cfg.bloom_enabled = false;
+    cfg.temperature_enabled = false;
+    // 调色·进阶（2026-11-08）：同样随进入恢复中性（无开关，中性=不覆盖）
+    cfg.color_gain = 2.0;
+    cfg.color_offset = -0.1;
+
+    PhotoMode mode(fe, cfg);
+    CHECK(mode.enter());
+    const Config& active_cfg = mode.config();
+    CHECK_NEAR(active_cfg.vignette, 0.0, 1e-9);
+    CHECK_NEAR(active_cfg.saturation, 1.0, 1e-9);
+    CHECK_NEAR(active_cfg.contrast, 1.0, 1e-9);
+    CHECK_NEAR(active_cfg.bloom, 0.0, 1e-9);
+    CHECK_NEAR(active_cfg.temperature, 0.0, 1e-9);
+    CHECK(active_cfg.vignette_enabled);
+    CHECK(active_cfg.saturation_enabled);
+    CHECK(active_cfg.contrast_enabled);
+    CHECK(active_cfg.bloom_enabled);
+    CHECK(active_cfg.temperature_enabled);
+    CHECK_NEAR(active_cfg.color_gain, tuning::kColorGainDefault, 1e-9);
+    CHECK_NEAR(active_cfg.color_offset, tuning::kColorOffsetDefault, 1e-9);
+
+    Intent none;
+    mode.tick(none, 0.016);
+    CHECK_INT(fe.look_calls, 1);
+    CHECK(!fe.last_look.any_active());
+    CHECK(!fe.last_look.color_pro_active());
+    CHECK_NEAR(fe.last_look.color_gain, tuning::kColorGainDefault, 1e-9);
+    CHECK(fe.last_look.vignette_enabled);
+    CHECK(fe.last_look.saturation_enabled);
+    CHECK(fe.last_look.contrast_enabled);
+    CHECK(fe.last_look.bloom_enabled);
+    CHECK(fe.last_look.temperature_enabled);
+
+    // 独立开关：关掉只停用，滑块值仍原样保存在 LookOptions 里；重新打开立即恢复效果。
+    Config live = mode.config();
+    live.vignette = 2.5;
+    live.vignette_enabled = false;
+    mode.set_config(live);
+    mode.tick(none, 0.016);
+    CHECK_INT(fe.look_calls, 2);
+    CHECK_NEAR(fe.last_look.vignette, 2.5, 1e-9);
+    CHECK(!fe.last_look.vignette_active());
+    live.vignette_enabled = true;
+    mode.set_config(live);
+    mode.tick(none, 0.016);
+    CHECK_INT(fe.look_calls, 3);
+    CHECK(fe.last_look.vignette_active());
+
+    // 调色·进阶（2026-11-08）：无开关——值离中性即活跃，回中性即停用（同一 set_look 通道）。
+    Config pro = mode.config();
+    pro.color_offset = -0.1;
+    mode.set_config(pro);
+    mode.tick(none, 0.016);
+    CHECK_INT(fe.look_calls, 4);
+    CHECK(fe.last_look.color_offset_active());
+    CHECK(fe.last_look.color_pro_active());
+    CHECK_NEAR(fe.last_look.color_offset, -0.1, 1e-9);
+    pro.color_offset = tuning::kColorOffsetDefault;
+    mode.set_config(pro);
+    mode.tick(none, 0.016);
+    CHECK_INT(fe.look_calls, 5);
+    CHECK(!fe.last_look.color_offset_active());
+    CHECK(!fe.last_look.color_pro_active());
+    mode.leave("test");
+
+    // 重置辅助函数：有变化返回 true，全默认时返回 false（避免无谓写盘）
+    Config reset_cfg;
+    reset_cfg.vignette = 1.5;
+    reset_cfg.saturation_enabled = false;
+    CHECK(reset_look_defaults(reset_cfg));
+    CHECK_NEAR(reset_cfg.vignette, 0.0, 1e-9);
+    CHECK(reset_cfg.saturation_enabled);
+    CHECK(!reset_look_defaults(reset_cfg));
 }
 
 void test_photo_mode_failures_rollback() {
@@ -2371,6 +2586,77 @@ void test_photo_mode_freeze_treatment() {
         CHECK_INT(fe.count("cloth_restore"), 1);  // 失败保留标志，退出重试
         mode.leave("test");
         CHECK_INT(fe.count("cloth_restore"), 2);
+    }
+
+    // 布料闸门：冻结期每秒复核一次；解冻/关闭布料冻结后不跑；闸门节流按 dt 累计
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        fe.cloth_gate_caught = 1;  // 注入：本次闸门发现 1 个组件仍处于模拟态
+        PhotoMode mode(fe, Config{});
+        CHECK(mode.enter());       // 进入即冻结（auto_pause_time 默认 true）
+        CHECK(mode.frozen());
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 0);  // 累计 0.75s 不足 1s
+        mode.tick(Intent{}, 0.25);                  // 累计 1.0s：闸门跑第一次
+        CHECK_INT(fe.count("cloth_gate_tick"), 1);
+        mode.tick(Intent{}, 0.25);                  // dt 钳制在 kMaxFrameDt=0.25，用 0.25 步进累计
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 2);
+        CHECK_INT(fe.cloth_gate_calls, 2);
+        mode.toggle_freeze();                        // 解冻：闸门停
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 2);
+        mode.toggle_freeze();                        // 再冻结：闸门恢复
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 3);
+        mode.leave("test");                          // 退出：闸门停
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 3);
+    }
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        Config cfg;
+        cfg.freeze_cloth = false;  // 关闭布料冻结：闸门同样不跑（没有可复核的对象）
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 0);
+        CHECK_INT(fe.count("cloth_freeze"), 0);
+        mode.leave("test");
+    }
+    {
+        FakeEngine fe;
+        fe.cloth_components = 2;
+        Config cfg;
+        cfg.auto_pause_time = false;  // 进入不自动冻结：解冻状态下闸门不跑
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(!mode.frozen());
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        mode.tick(Intent{}, 0.25);
+        CHECK_INT(fe.count("cloth_gate_tick"), 0);
+        CHECK_INT(fe.count("cloth_freeze"), 0);
+        mode.leave("test");
     }
 
     // 骨骼动画 + 动态模糊：默认冻结/恢复；关闭开关不碰
@@ -4508,19 +4794,68 @@ void test_hook_registry() {
     }
 }
 
+
+// 风格槽位（core/look_preset.h）：导出文本往返/坏文件拒绝（写死初值的风格预设按钮已下线）
+void test_look_preset_slots() {
+    section("风格槽位三槽位导入导出");
+    using namespace pbzpm;
+    const double eps = 1e-9;
+
+    // 导出 → 导入严格往返（9 风格字段 + 5 开关）；渲染管线键不进槽位文件
+    Config exported{};
+    exported.vignette = 1.5;
+    exported.saturation = 0.85;
+    exported.contrast = 1.2;
+    exported.bloom = 3.0;
+    exported.temperature = 0.25;
+    exported.chromatic_aberration = 0.8;
+    exported.color_gain = 1.4;
+    exported.color_gamma = 0.9;
+    exported.color_offset = 0.02;
+    exported.vignette_enabled = false;
+    const std::string text = look_preset_ini_text(exported);
+    CHECK(text.find("[look]") != std::string::npos);
+    CHECK(text.find("vignette = 1.5") != std::string::npos);
+    CHECK(text.find("sharpness") == std::string::npos);
+    CHECK(text.find("screen_percentage") == std::string::npos);
+    Config imported{};
+    CHECK(parse_look_preset_ini(text, imported));
+    CHECK_NEAR(imported.vignette, 1.5, eps);
+    CHECK_NEAR(imported.saturation, 0.85, eps);
+    CHECK_NEAR(imported.contrast, 1.2, eps);
+    CHECK_NEAR(imported.bloom, 3.0, eps);
+    CHECK_NEAR(imported.temperature, 0.25, eps);
+    CHECK_NEAR(imported.chromatic_aberration, 0.8, eps);
+    CHECK_NEAR(imported.color_gain, 1.4, eps);
+    CHECK_NEAR(imported.color_gamma, 0.9, eps);
+    CHECK_NEAR(imported.color_offset, 0.02, eps);
+    CHECK(!imported.vignette_enabled);
+    CHECK(imported.saturation_enabled);
+
+    // 坏文件拒绝：空文本 / 无 [look] 段 / 乱码（防「静默套默认值」路径）
+    Config guard{};
+    guard.vignette = 2.0;
+    CHECK(!parse_look_preset_ini("", guard));
+    CHECK(!parse_look_preset_ini("[effects]\nhide_player = true\n", guard));
+    CHECK(!parse_look_preset_ini("look_preset", guard));
+    CHECK_NEAR(guard.vignette, 2.0, eps);  // 失败时 out 不动
+}
+
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
 
     test_vk_names();
     test_config_defaults_and_parse();
     test_config_warnings_and_clamps();
-    test_config_legacy_purge();
+    test_config_revived_dof_keys();
+    test_config_color_pro_keys();
     test_config_schema_and_sections();
     test_config_default_text_roundtrip();
     test_math();
     test_engine_port_pure_logic();
     test_input_logic();
     test_photo_mode_happy_path();
+    test_photo_mode_look_defaults_on_enter();
     test_photo_mode_failures_rollback();
     test_photo_mode_takeover_input();
     test_photo_mode_tick();
@@ -4552,6 +4887,7 @@ int main() {
     test_photo_mode_slow_look();
     test_pbzfm_fields_roundtrip();
     test_pbzfm_config_writeback();
+    test_look_preset_slots();
     test_config_atomic_write();
     test_i18n_pure_logic();
     test_i18n_snapshot_concurrency();

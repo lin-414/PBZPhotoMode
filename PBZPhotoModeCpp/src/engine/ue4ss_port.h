@@ -78,19 +78,40 @@ public:
     // RedrawViewports 之前）：这是唯一能把 POV 写进“本帧渲染”的时机。
     void write_takeover_pov_now();
 
-    // 画面效果（暗角/色差/颗粒/饱和/对比/泛光/冷暖）：写进自建后处理体积。
+    // 画面效果（暗角/饱和/对比/泛光/冷暖）：写进自建后处理体积。
     // 体积之后还有相机 POV 的 PostProcessSettings（weight=1，最后覆盖体积）；本作画面里的暗角/泛光
     // 由游戏自己的镜头/画质设置提供，因此 set_look 额外把这两项写进 CameraCache.POV，且在 GVC Tick 后每帧重申。
     bool set_look(const LookOptions& options) override;
     // 画面效果：把暗角/泛光写进本帧相机 POV 的 PostProcessSettings（GameViewportClient Tick 之后、
     // RedrawViewports 之前调用；POV 每帧由 UpdateCamera 重建，必须每帧重申）。
     void apply_look_to_camera_pov();
+
+    // ---- 景深/对焦/胶片（DofPort 实现，见 ue4ss_port_dof.cpp；背景见 core/dof_math.h 与 tuning.h）----
+    bool ensure_dof_gate(bool need_dof, bool need_film) override;
+    void set_bokeh_gate_enabled(bool enabled) override { bokeh_gate_config_ = enabled; }
+    bool release_dof_gate() override;
+    bool apply_dof(const DofParams& params) override;
+    bool film_gate_active() const override;
+    bool nlp_profile_active() const override;
+    bool nlp_enable_exhausted() const override;
+    bool release_nlp_profile() override;
+    void dof_frame_tick() override;
     bool look_active_{false};
     bool look_logged_{false};
     bool look_missing_logged_{false};
     // 最近一次 set_look 的参数：POV 每帧重申要用（体积只在值变化时写，POV 则每帧写）。
     LookOptions look_current_{};
     bool look_pov_logged_{false};
+    // 调色·进阶诊断（一次性，只读）：游戏 POV 对三件存活字段（增益/伽马/黑位）的
+    // bOverride_* 标志+原值。2026-11-08 实机已用一轮：13 项全 覆盖0，排除 POV 压制后十项判死；
+    // 保留供游戏更新后复查（覆盖=1 时需扩 POV 重申通道）。只在调色·进阶任一项活跃时打。
+    bool look_pov_pro_logged_{false};
+    // POV 上还留着本 mod 写的暗角/泛光覆盖（bOverride=1+值）。定格/独立相机下 POV 不被
+    // UpdateCamera 重建，失活后必须显式写回 覆盖0 才能撤掉残留，否则旧值永远压过体积
+    //（重置/开关按钮画面不动的根因）；撤干净后才允许 apply_look_to_camera_pov 早退。
+    bool pov_vignette_latched_{false};
+    bool pov_bloom_latched_{false};
+    bool pov_look_clear_logged_{false};
     // 每次“写入值发生变化”都回读一遍体积里的实际值：写入成功不等于引擎认账
     //（hotfix29 实机：色差 1.98 / 颗粒 7.68 / 饱和 0.74 / 对比 0.81 全都写了却没画面变化，
     //  必须先分清「没写进去」和「写进去了被引擎档位跳过」）。
@@ -162,6 +183,7 @@ public:
     int mpc_hold_snapshot() override;
     void mpc_release_snapshot() override;
     ClothFreezeReport freeze_cloth(bool frozen) override;
+    int cloth_gate_tick() override;
     SkeletalAnimationFreezeReport freeze_skeletal_animation(bool frozen) override;
     bool freeze_motion_blur(bool frozen) override;
     std::string freeze_diag_sample() override;
@@ -261,7 +283,7 @@ private:
     CameraPose takeover_pose_{};
     double takeover_fov_{90.0};
     // ---- 自建的无界后处理体积（画面效果专用）----
-    // 「画面效果」（暗角/色差/颗粒/饱和/对比/泛光/冷暖）写在这个体积的 Settings 上：
+    // 「画面效果」（暗角/饱和/对比/泛光/冷暖）写在这个体积的 Settings 上：
     // 本作 gameplay 视图里只有体积通道会被采纳。退出/关闭效果时销毁；世界换代时引擎已销毁它，只清指针。
     RC::Unreal::UObject* post_volume_{nullptr};
     bool post_volume_diag_logged_{false};
@@ -279,6 +301,64 @@ private:
     // 工作区/WorkSpace Cine 后端
     bool camera_is_cine_{false};
     bool camera_backend_probed_{false};
+
+    // ---- 景深/胶片：门控与组件通道状态（ue4ss_port_dof.cpp）----
+    // NLP 档所有权标记（瞬态 LevelSequence）。RF_Standalone 防 GC，进程内复用同一个；
+    // 游戏按 token 记账所有权，退出用同一 token 关档（564 同款语义）。
+    RC::Unreal::UObject* dof_nlp_token_{nullptr};
+    bool dof_nlp_active_{false};
+    // NLP 开启调用触发过访问违例（SEH 拦下）：本会话不再尝试开启（日志「不再尝试」的落地标志）
+    bool nlp_av_disabled_{false};
+    // NLP 开启方向失败过一次（接口缺失/类缺失/参数不匹配/AV 闩——全是会话内永久性失败）：
+    // 本会话不再尝试开启，core 的 nlp_owed 早退放行靠它收口（否则主开关开着时每帧解冻重请求）。
+    // release_dof_gate 清零：重进摄影模式重新探测（与 core 的 dof_unavailable_ 同语义）。
+    bool nlp_enable_exhausted_{false};
+    // tagged cvar 覆盖（DOF 闸门 / 胶片闸门各一把标签；标签带序号避免与游戏其它覆盖冲突）。
+    // 重试复用同一未解绑标签（部分建成失败不换标签，否则旧标签的已生效覆盖无人解绑而泄漏）；
+    // 解绑成功即清空字符串，下次建控用新序号。
+    bool dof_cvar_tag_active_{false};
+    std::string dof_cvar_tag_{};
+    bool film_cvar_tag_active_{false};
+    std::string film_cvar_tag_{};
+    int dof_tag_serial_{0};
+    // 管理 POV PostProcessSettings → 组件 PostProcessSettings 的整份拷贝是否已做（保留游戏原调色）
+    bool dof_component_seeded_{false};
+    // 已做拷贝的相机 Actor（换相机的下一帧重新拷贝）
+    RC::Unreal::UObject* dof_seeded_actor_{nullptr};
+    // 最近一次成功下发的参数（dof_frame_tick 用它判断要不要 ForceUpdateCameraView）
+    DofParams dof_current_{};
+    bool dof_current_valid_{false};
+    // 启用后延迟回读探针：第 N 帧一次性记录 NLP 档名 / 闸门 cvar 现值（诊断）
+    int dof_probe_pending_frames_{0};
+    // 门控前置探测的失败说明只打一次（接口缺失/类缺失/相机组件不可用）
+    bool dof_gate_probe_logged_{false};
+    // 首启逐步打点只打一轮（闸门建立过程可见，便于崩溃时定位死在哪一步）
+    bool dof_gate_steps_logged_{false};
+    bool dof_apply_step_logged_{false};
+    // NLP 档已并入景深总开关（2026-11-08）：总开关开 = 闸门 + NLP 档 + 组件通道一体（564 同款），
+    // 无独立开关（原 [dof] dof_nlp_enable 已登记 Deprecated，取证记录在 tuning.h）。
+    bool bokeh_gate_config_{false};  // bokeh gate cvar 二分开关（默认关：崩溃嫌疑首位）
+    // 564 同款防御（2026-11-07 崩溃取证第 5/6/7 次）：流送源钉住 + 相机/组件 tick 与碰撞禁用。
+    // 自由相机移动不得触发 World Partition 流送（异步 worker 踩零函数指针的嫌疑链），564 源码注释：
+    // "do not stream a new world from the free camera"。
+    RC::Unreal::UObject* dof_defenses_actor_{nullptr};
+    RC::Unreal::UObject* dof_defenses_warned_{nullptr};
+    bool dof_streaming_pinned_{false};
+    bool dof_streaming_closed_before_{false};
+    // 2026-11-07 第 9 轮取证：本调用在 UE4SS 钩子语境下每次会话首调必 AV（564 在 PuerTS 定时器语境
+    // 调同函数无恙），AV 被 SEH 吞掉后相机管理器半更新态=崩溃家族毒源。默认彻底不调。
+    bool force_view_never_{true};
+    // 564 全保真度（第 15 轮）：原生 setter 通道的记账
+    bool dof_lens_seeded_{false};
+    bool dof_lens_warn_logged_{false};
+    bool auto_camera_managed_original_{false};
+    RC::Unreal::UObject* dof_lens_actor_{nullptr};
+    // ForceUpdateCameraView 反射缓存（进程内稳定；miss 也记下来避免每帧重找）
+    RC::Unreal::UFunction* force_update_view_fn_{nullptr};
+    bool force_update_view_fn_missing_{false};
+    // 实现函数（ue4ss_port_dof.cpp）
+    bool ensure_nlp_profile(bool enable);
+    bool call_force_update_view();
 
     // 超宽屏画幅解锁：进入时保存的相机管理器原值（aspect_saved_=true 时有效）。
     // 注意：即使进入时游戏没锁画幅（false），也要保存——暂停/处决演出可能随后把锁打开，
@@ -330,6 +410,17 @@ private:
                                  RC::Unreal::UObject* owner, std::uint8_t bits);
     bool restore_blocked_object(BlockedObject& record, RC::Unreal::UObject* current_owner, const char* label);
 
+    // AController::IgnoreLookInput / IgnoreMoveInput 是 uint8 堆叠计数，且不是 UPROPERTY，
+    // 反射层读不到计数本身，只能通过 Is*InputIgnored() 读布尔锁状态。进入屏蔽前记下原状态，
+    // 退出时按 plan_ignore_lock_restore() 校正：进入前已有锁时只做一次 Set(false) 会把计数
+    // 留在 1，正是「退出摄影模式后无法移动视角」的根因。
+    bool input_look_state_saved_{false};
+    bool input_look_was_ignored_{false};
+    bool input_move_state_saved_{false};
+    bool input_move_was_ignored_{false};
+    bool read_ignore_flag(bool look, bool& out);
+    bool reconcile_ignore_flag(bool look, RC::Unreal::UObject* pc);
+
     // M-1：attach_view 之后回读 ViewTarget.Target 与相机位置；连续失败到阈值才让 core 退出。
     // 返回 true=确认指向摄影相机；observed/readable 用于失败时输出实际观测结果。
     bool read_view_target_target(RC::Unreal::UObject*& observed, bool& readable) const;
@@ -344,8 +435,13 @@ private:
         std::string name;
         int original{0};
         int target{0};  // 冻结期目标值（每帧重申用）
+        // exec 通道（ExecuteConsoleCommand）写入未生效时的兜底：走 SetConsoleVariableTagged，
+        // 解冻/退出用 UnsetConsoleVariablesWithTag(tag) 还原（值自动回到打标签前原值）。
+        bool via_tag{false};
+        std::string tag;
     };
     std::vector<RenderCvarSnapshot> render_cvar_snapshots_;
+    int render_tag_serial_{0};  // tagged 兜底写入的标签序号（PBZPM.RT.<n>，每次写入递增防串扰）
     bool render_cvar_probe_logged_{false};
     int render_reassert_logged_{0};
     // 光照 A/B（Lumen/屏幕空间光照）独立快照表：阶段轮换时先整组还原再应用，避免和 AA/DLSS/FG 混在一起。
@@ -476,6 +572,13 @@ private:
         bool chaos{false};
         bool was_suspended{false};
         bool suspended_by_us{false};
+        // 挂起调用未生效（反射没命中，或组件拒绝/未初始化）：恢复时无需处理，
+        // 但冻结期闸门要重点盯防——这类组件最容易被游戏侧翻成活模拟。
+        bool suspend_failed{false};
+        // 冻结期闸门兜底停了 Tick：恢复时必须先还原 Tick 再 Resume（否则恢复不出来）。
+        bool tick_disabled_by_us{false};
+        // 闸门日志每组件只打一次，防止每秒刷屏
+        bool gate_warned{false};
     };
     std::vector<ClothComponentState> cloth_states_;
     // 骨骼动画冻结前的 bPauseAnims / bNoSkeletonUpdate 原值
@@ -554,7 +657,9 @@ private:
     // 只收布局根控件（本作 HUD 子树都挂在它下面），不逐控件扫描。
     std::vector<std::pair<RC::Unreal::UObject*, int>> hud_widgets_;
     bool hud_widget_missing_logged_{false};
-    bool pv_hide_active_{false};  // 本次隐藏是否走了 UIManager.SetHideUIForPV
+    bool pv_hide_active_{false};  // 本次隐藏是否走了 UIManager.SetHideUIForPV（写后 IsHideUIForPV 回读确认）
+    bool pv_foreign_logged_{false};        // PV 总开关进入前已被他人隐藏的提示只打一次
+    bool pv_verify_failed_logged_{false};  // SetHideUIForPV 写后回读不一致的告警只打一次
     // AHUD 层粗粒度显示开关（PlayerController / MyHUD 的 bShowHUD 属性）。
     // 本作 HUD 是纯 UMG（1.0.4 实机：DrawHUD 从不执行），这一路只覆盖可能存在的 AHUD Canvas，
     // 与 PV 开关、UMG 根控件并列而不是替代。只有读到原值且写成功才 active；

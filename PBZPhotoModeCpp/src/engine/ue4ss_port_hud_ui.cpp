@@ -89,6 +89,20 @@ auto set_ui_manager_hide_for_pv(bool hidden) -> bool {
     return true;
 }
 
+// 读 PV 总开关当前状态（PBZUIManagerSubsystem::IsHideUIForPV 无参 getter，mod 564
+// visibility.js 同款验证通道——Set 写、Is 读是游戏自己配对的接口）。
+// *available=false 表示 getter 不可用（函数不存在/反射读不到）：调用方按「无法验证」
+// 处理，退回旧的 fire-and-forget 语义，行为与加回读之前一致。
+auto read_ui_manager_pv_hidden(bool* available) -> bool {
+    *available = false;
+    UObject* manager = RC::Unreal::UObjectGlobals::FindFirstOf(STR("PBZUIManagerSubsystem"));
+    if (!is_ok(manager)) return false;
+    double value = 0.0;
+    if (!read_return_number(manager, "IsHideUIForPV", value)) return false;
+    *available = true;
+    return value != 0.0;
+}
+
 }  // namespace
 
 bool Ue4ssPort::set_hud_visible(bool visible) {
@@ -96,13 +110,25 @@ bool Ue4ssPort::set_hud_visible(bool visible) {
         // ---- 恢复：所有开关都按「本 Mod 确实动过」的记账恢复，失败保留记账交给 core 重试 ----
         bool ok = true;
 
-        // ① 游戏自己的 PV 总开关。
+        // ① 游戏自己的 PV 总开关。写后用 IsHideUIForPV() 回读——调出去≠生效：
+        //    假成功在这里被拦下（保留记账交给退避重试），否则血条等 PV 订阅者只认
+        //    这条广播，根控件回写救不回它们，恢复侧又已清账不再重试（2026-11-08
+        //    「退出摄影模式后血条一直消失」的头号嫌疑）。
+        //    getter 不可用（旧版没有 IsHideUIForPV）时按调用成功处理，维持旧语义。
         if (pv_hide_active_) {
-            if (set_ui_manager_hide_for_pv(false)) {
+            const bool called = set_ui_manager_hide_for_pv(false);
+            bool still_hidden = false;
+            bool probe_ok = false;
+            if (called) still_hidden = read_ui_manager_pv_hidden(&probe_ok);
+            if (called && (!probe_ok || !still_hidden)) {
                 pv_hide_active_ = false;
-                log(LogLevel::Info, "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD");
+                log(LogLevel::Info, probe_ok
+                                        ? "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD（IsHideUIForPV 回读确认）"
+                                        : "UIManager.SetHideUIForPV(false) 已恢复游戏 UI/HUD");
             } else {
                 ok = false;  // 保留 pv_hide_active_，下次重试
+                log(LogLevel::Warn, called ? "UIManager.SetHideUIForPV(false) 已调用但 IsHideUIForPV() 仍为隐藏，保留记账重试"
+                                           : "UIManager.SetHideUIForPV(false) 调用失败（子系统/函数未找到），保留记账重试");
             }
         }
 
@@ -180,10 +206,40 @@ bool Ue4ssPort::set_hud_visible(bool visible) {
     }
 
     // 主路径：游戏 UIManager 的“为拍照/PV 隐藏 UI”总开关。
-    const bool pv_ok = set_ui_manager_hide_for_pv(true);
-    pv_hide_active_ = pv_ok;
-    if (pv_ok) {
-        log(LogLevel::Info, "UIManager.SetHideUIForPV(true) 已请求隐藏游戏 UI/HUD");
+    // 所有权判定（mod 564 visibility.js 的 ownsNative 同款）：写之前已是隐藏态且不是
+    // 本 Mod 接管中的（游戏自己/其他 mod 藏的）→ 目标已达成但不记账，退出时不写 false，
+    // 避免把别人的隐藏顺手恢复掉。例外：pv_hide_active_ 已为 true（上一会话恢复失败的
+    // 残账，Error 日志提示的「重进摄影模式再退出」自愈路）→ 照常重写并保持记账。
+    // 写后回读 IsHideUIForPV()：调出去≠生效，回读不一致则本轮不算成功（返回 false 让
+    // core 按秒重试）且不记账；getter 不可用时退回 fire-and-forget 旧语义。
+    bool pv_ok = false;
+    {
+        bool already_hidden = false;
+        bool probe_ok = false;
+        already_hidden = read_ui_manager_pv_hidden(&probe_ok);
+        if (probe_ok && already_hidden && !pv_hide_active_) {
+            pv_ok = true;
+            if (!pv_foreign_logged_) {
+                pv_foreign_logged_ = true;
+                log(LogLevel::Info, "PV 总开关进入前已是隐藏态（游戏/其他 mod 所有）：本轮不接管，退出时不回写");
+            }
+        } else if (set_ui_manager_hide_for_pv(true)) {
+            bool now_hidden = false;
+            bool verify_ok = false;
+            now_hidden = read_ui_manager_pv_hidden(&verify_ok);
+            if (!verify_ok || now_hidden) {
+                pv_ok = true;
+                pv_hide_active_ = true;
+                log(LogLevel::Info, verify_ok
+                                        ? "UIManager.SetHideUIForPV(true) 已隐藏游戏 UI/HUD（IsHideUIForPV 回读确认）"
+                                        : "UIManager.SetHideUIForPV(true) 已请求隐藏游戏 UI/HUD");
+            } else if (!pv_verify_failed_logged_) {
+                pv_verify_failed_logged_ = true;
+                log(LogLevel::Warn, "UIManager.SetHideUIForPV(true) 已调用但 IsHideUIForPV() 仍为 false——"
+                                    "PV 订阅者（Boss 血条等）不会隐藏；把这条日志发回来");
+            }
+        }
+        // pv_ok==false 时不记账：本轮没藏成功就没有账可还（pv_hide_active_ 保持 false）
     }
 
     // 补充路径：HUD 布局根控件也设为 Collapsed，覆盖没有订阅 PV 事件的纯 UMG 控件。

@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 
+#include "core/dof_math.h"
 #include "core/tuning.h"
 #include "core/version.h"
 
@@ -11,6 +12,7 @@ namespace pbzpm {
 namespace {
 
 // 成组调参常量统一放在 core/tuning.h，避免与 mod_app / 引擎层数值分叉。
+using tuning::kDofApplyRetryBackoffSec;
 using tuning::kFreezeDiagIntervalSec;
 using tuning::kMaxFrameDt;
 using tuning::kMaxRecoveryAttempts;
@@ -33,8 +35,8 @@ auto join_items(const std::vector<std::string>& items) -> std::string {
 }  // namespace
 
 PhotoMode::PhotoMode(EnginePort& engine, Config cfg)
-    : camera_(engine), input_(engine), hud_(engine), time_pause_(engine), audio_(engine),
-      freeze_motion_(engine), world_(engine), log_(engine), cfg_(cfg) {
+    : camera_(engine), dof_(engine), input_(engine), hud_(engine), time_pause_(engine),
+      audio_(engine), freeze_motion_(engine), world_(engine), log_(engine), cfg_(cfg) {
     // M-6：把配置里的日志阈值立刻交给引擎侧，避免用户设 log_level=warn 仍被 Info 刷屏
     log_.set_log_level(cfg_.log_level);
 }
@@ -54,6 +56,11 @@ void PhotoMode::set_config(const Config& cfg) {
 // 两条后端都是 enter() 时建立的，所以改这一项不能只改配置：必须把旧后端完整拆掉再建新的，
 // 中途任何一步失败都回滚到原后端——绝不能让用户点了开关之后没有相机可用。
 bool PhotoMode::set_camera_backend_live(bool use_takeover) {
+    if (use_takeover && dof_gate_active_) {
+        log(LogLevel::Warn,
+            "景深/胶片正在生效：不能切回接管当前相机（CineCamera 组件通道的前提），请先关闭景深与色差");
+        return false;
+    }
     cfg_.takeover_current_camera = use_takeover;
     if (!active_) return true;                          // 未激活：下次 enter() 按新配置建立
     if (use_takeover == takeover_active_) return true;  // 已经是目标后端（含 enter 时回退过的情况）
@@ -251,6 +258,22 @@ bool PhotoMode::enter() {
     camera_.apply_fov(fov_);
     camera_.apply_pose(pose_);
 
+    // [look] 五项画面效果每次进入摄影模式都从默认参数开始：数值归中性值、五个开关归默认。
+    // 这里改的是 PhotoMode 自己的配置副本；mod_app 在 enter 成功后会把同一份默认值写回
+    // cfg_ / config.ini 并刷新 PBZFM 菜单镜像，保证界面显示与引擎行为一致。
+    reset_look_defaults(cfg_);
+    look_applied_valid_ = false;
+
+    // 景深/胶片状态按次进入重置：门控在上面的补还原里已释放；[dof] 参数保留（用户配置），
+    // 色差随 [look] 恢复默认。门控不可用标记清零：重进会重新探测（refresh_function_caches）。
+    dof_applied_valid_ = false;
+    dof_logged_ = false;
+    dof_warn_logged_ = false;
+    dof_apply_retry_accum_ = 0.0;
+    dof_gate_active_ = false;
+    dof_unavailable_ = false;
+    dof_unavailable_logged_ = false;
+
     active_ = true;
     frozen_ = false;
     // 冻结模式必须按本次进入重新决定：旧会话的 paused/dilation 选择不能带进新会话
@@ -311,7 +334,7 @@ bool PhotoMode::has_pending_restore() const {
            wwise_engine_suspended_ || shakes_frozen_ || wind_frozen_ || mpc_hold_active_ || cloth_frozen_ ||
            custom_cloth_frozen_ || wpo_frozen_ || animation_frozen_ || motion_blur_frozen_ || render_tuning_active_ ||
            lighting_tuning_active_ ||
-           lighting_ab_cycle_active_ || shadow_tuning_active_ || recovery_pending_;
+           lighting_ab_cycle_active_ || shadow_tuning_active_ || dof_gate_active_ || recovery_pending_;
 }
 
 bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
@@ -324,6 +347,15 @@ bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
             takeover_active_ = false;
         } else {
             fail("接管当前相机未退出（游戏相机仍被每帧覆盖）");
+        }
+    }
+
+    // 景深/胶片的门控：这是相机建立之后（会话中按需）做的最新一层改动，逆序最先还原。
+    if (dof_gate_active_) {
+        if (dof_.release_dof_gate()) {
+            dof_gate_active_ = false;
+        } else {
+            fail("景深渲染门控未释放（NLP 档/tagged cvar 覆盖可能残留）");
         }
     }
 
@@ -535,6 +567,7 @@ bool PhotoMode::attempt_restore_all(std::vector<std::string>* failed_items) {
 void PhotoMode::leave(const char* reason) {
     (void)camera_.set_look(LookOptions{});
     look_applied_valid_ = false;
+    dof_applied_valid_ = false;
     if (!has_pending_restore()) {
         return;  // 幂等：没进过模式、也没有残留改动
     }
@@ -939,11 +972,21 @@ void PhotoMode::set_hide_game_hud_live(bool hidden) {
 
 void PhotoMode::apply_look_if_needed() {
     LookOptions want{};
+    want.vignette_enabled = cfg_.vignette_enabled;
+    want.saturation_enabled = cfg_.saturation_enabled;
+    want.contrast_enabled = cfg_.contrast_enabled;
+    want.bloom_enabled = cfg_.bloom_enabled;
+    want.temperature_enabled = cfg_.temperature_enabled;
     want.vignette = cfg_.vignette > 0.0 ? cfg_.vignette : 0.0;
     want.saturation = cfg_.saturation;
     want.contrast = cfg_.contrast;
     want.bloom = cfg_.bloom > 0.0 ? cfg_.bloom : 0.0;
     want.temperature = cfg_.temperature;
+    // 调色·进阶三件：直接透传，中性值语义由 look.h 的 *_active() 判定（cfg 与 LookOptions
+    // 共用同一批 tuning 默认，越界已由 config schema 钳住）。
+    want.color_gain = cfg_.color_gain;
+    want.color_gamma = cfg_.color_gamma;
+    want.color_offset = cfg_.color_offset;
 
     if (look_applied_valid_ && look_options_equal(want, look_applied_)) return;
     if (!camera_.set_look(want)) {
@@ -964,7 +1007,190 @@ void PhotoMode::apply_look_if_needed() {
                       "画面效果：暗角=%.2f 饱和=%.2f 对比=%.2f 泛光=%.2f 冷暖=%.2f"
                       "（写进自建后处理体积，退出还原）",
                       want.vignette, want.saturation, want.contrast, want.bloom, want.temperature);
+        // 调色·进阶有独立的首启日志：只列活跃项，全中性就不多打这一行。
+        char pro_buf[128]{};
+        std::snprintf(pro_buf, sizeof(pro_buf),
+                      "画面效果·进阶：增益=%.2f 伽马=%.2f 黑位=%.2f",
+                      want.color_gain, want.color_gamma, want.color_offset);
         log(LogLevel::Info, buf);
+        if (want.color_pro_active()) log(LogLevel::Info, pro_buf);
+    }
+}
+
+// ---- 景深/胶片（门控 + CineCamera 组件通道；背景与通道说明见 core/dof_math.h）----
+
+void PhotoMode::dof_frame_tick() {
+    if (!active_ || !dof_applied_valid_ || !dof_applied_.any_active()) return;
+    dof_.dof_frame_tick();
+}
+
+bool PhotoMode::ensure_dof_ready(bool need_dof, bool need_film) {
+    // 早退条件不能只看 dof_gate_active_：首启建控时色差常为 0（0=不覆盖），胶片 cvar 闸门
+    // （r.SceneColorFringeQuality / r.Tonemapper.Quality 等）被整块跳过；之后在菜单里
+    // 调大色差，组件 PP 写入成功但引擎质量闸门关着 → 滑条动了画面没反应（2026-11-07 实机）。
+    // need_film 且胶片闸门未建时放行补建一次（impl 幂等：DOF/NLP 分支各有 active 幂等保护）。
+    // 也不能在 NLP 档欠账时早退（2026-11-08）：NLP 档已并入景深主开关（独立键删除），而首次
+    // 建控可能由色差（胶片闸门）先触发——引擎端 NLP 分支只在 need_dof 时请求（档位是全局渲染
+    // 档，仅色差建控就开档会让游戏原生过场景深出现在主开关关着的画面里）。主开关后来才转开
+    //（按键/F8 菜单 live 映射）时这里放行补建一次；幂等，cvar 闸门各有 active 保护。
+    // NLP 开启失败置引擎侧 exhausted 闩后 nlp_owed 恒 false，不会每帧解冻重请求。
+    const bool nlp_owed = need_dof && !dof_.nlp_profile_active() && !dof_.nlp_enable_exhausted();
+    if (dof_gate_active_ && (!need_film || dof_.film_gate_active()) && !nlp_owed) return true;
+    if (dof_unavailable_) return false;
+    if (!active_) return false;
+
+    // 564 时序对齐：NLP 档的所有权请求由游戏原生更新处理，SetGamePaused 状态下处理会崩
+    //（两次实机同址：PBZ.exe+0x43AE0D4 虚表调用读 -1）。564 是「先开档、后暂停」；
+    // 我们在进入即冻结后才启用景深，因此临时解冻建门控，建好后再恢复冻结。
+    const bool was_frozen = frozen_;
+    if (was_frozen) toggle_freeze();
+    const bool ok = ensure_dof_ready_impl(need_dof, need_film);
+    if (was_frozen && active_) toggle_freeze();
+    return ok;
+}
+
+bool PhotoMode::ensure_dof_ready_impl(bool need_dof, bool need_film) {
+
+    // 组件通道的前提是独立相机（CineCameraActor）：接管模式下就地切换，
+    // 与「接管失效自动回退」走同一条 fallback_from_takeover 路径（不碰用户的后端配置，
+    // 下次进入仍按 camera_backend 配置建立；运行中切回接管会被 set_camera_backend_live 拒绝）。
+    if (takeover_active_) {
+        if (!fallback_from_takeover()) {
+            // 与门控缺失同一待遇：本次会话置 unavailable 闩，避免每帧重试+每帧 Warn
+            dof_unavailable_ = true;
+            log(LogLevel::Warn, "景深/胶片：切换独立相机失败，本次无法启用");
+            return false;
+        }
+        log(LogLevel::Info, "景深/胶片：已切换到独立相机后端（组件通道前提，退出后按配置恢复）");
+    }
+    if (!spawned_) {
+        // 理论上 active 时二选一必有一个成立；防御式兜底
+        if (!camera_.spawn_camera(pose_)) {
+            dof_unavailable_ = true;
+            log(LogLevel::Warn, "景深/胶片：创建独立相机失败，本次无法启用");
+            return false;
+        }
+        spawned_ = true;
+        view_attached_ = camera_.attach_view();
+        if (!view_attached_) log(LogLevel::Warn, "景深/胶片：独立相机 ViewTarget 设置失败");
+    }
+
+    dof_.set_bokeh_gate_enabled(cfg_.dof_bokeh_gate);
+    if (!dof_.ensure_dof_gate(need_dof, need_film)) {
+        dof_unavailable_ = true;
+        if (!dof_unavailable_logged_) {
+            dof_unavailable_logged_ = true;
+            log(LogLevel::Warn,
+                "景深/胶片：渲染门控不可用（游戏未提供 NLP 档/Tagged cvar 接口，或 CineCamera 类缺失），"
+                "本次会话不再尝试；重进摄影模式会重新探测");
+        }
+        return false;
+    }
+    dof_gate_active_ = true;
+    dof_logged_ = false;
+    return true;
+}
+
+void PhotoMode::apply_dof_if_needed(double dt) {
+    if (!active_) return;
+    DofParams want{};
+    want.dof_enabled = cfg_.dof_enabled;
+    want.focus_distance_cm = clamp_focus_distance(cfg_.dof_focal_distance);
+    want.fstop = clamp_fstop(cfg_.dof_fstop);
+    want.sensor_width_mm = clamp_sensor_width(cfg_.dof_sensor_width);
+    want.chromatic_aberration = cfg_.chromatic_aberration > 0.0 ? cfg_.chromatic_aberration : 0.0;
+
+    // NLP 档跟随景深主开关（关向同步，2026-11-08 实机取证）：主开关关着但 NLP 过场渲染档还
+    // 开着——档位是全局渲染档，游戏原生过场景深（游戏自己的对焦逻辑、随镜头移动）正在画面里，
+    // 组件通道 Scale=0 只压掉我们自己写的那一份、压不掉游戏原生档位的，且本 mod 参数管不到它。
+    // 释放要走解冻窗口（NLP 所有权由游戏原生更新处理，冻结态调用会崩，与 ensure_dof_ready
+    // 同一纪律；引擎侧再兜一层暂停态还原），失败按退避重试，退出路径 release_dof_gate 兜底。
+    // 放在参数等值早退之前：主开关关掉后的每个帧都要能走到这里，不能被「参数没变」挡住。
+    if (nlp_release_retry_accum_ > 0.0) nlp_release_retry_accum_ -= dt;
+    if (!want.dof_active() && dof_.nlp_profile_active() && nlp_release_retry_accum_ <= 0.0) {
+        const bool was_frozen = frozen_;
+        if (was_frozen) toggle_freeze();
+        const bool ok = dof_.release_nlp_profile();
+        if (was_frozen && active_) toggle_freeze();
+        if (ok) {
+            nlp_release_warn_logged_ = false;
+            log(LogLevel::Info,
+                "景深已关：NLP 过场渲染档已释放（游戏原生过场景深随之消失；cvar 闸门保留，退出摄影模式时解绑）");
+        } else {
+            nlp_release_retry_accum_ = kDofApplyRetryBackoffSec;
+            if (!nlp_release_warn_logged_) {
+                nlp_release_warn_logged_ = true;
+                log(LogLevel::Warn, "NLP 过场渲染档释放未完成，稍后重试（退出摄影模式时也会兜底重试）");
+            }
+        }
+    }
+
+    if (dof_applied_valid_ && dof_params_equal(want, dof_applied_)) return;
+    const bool was_active = dof_applied_valid_ && dof_applied_.any_active();
+
+    if (!want.any_active() && !was_active) {
+        // 双向都不活跃：没有任何要写的东西（门控也不该为它打开），只记账避免每帧空跑
+        dof_applied_ = want;
+        dof_applied_valid_ = true;
+        return;
+    }
+
+    if (want.any_active()) {
+        if (!ensure_dof_ready(want.dof_active(), want.film_active())) {
+            dof_applied_valid_ = false;  // 下一帧再试（warn 一次，在 ensure_dof_ready 内打）
+            return;
+        }
+    }
+    // apply 失败按固定退避重试：组件写入有 SEH 兜底，但持续失败时每帧重入写入路径
+    // 只会反复触发异常拦截，等退避到期再试最新参数即可
+    if (dof_apply_retry_accum_ > 0.0) {
+        dof_apply_retry_accum_ -= dt;
+        if (dof_apply_retry_accum_ > 0.0) return;
+    }
+    if (!dof_.apply_dof(want)) {
+        dof_apply_retry_accum_ = kDofApplyRetryBackoffSec;
+        dof_applied_valid_ = false;
+        if (!dof_warn_logged_) {
+            dof_warn_logged_ = true;
+            log(LogLevel::Warn, "景深/胶片：参数未写进组件通道，稍后重试（其余摄影功能不受影响）");
+        }
+        return;
+    }
+    dof_apply_retry_accum_ = 0.0;
+    dof_applied_ = want;
+    dof_applied_valid_ = true;
+    if (want.any_active() && !dof_logged_) {
+        dof_logged_ = true;
+        char buf[260]{};
+        std::snprintf(buf, sizeof(buf),
+                      "景深/胶片：DOF=%d 对焦=%.0fcm F=%.1f 传感器=%.0fmm 色差=%.2f"
+                      "（门控 + CineCamera 组件通道，退出还原）",
+                      want.dof_enabled ? 1 : 0, want.focus_distance_cm, want.fstop, want.sensor_width_mm,
+                      want.chromatic_aberration);
+        log(LogLevel::Info, buf);
+    }
+}
+
+void PhotoMode::handle_focus_intent(const Intent& intent, double mult) {
+    const bool film_needed = cfg_.chromatic_aberration > 0.0;
+
+    if (intent.dof_toggle) {
+        if (cfg_.dof_enabled) {
+            cfg_.dof_enabled = false;
+            log(LogLevel::Info, "景深已关闭（NLP 档随主开关释放；cvar 门控保留，退出摄影模式时解绑）");
+        } else if (ensure_dof_ready(true, film_needed)) {
+            cfg_.dof_enabled = true;
+            log(LogLevel::Info, "景深已开启（渲染门控 + CineCamera 组件通道）");
+        }
+    }
+
+    // 对焦/光圈步进：按下沿一格 + 按住连发（与 FOV 同一套状态机），Shift 粗调 / Ctrl 微调。
+    if (intent.focus_nudge != 0) {
+        const double step = focus_step_scaled(cfg_.dof_focal_distance, cfg_.dof_focus_step) * mult;
+        cfg_.dof_focal_distance = clamp_focus_distance(cfg_.dof_focal_distance - intent.focus_nudge * step);
+    }
+    if (intent.aperture_nudge != 0) {
+        cfg_.dof_fstop = clamp_fstop(cfg_.dof_fstop - intent.aperture_nudge * cfg_.dof_aperture_step * mult);
     }
 }
 
@@ -1109,6 +1335,9 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     // Shift/Ctrl 变速对「步进类」操作同样生效：Shift 粗调、Ctrl 微调（与移动/滚转同规则）。
     const double mult = (intent.boost ? cfg_.boost_mult : 1.0) * (intent.slow ? cfg_.slow_mult : 1.0);
 
+    // 景深/对焦键位（对焦距离/光圈步进、总开关）
+    handle_focus_intent(intent, mult);
+
     const double step = cfg_.move_speed * mult * dt;
 
     const double fwd_in = intent.move_forward;
@@ -1160,6 +1389,9 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     if (!apply_pose_if_dirty()) {
         log(LogLevel::Warn, "应用相机位姿失败");
     }
+
+    // 景深/胶片参数下发：必须在位姿积分之后，组件通道消费的才是本帧最终位姿。
+    apply_dof_if_needed(dt);
 
     // HUD 是 UMG，可能比摄影模式晚建好；隐藏失败时每秒重试一次，
     // 成功后由 hud_hidden_ 记住，退出时才会正确恢复。重试有上限：
@@ -1253,6 +1485,16 @@ void PhotoMode::tick(const Intent& intent, double dt) {
     if (frozen_) {
         // MPC 参数钉住：冻结期每帧把快照写回（实时驱动代码每帧改写，必须每帧赢回写入权）
         if (mpc_hold_active_) freeze_motion_.mpc_hold_snapshot();
+        // 布料闸门：每秒复核冻结时登记的布料组件。游戏侧布料管理按渲染可见性/距离
+        // 翻转状态，可能在冻结期把布料翻回活模拟——活的 solver 对着被 bPauseAnims
+        // 钉死的骨骼，飘带会被越拉越远（实机：部件离身数米、解冻后仍是坏姿态）。
+        if (cloth_frozen_) {
+            cloth_gate_accum_ += dt;
+            if (cloth_gate_accum_ >= 1.0) {
+                cloth_gate_accum_ = 0.0;
+                freeze_motion_.cloth_gate_tick();
+            }
+        }
         // POV 微动监测：冻结期每帧采样相机管理器最终 POV（诊断用，受 freeze_diag 门控；
         // 只统计没人动相机的帧，用户转相机时清样本不累计）
         if (cfg_.freeze_diag) freeze_motion_.pov_watch_tick(!camera_moved);

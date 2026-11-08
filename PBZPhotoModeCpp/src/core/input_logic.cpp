@@ -61,6 +61,11 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.slow = resolve_key(cfg.key_slow, map.slow, "key_slow", warnings, map.all_resolved);
     map.free_look = resolve_key(cfg.key_free_look, map.free_look, "key_free_look", warnings, map.all_resolved);
     map.frame_freeze = resolve_key(cfg.key_frame_freeze, map.frame_freeze, "key_frame_freeze", warnings, map.all_resolved);
+    map.dof_toggle = resolve_key(cfg.key_dof_toggle, map.dof_toggle, "key_dof_toggle", warnings, map.all_resolved);
+    map.focus_near = resolve_key(cfg.key_focus_near, map.focus_near, "key_focus_near", warnings, map.all_resolved);
+    map.focus_far = resolve_key(cfg.key_focus_far, map.focus_far, "key_focus_far", warnings, map.all_resolved);
+    map.aperture_open = resolve_key(cfg.key_aperture_open, map.aperture_open, "key_aperture_open", warnings, map.all_resolved);
+    map.aperture_close = resolve_key(cfg.key_aperture_close, map.aperture_close, "key_aperture_close", warnings, map.all_resolved);
 
     const auto resolve_combo = [&](const std::string& text, const std::vector<PadButton>& fallback, const char* label) {
         const PadCombo parsed = parse_pad_combo(text, fallback, label, warnings);
@@ -83,6 +88,11 @@ KeyMap build_keymap(const Config& cfg, std::vector<std::string>* warnings) {
     map.pad_slow = resolve_combo(cfg.pad_slow, map.pad_slow, "pad_slow");
     map.pad_vertical_up = resolve_combo(cfg.pad_vertical_up, map.pad_vertical_up, "pad_vertical_up");
     map.pad_vertical_down = resolve_combo(cfg.pad_vertical_down, map.pad_vertical_down, "pad_vertical_down");
+    map.pad_focus_near = resolve_combo(cfg.pad_focus_near, map.pad_focus_near, "pad_focus_near");
+    map.pad_focus_far = resolve_combo(cfg.pad_focus_far, map.pad_focus_far, "pad_focus_far");
+    map.pad_aperture_open = resolve_combo(cfg.pad_aperture_open, map.pad_aperture_open, "pad_aperture_open");
+    map.pad_aperture_close = resolve_combo(cfg.pad_aperture_close, map.pad_aperture_close, "pad_aperture_close");
+    map.pad_dof_toggle = resolve_combo(cfg.pad_dof_toggle, map.pad_dof_toggle, "pad_dof_toggle");
     return map;
 }
 
@@ -207,6 +217,14 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
     // 键盘键与手柄组合合成同一条方向通道（手柄禁用时快照恒为松开，组合不会触发）。
     out.fov_nudge += axis_nudge(keys.fov_up, keys.pad_fov_up, dt, fov_up_repeat_);
     out.fov_nudge -= axis_nudge(keys.fov_down, keys.pad_fov_down, dt, fov_down_repeat_);
+    // 对焦拉近/拉远（+1 = 拉近，距离减小）、光圈开/关（+1 = 开大，F 值减小）
+    out.focus_nudge += axis_nudge(keys.focus_near, keys.pad_focus_near, dt, focus_near_repeat_);
+    out.focus_nudge -= axis_nudge(keys.focus_far, keys.pad_focus_far, dt, focus_far_repeat_);
+    out.aperture_nudge += axis_nudge(keys.aperture_open, keys.pad_aperture_open, dt, aperture_open_repeat_);
+    out.aperture_nudge -= axis_nudge(keys.aperture_close, keys.pad_aperture_close, dt, aperture_close_repeat_);
+
+    // 景深/取焦单发键（按下沿）
+    out.dof_toggle = key_pressed(keys.dof_toggle);
 
     // 手柄：enabled=false 时快照全为“松开”，任何组合都不会触发
     if (cfg.pad_enabled) {
@@ -214,6 +232,7 @@ Intent InputLogic::build(const Config& cfg, const KeyMap& keys, double dt) {
         out.toggle_freeze = out.toggle_freeze || pad_combo_pressed(keys.pad_freeze);
         out.reset_view = out.reset_view || pad_combo_pressed(keys.pad_reset);
         out.reset_roll = out.reset_roll || pad_combo_pressed(keys.pad_roll_reset);
+        out.dof_toggle = out.dof_toggle || pad_combo_pressed(keys.pad_dof_toggle);
 
         // 左摇杆移动（模拟行程，deadzone 后 0..1）
         double lx = pad_.lx;
@@ -271,7 +290,8 @@ void InputLogic::reset() {
     // 键盘没有这个问题：win_input 的 key_state_ 在 reset 之外自己记住边沿。
     // 步进键的连发计时清零，但 was_down 保留——仍按住时不算新的按下沿。
     // next 归位到首格延迟而不是 0：按住时进出模式，回来第一帧不应立刻连发。
-    for (RepeatState* st : {&fov_up_repeat_, &fov_down_repeat_}) {
+    for (RepeatState* st : {&fov_up_repeat_, &fov_down_repeat_, &focus_near_repeat_, &focus_far_repeat_,
+                            &aperture_open_repeat_, &aperture_close_repeat_}) {
         st->hold = 0.0;
         st->next = kRepeatDelay;
     }

@@ -70,6 +70,7 @@ if (PBZPM_WITH_UE4SS)
         # Ue4ssPort 实现按子系统拆分，共享 helper 在 ue4ss_port_internal.h
         src/engine/ue4ss_port.cpp                 # 核心/世界/日志
         src/engine/ue4ss_port_camera_view.cpp     # 相机/ViewTarget/输入接管
+        src/engine/ue4ss_port_dof.cpp             # 景深/胶片（门控 + CineCamera 组件通道 + 取焦）
         src/engine/ue4ss_port_hud_ui.cpp          # HUD/血条/字幕/锁定标记
         src/engine/ue4ss_port_time_pause.cpp      # 时间缩放/暂停
         src/engine/ue4ss_port_micro_motion.cpp    # shake/风/MPC/POV 微动

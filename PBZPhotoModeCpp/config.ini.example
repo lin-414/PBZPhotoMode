@@ -1,5 +1,5 @@
 ; ================================================================
-; 2.0.0-cpp 配置文件（UTF-8，可留空使用默认值）
+; 2.1.0-cpp 配置文件（UTF-8，可留空使用默认值）
 ; 改完存盘后按 F2 重进摄影模式即可生效（或重启游戏）
 ; ================================================================
 
@@ -38,7 +38,14 @@ key_move_right = D
 key_boost = SHIFT
 key_slow = CONTROL
 key_free_look = ALT
-; 景深/手动对焦：PAGE_UP 对焦拉近 / PAGE_DOWN 对焦拉远；[ 开大光圈（更虚化）/ ] 收小光圈（更实）
+; 景深总开关（与 [dof] dof_enabled 同一状态；门控 + CineCamera 组件通道）
+key_dof_toggle = G
+; 对焦拉近/拉远（实际步进 = max(dof_focus_step, 当前距离×10%)，Shift 粗调 / Ctrl 微调）
+key_focus_near = COMMA
+key_focus_far = PERIOD
+; [ 开大光圈（F 值减小、更虚化）/ ] 收小光圈（更实）
+key_aperture_open = OEM_4
+key_aperture_close = OEM_6
 [control]
 ; 常规移动速度（单位/秒）；按住 key_boost 加速、key_slow 减速
 move_speed = 400
@@ -100,6 +107,13 @@ pad_slow = RS
 ; 升降：默认 RT 上 / LT 下；单键绑定 RT/LT 保留模拟量行程，换其它按钮则为按下/松开
 pad_vertical_up = RT
 pad_vertical_down = LT
+; 景深/对焦（沿用旧版默认；LB/RB 单按默认是滚转，组合期间会连带滚转，可改键避开）：
+; LB+BACK 对焦拉近 / LB+START 对焦拉远；RB+BACK 开大光圈 / RB+START 收小光圈
+pad_focus_near = LB+BACK
+pad_focus_far = LB+START
+pad_aperture_open = RB+BACK
+pad_aperture_close = RB+START
+pad_dof_toggle = NONE
 ; 右摇杆转视角速度（度/秒，全行程）
 pad_look_speed = 60
 ; 左摇杆移动速度占 move_speed 的比例
@@ -118,21 +132,60 @@ ultrawide_unlock = true
 ; 进入时接管失败会自动回退到独立相机（spawn + SetViewTargetWithBlend）。false=始终用独立相机
 takeover_current_camera = true
 
+[dof]
+; 景深/对焦（2.1 复活）：走「渲染门控（NLP 过场渲染档 + tagged cvar）+ CineCamera 组件通道」。
+; 启用任一项（含 [look] 的色差）会自动切到独立相机后端并打开门控；退出全部还原。
+; 距离单位 cm。旧 config.ini 里若还留着这些键（判死时期被清除过），会按原值继续生效。
+; 景深总开关（也可用 [keys] key_dof_toggle 在模式内随时开关）
+dof_enabled = false
+; 对焦距离（cm）
+dof_focal_distance = 300
+; 光圈 F 值（越小越虚化）
+dof_fstop = 2.8
+; 传感器宽度（mm，影响虚化幅度）
+dof_sensor_width = 36
+; 对焦步进（cm）：最小步进，实际步进 = max(本值, 当前距离×10%)
+dof_focus_step = 25
+; 光圈步进（F 值每次增/减多少）
+dof_aperture_step = 0.1
+; bokeh gate cvar 取证开关（默认 false）：true 才写 r.DOF.{Gather,Recombine}.EnableBokehSettings /
+; Recombine.Quality——2026-11-07 崩溃二分首位嫌疑（shipping 可能无 bokeh 实现）；
+; false 时 DOF 仍走 ShowFlag/画质/kernel 半径闸门+组件通道，散景形状退化为默认。
+dof_bokeh_gate = false
+
 [look]
+; 画面效果五项：每项 = 独立开关 + 数值滑块。
+; 开关 false 只停用这一项、保留滑块值；每次进入摄影模式时五项都会恢复默认参数。
 ; 暗角强度（0=关闭，1~3 明显；走后处理体积通道，本作 gameplay 视图实测有效）
 vignette = 0
+vignette_enabled = true
 
 ; 饱和度倍率（1=原样，<1 去色，>1 更艳）
 saturation = 1
+saturation_enabled = true
 
 ; 对比度倍率（1=原样）
 contrast = 1
+contrast_enabled = true
 
 ; 泛光强度（0=不覆盖，1~5 明显）
 bloom = 0
+bloom_enabled = true
 
 ; 冷暖色调（-1 偏冷，0=不覆盖，+1 偏暖）
 temperature = 0
+temperature_enabled = true
+
+; 调色·进阶三件（与饱和/对比同一颜色分级通道；菜单在「调色·进阶」组）。
+; 中性值 = 不覆盖该项（交还游戏自己的设置）；离开中性才写覆盖，进入摄影模式恢复默认。
+; 亮度增益（1=原样，0.5 压暗，2.0 提亮）
+color_gain = 1
+; 伽马（1=原样，<1 提亮中间调，>1 压暗中间调）
+color_gamma = 1
+; 黑位偏移（0=原样，-压黑更深，+提黑发灰；0.1 已明显）
+color_offset = 0
+; 色差（0=不覆盖，1~3 明显；走门控+CineCamera 组件通道，需独立相机后端）
+chromatic_aberration = 0
 
 [effects]
 hide_player = false

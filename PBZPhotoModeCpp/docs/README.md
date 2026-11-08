@@ -4,7 +4,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v2.0.2-cpp（2026-11-06，含 2.0.1 菜单输入修复与 2.0.2 处决/超宽屏暂停修复） |
+| 版本 | v2.0.4-cpp（2026-11-06，含画面效果独立开关 / 滑块重置 / 进入摄影模式恢复默认参数，以及退出后视角输入锁残留修复） |
 | 核心层测试 | 当前断言总数见 [test_count.txt](test_count.txt)，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；**1.0.75 收口批次：接管当前相机、HUD 恢复重构实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
@@ -57,9 +57,11 @@ tools\build_tests.bat
 | 重置相机视角 | `R`（`key_reset`；回到进入摄影模式时的位置/朝向/FOV） |
 | 滚转归零 | `Z`（`key_roll_reset`；只把滚转回 0，位置/朝向/FOV 不动）；手柄 `LB+RB` 同按（`pad_roll_reset` 可改） |
 | 冻结时间 | `F`（`key_freeze`；进入时按 `auto_pause_time` 自动冻结） |
-| 画面定格（内置冻结渲染帧） | `F7`（`key_frame_freeze`；再按恢复；定格期间相机不响应输入，安全阀默认 60 秒） |
+| 画面定格（内置冻结渲染帧） | `F7`（`key_frame_freeze`；再按恢复；定格期间相机不响应输入，安全阀默认 60 秒；定格期间 N 卡 `Alt+F1` / Steam `F12` 等依赖游戏 Present 的截屏键静默失效，见下） |
 
 所有键位都能在 `config.ini` 里改（`[keys]` 键盘 / `[gamepad]` 手柄组合键），没有写死的按键。鼠标移动、滚轮与手柄摇杆属于模拟轴：摇杆/鼠标位移不可改键，滚轮可用 `wheel_fov` 关闭或反向。
+
+> **定格期间怎么截图**：用系统级捕获——`Win+PrintScreen`（存 `图片\屏幕截图`）或 Xbox Game Bar `Win+Alt+PrtScr`，走 DWM 合成器、不依赖游戏出帧，定格期间可用。NVIDIA App `Alt+F1` / Steam `F12` 这类截屏键必须等到游戏下一次 `Present` 才能抓帧，F7 挂起渲染线程后永远没有新帧，会静默失败。根因存档与已评估暂缓的「模组定格截屏键」备选设计见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 手柄支持
 
@@ -70,23 +72,48 @@ tools\build_tests.bat
 - 十字键：上/下俯仰（`pitch_speed`）、左/右转视角（`yaw_speed`，1.0.46 起从左右平移改来）；FOV 在 `A` / `B`（`pad_fov_up` / `pad_fov_down` 可改）：单击一格，按住约 0.35 秒后连发，松开即停。
 - 接入诊断：`DInput 手柄已接入：<名>（VID_…&PID_…）首读：按钮=… 摇杆=… POV=…`（一次性，原始值，映射对不上真机时用它定位）；`手柄=<后端摘要>` 在每秒输入诊断行里。
 
-## 景深（本作不支持，功能已移除）
+## 景深与对焦（2.1 复活 → 同日判死：代码保留，默认关闭）
 
-**这个游戏的 gameplay 视图不渲染引擎景深**，取证在 hotfix25~31 完成，hotfix32 把整个功能删掉了：
+**旧结论仍然成立**：这个游戏的 gameplay 渲染档位不跑 DOF pass——四条后处理通道（相机 `CameraCache.POV`
+的 PP / 自建无界体积 / 关卡自带体积 / `ViewTarget.POV` 每帧重申）全部「写入成功、回读正确、画面零变化」，
+径向模糊替代方案也失败（40 个后处理体积的 `WeightedBlendables` 全空）。当年缺的不是通道，是**渲染档位开关**。
 
-- 四条通道（相机 `CameraCache.POV` 的 PP / 自建无界体积 / 关卡自带体积 / `ViewTarget.POV` 每帧重申）
-  全部「写入成功、回读正确、画面零变化」；89px 的强力参数也不糊，而同一体积的暗角照常生效。
-- 唯一的引擎总闸 `ShowFlags.DepthOfField` 在反射层拿不到：console 命令在本作不执行，
-  `0xB8` 那块内存整局一位不变（不是真的 flags）。
-- 径向模糊替代方案也失败：40 个后处理体积的 `WeightedBlendables` 全空，
-  自建槽位时 `FWeightedBlendables.Array` 取址失败，材质挂不上去。
+2.1 轮找到两把开关（机制由 Soul's Cinematic Studio 在同构建上实证）：
 
-因此 **PBZFM 的「景深（手动对焦）」页、`[dof]` 配置段、对焦/光圈按键、引擎侧写入与核心层状态机
-已全部删除**（hotfix32），不再保留「参数记录」这种看着有用、实际没用的东西。
-旧 `config.ini` 里残留的 `[dof]`、`key_focus_*`、`pad_aperture_*` 等键会被**静默忽略并给一条合并提示**，
-可以整段删掉。
+- **NLP 过场渲染档**：`PBZLevelSequenceManager.SetNLPProfileCinematicEnable(瞬态LevelSequence, true)`——
+  游戏自己的「过场渲染配置」，DOF/SSS 等 pass 只在该档位下存在；瞬态序列只作所有权标记、不播放。
+  **已并入景深总开关（2026-11-08，原 `[dof] dof_nlp_enable` 独立键删除、登记 Deprecated）**：
+  实机证伪「仅靠 ShowFlag/画质闸门就能出景深」（gates-only 无画面），档位没有独立存在的理由；
+  且档位是全局渲染档，开着它游戏原生过场景深（游戏自己的对焦逻辑、随镜头移动、参数管不到）
+  就在画面里——因此只在总开关开时请求（色差建控不开档），总开关关掉立即释放，
+  开启失败一次本会话不再重试（重进重新探测）。取证记录在 `core/tuning.h`。
+- **Tagged cvar 覆盖**：`PBZBlueprintFunctionLibrary.SetConsoleVariableTagged / UnsetConsoleVariablesWithTag`——
+  游戏自带的带标签 cvar 覆盖，能写 `ShowFlag.DepthOfField`（当年反射拿不到的总开关）、
+  `r.DepthOfFieldQuality` 等 DOF 闸门，也能抬 `r.Tonemapper.Quality`（色差走这把闸门）。
+  每次写入都经 `GetConsoleVariableFloatValue` 回读校验，写不进的项在日志里如实报告。
 
-想给截图加虚化只能用外部后期：NVIDIA Ansel 的景深、或 ReShade 的 DOF。Mod 侧不会再碰这件事。
+**画面通道**：spawn 出的 `CineCameraActor`（相机组件 `PostProcessSettings` + 权重 1），首次写入前把管理器
+POV 的 PostProcessSettings 整份拷贝过去保留游戏原调色；原生镜头/视图刷新依赖暂停期常规相机更新。
+**自动联动**：启用景深或色差会当场从「接管当前相机」切到独立相机后端（CineCamera 组件通道的前提），
+退出摄影模式时门控/档位全部逆序释放。
+
+**实机终局（2026-11-07 判死）**：三种门控变体（NLP/bokeh 组合）实机全崩且三连逐字节同址
+（`call rdx`→全零页）——本作 shipping 的 gameplay 渲染管线里 DOF pass 是被剥离/空壳的路径，
+cvar 与组件设置都写得进去，但强行使能后渲染 worker 必踩零函数指针。**`[dof] dof_enabled=false`
+为稳定态**；`dof_bokeh_gate` 二分开关保留，供游戏更新后重启取证（NLP 开关已并入总开关，见上）。
+胶片颗粒走同通道 + `GrainQuantization` 闸门二次实测仍无画面变化，已整线下线；**色差保留**。
+
+使用入口（全部可配，见 `[dof]` 与 `[keys]`/`[gamepad]`；默认全关）：
+
+| 功能 | 默认键 | 说明 |
+| --- | --- | --- |
+| 景深总开关 | `G`（`key_dof_toggle`） | 等价于 `[dof] dof_enabled`（默认 false；判死期间保持关闭） |
+| 对焦距离步进 | `,` / `.`（`key_focus_near/far`） | 最小步进 = `max(dof_focus_step, 当前距离×10%)`，Shift 粗调 / Ctrl 微调 |
+| 光圈开/收 | `[` / `]`（`key_aperture_open/close`） | F 值步进 `dof_aperture_step`，越小越虚化 |
+| 色差 | `[look] chromatic_aberration` | 0=不覆盖；走门控与 CineCamera 组件通道，随 [look] 每次进入恢复默认 |
+
+复查/排查时若画面仍然不糊，把门控日志行（`景深门控：…`、`景深诊断：…`）发给作者即可定位
+是哪一环被游戏版本改掉。
 
 ## 接管当前相机（UUU 式，`[camera] takeover_current_camera`）
 
@@ -133,9 +160,11 @@ tools\build_tests.bat
 `config.ini`（示例见 `config.ini.example`，由 `tools/gen_config.bat` 从代码默认值生成，**勿手改**）。写错不会崩：非法值保留默认、并在日志里给一条 warning；数值越界会 clamp 到边界。
 
 - **`[camera]`**：`fov_default = 90` / `fov_min = 15` / `fov_max = 150` / `fov_step = 2`、`ultrawide_unlock = true`、`takeover_current_camera = true`（默认接管当前相机；`false` 固定走独立相机）。
-- **`[keys]` 的可配项**：`key_toggle/freeze/frame_freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/vertical_up/vertical_down/move_forward/move_back/move_left/move_right/boost/slow/free_look/focus_near/focus_far/aperture_open/aperture_close`——**没有写死的键盘键**。
+- **`[dof]`**：`dof_enabled`（默认 false）、`dof_focal_distance`（cm，默认 300）、`dof_fstop`（默认 2.8）、`dof_sensor_width`（mm，默认 36）、`dof_focus_step`（cm，最小步进语义）、`dof_aperture_step`、`dof_bokeh_gate`（取证开关，默认 false，见上文「实机终局」）。启用任一项（含 [look] 的色差）会自动切独立相机后端；NLP 过场渲染档随 `dof_enabled` 自动请求/释放（原 `dof_nlp_enable` 键已删，旧 ini 里残留会被一次性「已弃用」提示忽略）。
+- **`[look]` 调色·进阶 3 键**：`color_gain` / `color_gamma` / `color_offset`——与饱和/对比同一 ColorGrading LUT 每通道家族，走后处理体积通道；**默认值=中性=不覆盖该项**（1/1/0），离开中性才生效，每次进入摄影模式恢复默认。旧 config 残留的判死十键（highlights/film_slope/white_temp/bloom_threshold 等）与锐化/超采样两键按弃用键告警一次后忽略。
+- **`[keys]` 的可配项**：`key_toggle/freeze/frame_freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/vertical_up/vertical_down/move_forward/move_back/move_left/move_right/boost/slow/free_look/dof_toggle/focus_near/focus_far/aperture_open/aperture_close`——**没有写死的键盘键**。
 - **`[control]` 的滚轮**：`wheel_fov = true`（滚轮调 FOV）、`wheel_fov_invert = false`（向上缩小 / 向下放大，true 反向）。
-- **`[gamepad]` 的可配项**：`pad_toggle/freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/boost/slow/vertical_up/vertical_down/focus_near/focus_far/aperture_open/aperture_close`；组合键用 `+` 连接，`NONE` 解绑。
+- **`[gamepad]` 的可配项**：`pad_toggle/freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/boost/slow/vertical_up/vertical_down/focus_near/focus_far/aperture_open/aperture_close/dof_toggle`；组合键用 `+` 连接，`NONE` 解绑。
 - **注释规则**：`;` 或 `#` 在引号外即视为注释起点（独占一行或以空白开头最易读，但解析器不强制要求前置空白，`fov = 50;备注` 也有效）；引号内的 `;`/`#` 属于值本身，不当作注释。`key_toggle = "G"` 这类带引号写法同样适用。
 - **已弃用键**：`interval_ms`、`ui_scale`、`time_offset_compensation` 接受但忽略，每键告警一次。
 - **`log_level`**：`error` / `warn` / `info` / `debug` 四档，`Error` 级永不过滤；运行中热重载立即生效。
@@ -154,7 +183,7 @@ tools\build_tests.bat
 1.0.42 起本模组是 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（游戏内 ImGui 菜单框架，DirectComposition 覆盖窗实现，不碰游戏交换链、不影响 FSR3 帧生成）的**第一个客户端模组**。两个模组各自解压进 `ue4ss\Mods\`（enabled.txt 启用，互不改 mods.txt）后：
 
 - 游戏内按 PBZFM 的呼出键（默认 `F8`）打开菜单，侧栏出现「**PBZ Photo Mode**」分区（1.0.43 起两页均由本模组自绘，ImGui 版本与框架 1.92.1 对齐）
-- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 布料模拟 / 诊断日志）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
+- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 布料模拟 / 诊断日志）、「画面效果」组页的**风格预设**（「保存预设」按钮 + 下拉框**选中即套用** + 「删除预设」按钮**两击确认**：快照存 `<mod>/look_preset_<编号>.ini`，编号自动递增不覆盖、删除后编号不回收）与五项滑条（独立开关）、「调色·进阶」三件滑条（中性值=不覆盖）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
 - **「状态 · Status」页**：OFF / LIVE / FROZEN 状态、位置与朝向读数、键位速查；FOV 滑条（实时变焦）与「进入/退出摄影模式」「冻结/恢复时间」「重置视角」「重新载入 config.ini」按钮
 - **多语言**：内置 zh-CN / en-US / ja-JP / ko-KR；**外部词典**放 `PBZPhotoModeCpp\languages\<id>.json`——UTF-8 扁平 JSON，key=中文原文、value=译文，可选 `__display` 当显示名；同名覆盖内置、新文件名即新语言，游戏内热重载（点按钮或等 2 秒）。翻译缺失的条目回落中文。韩文渲染用自建「雅黑 + Malgun Gothic」合并字体，不受框架启动字体限制
 - 手柄组合键绑定（多按钮同按）在菜单里表达不了，仍写在 `config.ini` 的 `[gamepad]` 节
@@ -188,6 +217,15 @@ tools\build_tests.bat
 - 每秒一行「输入诊断 ... | 管理器视角=... 我们的相机=... 组件FOV=... ViewTarget=...」
 
 ## 最近的版本
+
+- **锐化/超采样整线判死移除**（2026-11-08，工作区，用户终审）：三轮实机收口——锐化写入通道无效（GetFloat 恒 0）；超采样写入有效（290% verified、tag 顶住 66.7 基线、写回原值零失败）但画面无可见增益（DRS/上采样管线不消费该值）。通道学费留档 `core/tuning.h`（写一次靠 tag 顶住 / Unset 对模组 tag 确定性无效 → 释放=写回原值 / 动态分辨率基线非常量）。两键登记 Deprecated。核心层 **6,900 项**全绿。
+- **超采样卡顿修复 + 锐化判死**（2026-11-08，工作区，版本号发布时定）：实机拖动超采样滑条后异常卡顿判明——画面基线 66.7 是游戏动态分辨率，初版「每帧回读+漂移重写」= 每帧全场景渲染目标重分配（亚 1 帧）。修正：引擎改「写一次靠 tag 顶住」（DOF 闸门同模型）、core 失败退避 0.5s、超采样拖动预览旁路（松手才写）、告警节流；**锐化 r.Tonemapper.Sharpness 写入通道无效判死**（tonemapper 家族第 4 项，取证在 tuning.h，滑条保留供游戏更新后重启取证）。核心层 **7,159 项**全绿。
+- **锐化/超采样 + 风格槽位**（2026-11-08，工作区，版本号发布时定）：新 tagged cvar 通道（`PhotoCvarPort`，摄影模式内常驻）承载两个新滑条——锐化 `r.Tonemapper.Sharpness`（0~1.5）与超采样 `r.ScreenPercentage`（100~300，**定格前开启才进最后一帧**）；PBZFM「画面效果」组页新增**风格预设**（「保存预设」+ 下拉框选中即套用 `<mod>/look_preset_<编号>.ini`；UI 经三次用户决策演进：5 写死按钮 → 3 槽位 → 保存/下拉）。`[look]` 段 2 个新配置键，四语言同步。**同批曾上的 5 个写死初值风格预设按钮实机后用户决策下线**（整表套用覆盖手动调好的组合）。核心层 6,946 → **7,225 项**全绿。
+- **调色·进阶三件**（2026-11-08，工作区，版本号发布时定）：PBZFM 新增「调色·进阶」分组页，3 个新调色滑条（亮度增益/伽马/黑位，ColorGrading LUT 每通道家族，与饱和/对比同 pass）走已验证的自建后处理体积通道，`[look]` 段 3 个新配置键，四语言同步。**中性值=不覆盖该项**（不动滑条绝不毁游戏原调色）；无独立开关（中性即关闭），每次进入摄影模式恢复默认。**同批先上的十项（分区调色/胶片曲线/白平衡/泛光阈值软膝）实机探针判死移除**——四个字段在本 build 反射层不存在、六个字段写入成功但引擎不消费（各自 700~975 次覆盖1 写入零视觉，游戏 POV 全覆盖0 排除压制；结论与取证见 `core/tuning.h` 顶部与 CHANGELOG）。核心层 6,579 → **6,946 项**全绿。
+
+- **2.0.4-cpp**（2026-11-06）：**修复退出摄影模式后无法移动视角（输入锁残留）**。UE 的 `SetIgnoreLookInput` / `SetIgnoreMoveInput` 是堆叠计数而不是布尔开关（`IgnoreLookInput` / `IgnoreMoveInput` 还是非 UPROPERTY，反射读不到计数）。如果进入摄影模式前游戏自己已持有视角锁，旧版“进入 +1、退出 -1”会把计数留在 1，退出后鼠标完全转不动视角。现在进入前记录 `IsLookInputIgnored()` / `IsMoveInputIgnored()` 的原始布尔状态，退出时按状态 `Reset*` 或补回一把锁，读不到状态则 `Reset*` 兜底。核心层 **5,329 项**全绿。
+
+- **2.0.3-cpp**（2026-11-06）：**画面效果操控细化**。PBZFM 菜单里每个数值滑块行尾新增独立「重置」按钮（恢复编译期默认值并写回 config.ini）；画面效果五项（暗角 / 饱和度 / 对比度 / 泛光 / 冷暖）行首新增独立开关（关 ≠ 清零，保留滑块值），并新增 `[look]` 的五个 `*_enabled` 配置键；**五项每次进入摄影模式都恢复默认参数**（数值归中性、开关归默认，`config.ini` 与菜单显示同步刷新）。四语言新增「重置 / 开 / 关」等词典项。核心层 **5,325 项**全绿。
 
 - **2.0.2-cpp**（2026-11-06）：**处决/过场演出残留修复 + 超宽屏暂停修复**。① 处决动画中进入摄影模式并在退出/解冻后角色模型定格：不再把 `TimeDilation` 的接近零演出值当成进入前原值；退出时对玩家 Pawn 清理 `CustomTimeDilation` / `SkeletalMeshComponent.bPauseAnims` / `bNoSkeletonUpdate` / `CinematicTimeDilation` 残留。② 21:9 超宽屏在暂停时被游戏重新锁成 16:9：进入时即使未锁也保存画幅原值，`GameViewportClient Tick` 之后每帧重申解锁，退出按进入前状态还原；来自过场/处决的瞬时 16:9 锁不写回。核心层 **5,155 项**全绿。
 

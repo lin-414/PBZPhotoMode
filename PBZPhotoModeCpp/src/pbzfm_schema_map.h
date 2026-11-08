@@ -36,6 +36,10 @@ struct PbzfmField {
     void (*set_num)(Config&, double){nullptr};
     int (*get_enum)(const Config&){nullptr};
     void (*set_enum)(Config&, int){nullptr};
+    // Float：可选的独立开关（画面效果五项使用）。非空时菜单在该滑块行渲染一个开关按钮；
+    // 关掉只停用该项，滑块值保留。与 get_bool/set_bool 分开，避免影响 Bool 条目的读值语义。
+    bool (*get_enabled)(const Config&){nullptr};
+    void (*set_enabled)(Config&, bool){nullptr};
     // Key：config 里的键名成员 + 键名解析失败时的回退 VK（来自 KeyMap）
     std::string Config::* key_name{nullptr};
     int (*key_fallback)(const KeyMap&){nullptr};
@@ -50,5 +54,15 @@ double pbzfm_read_field(const PbzfmField& f, const Config& cfg, const KeyMap& ke
 // 把菜单提交的值写进 cfg。Key 做 vk→键名→vk 往返校验（捕获到不可命名的键时拒绝），
 // float/enum 越界夹紧。返回 false 表示未应用（调用方应把菜单显示值回滚）。
 bool pbzfm_apply_field(const PbzfmField& f, double value, Config& cfg);
+
+// Float 的可选独立开关读写；字段没有开关时分别返回 true / false（不写）。
+bool pbzfm_read_enabled(const PbzfmField& f, const Config& cfg);
+bool pbzfm_write_enabled(const PbzfmField& f, bool enabled, Config& cfg);
+
+// 字段的编译期默认值（由 Config{} 读取，避免菜单再抄一份默认值表）。
+double pbzfm_default_value(const PbzfmField& f);
+
+// 把单个滑块重置为默认值（只对 Float 有意义）；返回是否写入了不同值。
+bool pbzfm_reset_field(const PbzfmField& f, Config& cfg);
 
 }  // namespace pbzpm

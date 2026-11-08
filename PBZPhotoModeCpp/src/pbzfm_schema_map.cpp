@@ -31,7 +31,8 @@ PbzfmField Bool(const char* group, const char* key, const char* label,
 
 PbzfmField Float(const char* group, const char* key, const char* label, double mn, double mx, double step,
                  const char* fmt, double (*get)(const Config&), void (*set)(Config&, double),
-                 bool logarithmic = false) {
+                 bool logarithmic = false, bool (*get_enabled)(const Config&) = nullptr,
+                 void (*set_enabled)(Config&, bool) = nullptr) {
     PbzfmField f;
     f.kind = PbzfmFieldKind::Float;
     f.group = group;
@@ -44,6 +45,8 @@ PbzfmField Float(const char* group, const char* key, const char* label, double m
     f.logarithmic = logarithmic;
     f.get_num = get;
     f.set_num = set;
+    f.get_enabled = get_enabled;
+    f.set_enabled = set_enabled;
     return f;
 }
 
@@ -78,7 +81,9 @@ constexpr const char* kBehaviorGroup = "#group_behavior";
 constexpr const char* kHideGroup = "#group_hide";
 constexpr const char* kFreezeGroup = "#group_freeze";
 constexpr const char* kCamGroup = "#group_camera";
+constexpr const char* kDofGroup = "#group_dof";
 constexpr const char* kLookGroup = "#group_look";
+constexpr const char* kColorProGroup = "#group_color_pro";  // 调色·进阶（三件，紧跟画面效果页）
 constexpr const char* kPadGroup = "#group_pad";
 
 }  // namespace
@@ -130,6 +135,17 @@ const std::vector<PbzfmField>& pbzfm_fields() {
             [](const KeyMap& k) { return k.slow; }),
         Key(kKeysGroup, "key_free_look", "#key_free_look", &Config::key_free_look,
             [](const KeyMap& k) { return k.free_look; }),
+        // 景深/对焦（2.1 复活；键位注释见 config.h）
+        Key(kKeysGroup, "key_dof_toggle", "#key_dof_toggle", &Config::key_dof_toggle,
+            [](const KeyMap& k) { return k.dof_toggle; }),
+        Key(kKeysGroup, "key_focus_near", "#key_focus_near", &Config::key_focus_near,
+            [](const KeyMap& k) { return k.focus_near; }),
+        Key(kKeysGroup, "key_focus_far", "#key_focus_far", &Config::key_focus_far,
+            [](const KeyMap& k) { return k.focus_far; }),
+        Key(kKeysGroup, "key_aperture_open", "#key_aperture_open", &Config::key_aperture_open,
+            [](const KeyMap& k) { return k.aperture_open; }),
+        Key(kKeysGroup, "key_aperture_close", "#key_aperture_close", &Config::key_aperture_close,
+            [](const KeyMap& k) { return k.aperture_close; }),
 
         // ---- 行为 ----
         Bool(kBehaviorGroup, "auto_pause_time", "#auto_pause_time",
@@ -263,22 +279,78 @@ const std::vector<PbzfmField>& pbzfm_fields() {
              [](const Config& c) { return c.takeover_current_camera; },
              [](Config& c, bool v) { c.takeover_current_camera = v; }),
 
-        // ---- [look] 暗角：走后处理体积通道（本作 gameplay 视图里实测生效） ----
+        // ---- [dof] 景深/对焦（2.1 复活：门控 + CineCamera 组件通道；启用会自动切独立相机后端）----
+        // NLP 过场渲染档无独立项（2026-11-08 并入 dof_enabled：档位随总开关自动请求/释放）
+        Bool(kDofGroup, "dof_enabled", "#dof_enabled",
+             [](const Config& c) { return c.dof_enabled; },
+             [](Config& c, bool v) { c.dof_enabled = v; }),
+        Float(kDofGroup, "dof_focal_distance", "#dof_focal_distance", tuning::kDofFocalMinCm,
+              tuning::kDofFocalMaxCm, 10.0, "%.0f",
+              [](const Config& c) { return c.dof_focal_distance; },
+              [](Config& c, double v) { c.dof_focal_distance = v; }, true),
+        Float(kDofGroup, "dof_fstop", "#dof_fstop", tuning::kDofFstopMin, tuning::kDofFstopMax, 0.1, "%.1f",
+              [](const Config& c) { return c.dof_fstop; },
+              [](Config& c, double v) { c.dof_fstop = v; }, true),
+        Float(kDofGroup, "dof_sensor_width", "#dof_sensor_width", tuning::kDofSensorMinMm, tuning::kDofSensorMaxMm,
+              1.0, "%.0f",
+              [](const Config& c) { return c.dof_sensor_width; },
+              [](Config& c, double v) { c.dof_sensor_width = v; }),
+        Float(kDofGroup, "dof_focus_step", "#dof_focus_step", tuning::kDofFocusStepMinCm,
+              tuning::kDofFocusStepMaxCm, 5.0, "%.0f",
+              [](const Config& c) { return c.dof_focus_step; },
+              [](Config& c, double v) { c.dof_focus_step = v; }, true),
+        Float(kDofGroup, "dof_aperture_step", "#dof_aperture_step", tuning::kDofApertureStepMin,
+              tuning::kDofApertureStepMax, 0.01, "%.2f",
+              [](const Config& c) { return c.dof_aperture_step; },
+              [](Config& c, double v) { c.dof_aperture_step = v; }, true),
+
+        // ---- [look] 五项画面效果：每行 = 独立开关 + 滑块 + 重置按钮；每次进入摄影模式恢复默认 ----
         Float(kLookGroup, "vignette", "#vignette", tuning::kVignetteMin, tuning::kVignetteMax, 0.1, "%.2f",
               [](const Config& c) { return c.vignette; },
-              [](Config& c, double v) { c.vignette = v; }),
+              [](Config& c, double v) { c.vignette = v; }, false,
+              [](const Config& c) { return c.vignette_enabled; },
+              [](Config& c, bool v) { c.vignette_enabled = v; }),
         Float(kLookGroup, "saturation", "#saturation", 0.0, 2.0, 0.05, "%.2f",
               [](const Config& c) { return c.saturation; },
-              [](Config& c, double v) { c.saturation = v; }),
+              [](Config& c, double v) { c.saturation = v; }, false,
+              [](const Config& c) { return c.saturation_enabled; },
+              [](Config& c, bool v) { c.saturation_enabled = v; }),
         Float(kLookGroup, "contrast", "#contrast", 0.0, 2.0, 0.05, "%.2f",
               [](const Config& c) { return c.contrast; },
-              [](Config& c, double v) { c.contrast = v; }),
+              [](Config& c, double v) { c.contrast = v; }, false,
+              [](const Config& c) { return c.contrast_enabled; },
+              [](Config& c, bool v) { c.contrast_enabled = v; }),
         Float(kLookGroup, "bloom", "#bloom", 0.0, 20.0, 0.5, "%.1f",
               [](const Config& c) { return c.bloom; },
-              [](Config& c, double v) { c.bloom = v; }),
+              [](Config& c, double v) { c.bloom = v; }, false,
+              [](const Config& c) { return c.bloom_enabled; },
+              [](Config& c, bool v) { c.bloom_enabled = v; }),
         Float(kLookGroup, "temperature", "#temperature", -1.0, 1.0, 0.05, "%.2f",
               [](const Config& c) { return c.temperature; },
-              [](Config& c, double v) { c.temperature = v; }),
+              [](Config& c, double v) { c.temperature = v; }, false,
+              [](const Config& c) { return c.temperature_enabled; },
+              [](Config& c, bool v) { c.temperature_enabled = v; }),
+        // 色差（2.1 复活）：值走门控+CineCamera 组件通道（DofPort），没有独立开关，0=不覆盖
+        Float(kLookGroup, "chromatic_aberration", "#chromatic_aberration", 0.0, tuning::kChromaticAberrationMax,
+              0.05, "%.2f",
+              [](const Config& c) { return c.chromatic_aberration; },
+              [](Config& c, double v) { c.chromatic_aberration = v; }),
+
+        // ---- 调色·进阶三件（2026-11-08 批次）：独立分组页，无开关，值回中性（=默认）即不覆盖 ----
+        // 与饱和/对比同一 ColorGrading LUT 每通道家族，实机验证有效；同批十项判死移除（tuning.h）。
+        // 范围/中性值真源在 tuning.h（与 config.cpp schema 共用）。滑条实时预览、进入摄影模式恢复默认。
+        Float(kColorProGroup, "color_gain", "#color_gain", tuning::kColorGainMin, tuning::kColorGainMax,
+              0.05, "%.2f",
+              [](const Config& c) { return c.color_gain; },
+              [](Config& c, double v) { c.color_gain = v; }),
+        Float(kColorProGroup, "color_gamma", "#color_gamma", tuning::kColorGammaMin, tuning::kColorGammaMax,
+              0.05, "%.2f",
+              [](const Config& c) { return c.color_gamma; },
+              [](Config& c, double v) { c.color_gamma = v; }),
+        Float(kColorProGroup, "color_offset", "#color_offset", tuning::kColorOffsetMin, tuning::kColorOffsetMax,
+              0.01, "%.2f",
+              [](const Config& c) { return c.color_offset; },
+              [](Config& c, double v) { c.color_offset = v; }),
 
         // ---- 手柄（组合键绑定仍留在 config.ini 的 [gamepad]） ----
         Float(kPadGroup, "pad_look_speed", "#pad_look_speed", 10.0, 720.0, 5.0, "%.0f",
@@ -346,6 +418,33 @@ bool pbzfm_apply_field(const PbzfmField& f, double value, Config& cfg) {
         }
     }
     return false;
+}
+
+bool pbzfm_read_enabled(const PbzfmField& f, const Config& cfg) {
+    return f.get_enabled != nullptr ? f.get_enabled(cfg) : true;
+}
+
+bool pbzfm_write_enabled(const PbzfmField& f, bool enabled, Config& cfg) {
+    if (f.set_enabled == nullptr) return false;
+    f.set_enabled(cfg, enabled);
+    return true;
+}
+
+double pbzfm_default_value(const PbzfmField& f) {
+    const Config defaults{};
+    return pbzfm_read_field(f, defaults, KeyMap{});
+}
+
+bool pbzfm_reset_field(const PbzfmField& f, Config& cfg) {
+    if (f.kind != PbzfmFieldKind::Float) return false;
+    const double def = pbzfm_default_value(f);
+    const bool changed = pbzfm_read_field(f, cfg, KeyMap{}) != def ||
+                         (f.get_enabled != nullptr && !pbzfm_read_enabled(f, cfg));
+    if (!pbzfm_apply_field(f, def, cfg)) return false;
+    // 重置整行：数值回默认，同时把该效果的独立开关恢复默认（开），
+    // 这样用户点「重置」后看到的就是该滑块的出厂状态。
+    (void)pbzfm_write_enabled(f, true, cfg);
+    return changed;
 }
 
 }  // namespace pbzpm

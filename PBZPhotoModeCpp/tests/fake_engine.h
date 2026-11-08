@@ -32,6 +32,9 @@ public:
     int prompt_restore_count{0};
     CameraPose last_pose{};
     double last_fov{0.0};
+    // 画面效果下发记录（每次 set_look 覆盖；用于验证进入摄影模式时五项恢复默认）
+    LookOptions last_look{};
+    int look_calls{0};
 
     // 超宽屏画幅解锁
     bool aspect_unlocked{false};
@@ -173,6 +176,65 @@ public:
         if (fail_apply_fov) return false;
         last_fov = fov;
         return true;
+    }
+    bool set_look(const LookOptions& options) override {
+        // 不进 calls：leave() 每次都先下发一次中性 LookOptions，加入调用序列会打乱
+        // 既有进/退顺序断言；这里只记录最后一次参数与次数。
+        last_look = options;
+        ++look_calls;
+        return true;
+    }
+    // ---- DofPort 记账（景深/胶片：门控/下发/释放）----
+    // ensure/release 进 dof_calls（会话内至多各一次，不会打乱 calls 的进退顺序断言）；
+    // apply_dof 参数变化才下发，记录最后一次参数与次数。
+    std::vector<std::string> dof_calls{};
+    DofParams last_dof{};
+    int dof_apply_calls{0};
+    bool dof_gate_available{true};
+    bool fail_dof_release{false};
+    bool fail_dof_apply{false};  // apply_dof 持续失败（退避重试测试用）
+    // 胶片闸门状态机（镜像真实现：need_film 的 ensure 成功后置位，release 清零）
+    bool dof_film_gate_active{false};
+    // NLP 档状态机（镜像真实现：档位已并入景深总开关，need_dof 即请求）：
+    // ① 只在 need_dof（景深主开关开）时请求成功——胶片建控不得顺手开档；
+    // ② 开启方向失败（fail_nlp_enable）置 exhausted 闩，之后不再请求成功；
+    // ③ release_nlp_profile / release_dof_gate 清账（exhausted 随退出清零，重进重新探测）。
+    bool nlp_active{false};
+    bool nlp_exhausted{false};
+    bool fail_nlp_enable{false};
+    bool fail_nlp_release{false};
+    bool ensure_dof_gate(bool need_dof, bool need_film) override {
+        dof_calls.push_back(std::string("ensure_dof_gate(") + (need_dof ? "dof" : "-") + "," +
+                            (need_film ? "film" : "-") + ")");
+        if (!dof_gate_available) return false;
+        if (need_film) dof_film_gate_active = true;
+        if (need_dof && !nlp_active && !nlp_exhausted) {
+            if (fail_nlp_enable) nlp_exhausted = true;
+            else nlp_active = true;
+        }
+        return true;
+    }
+    bool film_gate_active() const override { return dof_film_gate_active; }
+    void set_bokeh_gate_enabled(bool enabled) override { (void)enabled; }
+    bool nlp_profile_active() const override { return nlp_active; }
+    bool nlp_enable_exhausted() const override { return nlp_exhausted; }
+    bool release_nlp_profile() override {
+        dof_calls.push_back("release_nlp_profile");
+        if (fail_nlp_release) return false;
+        nlp_active = false;
+        return true;
+    }
+    bool release_dof_gate() override {
+        dof_calls.push_back("release_dof_gate");
+        dof_film_gate_active = false;
+        nlp_active = false;
+        nlp_exhausted = false;
+        return !fail_dof_release;
+    }
+    bool apply_dof(const DofParams& params) override {
+        last_dof = params;
+        ++dof_apply_calls;
+        return !fail_dof_apply;
     }
     bool destroy_camera() override {
         calls.push_back("destroy_camera");
@@ -381,6 +443,14 @@ public:
         report.acted = report.ok ? cloth_components : 0;
         return report;
     }
+    // 布料闸门：返回注入的「本次发现仍在模拟」数量，方便 core 侧节流/调用次数断言
+    int cloth_gate_tick() override {
+        calls.push_back("cloth_gate_tick");
+        ++cloth_gate_calls;
+        return cloth_gate_caught;
+    }
+    int cloth_gate_calls{0};
+    int cloth_gate_caught{0};
     SkeletalAnimationFreezeReport freeze_skeletal_animation(bool frozen) override {
         calls.push_back(frozen ? "anim_freeze" : "anim_restore");
         SkeletalAnimationFreezeReport report{};

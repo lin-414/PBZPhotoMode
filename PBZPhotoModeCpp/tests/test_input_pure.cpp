@@ -142,6 +142,16 @@ void test_dinput_axis_bounds() {
     CHECK_NEAR(dinput_axis_to_state(DInputAxis::LRy, 32767), 32767.0 / 65535.0, 1e-9);
 }
 
+// SetIgnore*Input 是堆叠计数：进入前已有锁时，配对的一次 true/false 会留下计数 1。
+// 恢复计划必须按「进入前/退出时」的布尔锁状态选择 Reset/Relock/None。
+void test_ignore_lock_restore_plan() {
+    section("输入锁残留恢复计划");
+    CHECK(plan_ignore_lock_restore(false, false) == IgnoreLockRestore::None);
+    CHECK(plan_ignore_lock_restore(false, true) == IgnoreLockRestore::Reset);   // 我们的锁没退干净
+    CHECK(plan_ignore_lock_restore(true, false) == IgnoreLockRestore::Relock);  // 退多了，补回原来那把
+    CHECK(plan_ignore_lock_restore(true, true) == IgnoreLockRestore::None);     // 进入前本来就锁着，保持
+}
+
 // KeyMap 的 pad_* 初值是解析失败时的回退值，必须与 Config 默认字符串解析出的结果一致。
 // 二者一旦漂移，ini 写错时手柄会静默换一套键位（历史缺陷：focus_near/far 漏掉 LB 肩键，
 // aperture_open 把 RB 写成 LB），且不会有任何报错。
@@ -177,5 +187,6 @@ void run_input_pure_tests() {
     test_pad_held_threshold();
     test_deadzone_boundary();
     test_dinput_axis_bounds();
+    test_ignore_lock_restore_plan();
     test_pad_combo_fallback_matches_config();
 }

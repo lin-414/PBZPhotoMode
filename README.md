@@ -18,7 +18,7 @@
 - **接管当前相机（UUU 式）**：`[camera] takeover_current_camera` 默认 `true`——不 spawn、不切 ViewTarget，每帧在 `GameViewportClient::Tick` 之后覆写 `CameraCache.POV`；进入失败或连续 15 帧回读不一致会自动回退独立相机；设 `false` 可固定走独立相机
 - **无 UI 截图（本作不可用）**：F9 机制已实现（`GetProcAddress` 解析 `FScreenshotRequest::RequestScreenshot(bShowUI=false)`，带前台窗口焦点门控与 2 秒落盘观测），但**本作实测 Shipping 导出表没有该符号**，按 F9 只会输出「截图能力不可用」。摄影模式内 UI 已由本 Mod 隐藏，请直接用 NVIDIA `Alt+F1` / Steam `F12` / Xbox Game Bar。若有其它 UE 游戏导出该符号，F9 机制可用
 - **CineCamera 焦距联动**：包内有 `CineCameraActor` / `CineCameraComponent` / `CurrentFocalLength` / `Filmback`，改 FOV 同步真实焦距；`UCineCaptureComponent2D`（CineCameraSceneCapture 插件）未打进 Shipping，因此没有高品质无 UI 出图通道
-- **F7 画面定格（内置冻结渲染帧）**：正常画质预览构图 → `F7` 挂起游戏引擎线程（渲染/音频/逻辑；PBZFM/本模组输入钩子线程保留），屏幕停在最后一帧 → 从容截图 → 再按 `F7` 恢复。参考 PBZ Pause：`NtGetNextThread` 枚举 + `HeapLock` 防死锁、Wwise `Suspend/Wakeup` 协调、四个时间 API 的 IAT 补偿（恢复时扣掉定格时长，动画/物理/计时器不跳变）；安全阀默认 60 秒。定格期间相机不响应输入（预期取舍）。
+- **F7 画面定格（内置冻结渲染帧）**：正常画质预览构图 → `F7` 挂起游戏引擎线程（渲染/音频/逻辑；PBZFM/本模组输入钩子线程保留），屏幕停在最后一帧 → 从容截图 → 再按 `F7` 恢复。参考 PBZ Pause：`NtGetNextThread` 枚举 + `HeapLock` 防死锁、Wwise `Suspend/Wakeup` 协调、四个时间 API 的 IAT 补偿（恢复时扣掉定格时长，动画/物理/计时器不跳变）；安全阀默认 60 秒。定格期间相机不响应输入（预期取舍）。**定格期间 NVIDIA `Alt+F1`、Steam `F12` 这类依赖游戏出帧的截屏快捷键会静默失效**：N 卡捕获跑在游戏进程内、必须等到下一次 `Present` 才能抓帧，而渲染线程已被挂起、永远没有新帧（快捷键本身没失效，是在等一帧不会来的画面）。定格截图请用系统级捕获 `Win+PrintScreen`（存 `图片\屏幕截图`）或 Xbox Game Bar `Win+Alt+PrtScr`——走 DWM 合成器、不依赖游戏 Present，定格期间可用。根因存档与已评估的备选设计见 [docs/CHANGELOG.md](PBZPhotoModeCpp/docs/CHANGELOG.md)。
 - **时间冻结**：进入摄影模式自动暂停时间（默认开启，可在 `config.ini` 关闭）；`F` 随时冻结 / 恢复（默认使用游戏暂停，真正冻结角色、敌人与特效）；剧情/过场播放器一并暂停（解冻恢复），冻结状态每秒自检、被游戏改写时自动重压；Wwise 音频在有逐 PlayingID 时逐语音真暂停（`PBZPausePlayingID` / `PBZResumePlayingID`，保住当前句位置）并跳过整引擎 Suspend，只有没截获到 ID 时才用整引擎 `Suspend(true,false)` 作静音兜底（当前 PBZ 从主程序静态导出解析，`wwise_engine_suspend` 默认开启）；对话/过场中的对话 Flow 可选择在冻结时停 Tick（`freeze_dialogue_flow` 默认开启，仅 `hide_subtitles=true` 时生效，保留相机）
 - **超宽屏支持**：进入摄影模式自动解除 16:9 画幅约束（游戏官方支持 21:9 / 32:9 超宽屏），两侧黑边消除；暂停/处决演出把画幅重新锁成 16:9 时会在渲染前每帧压回，退出时按进入前状态还原
 - **输入隔离**：摄影模式下屏蔽游戏键鼠输入，退出时完整还原
@@ -27,11 +27,21 @@
 - **隐藏敌人血条**：进入摄影模式自动隐藏敌人（怪物）头顶血条（切到游戏自带"仅锁定目标"血条显示模式，退出还原原模式）
 - **隐藏锁定标记**：进入摄影模式自动隐藏锁定敌人时其身上出现的白点标记——1.0.68 起接游戏自己的锁定系统（`TargetingComponent`：藏 `LockWidget`/副目标指示器、关指示器开关、清锁定目标），锁定目标的血条也一并消失，退出成对恢复（`hide_lockon_marker` 可关）
 - **可配置**：键位、移动速度、灵敏度、FOV 范围、冻结方式等全部写在 `config.ini` 里
+- **画面效果菜单（PBZFM）**：每个数值滑块都有独立「重置」按钮；画面效果五项（暗角 / 饱和度 / 对比度 / 泛光 / 冷暖）各有独立开关（关掉不清值，便于 A/B），且**这五项在每次打开摄影模式时恢复默认参数**；「调色·进阶」分组页另有 3 个调色滑条（亮度增益 / 伽马 / 黑位，与饱和/对比同一颜色分级通道，实机验证有效）——**中性值即不覆盖该项**（不动滑条绝不毁游戏原调色），同样每次打开恢复默认
+- **风格预设保存/套用/删除**：「画面效果」组页「保存预设」把当前风格快照（9 风格字段 + 开关）存为 `<mod>/look_preset_<编号>.ini`——编号自动递增、**绝不覆盖已有预设**（删除后编号也不回收）；下拉框列出全部预设、**选中即整表套用**；「删除预设」按钮删当前选中项（两击确认防误删，5 秒不点自动复位）
 - **游戏内设置菜单（可选）**：安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu) 后，游戏内按其呼出键（默认 `F8`）即可在菜单里改键位/开关/参数并**实时生效**（改动写回 `config.ini`）；不装则纯快捷键，零依赖
 
 ## 当前版本
 
 > 各版本条目中的断言数字为当时快照；当前断言总数以 [docs/test_count.txt](PBZPhotoModeCpp/docs/test_count.txt) 为准（由脚本生成）。
+
+**2.0.4-cpp** —— 已编译（2026-11-06）：
+
+- **修复退出摄影模式后无法移动视角（输入锁残留）**：UE 的 `SetIgnoreLookInput` / `SetIgnoreMoveInput` 是**堆叠计数**（每次 +1/-1），且 `IgnoreLookInput` / `IgnoreMoveInput` 是非 UPROPERTY 的 `uint8`，反射读不到计数。进入摄影模式前若游戏自己已持有一把视角锁（暂停/过场/菜单），旧版“进入 +1、退出 -1”会把计数留在 1，退出后 `IsLookInputIgnored()` 仍为 true → 角色能走但鼠标完全转不动视角。现在进入前记录 `IsLookInputIgnored()` / `IsMoveInputIgnored()` 的布尔原状态，退出时按 `plan_ignore_lock_restore()` 选择 `Reset*`（清残留）或补回一把锁；读不到状态则 `Reset*` 兜底。核心层 **5,329 项**测试全绿，详见 [CHANGELOG.md](PBZPhotoModeCpp/docs/CHANGELOG.md)。
+
+**2.0.3-cpp** —— 已编译（2026-11-06）：
+
+- **画面效果操控细化 + 进摄影模式恢复默认**：PBZFM 菜单所有数值滑块行尾新增独立「重置」按钮（恢复编译期默认值并写回 `config.ini`）；「画面效果」五项（暗角 / 饱和度 / 对比度 / 泛光 / 冷暖）行首新增独立开关按钮，关掉只停用该项、保留滑块值，重置同时恢复默认值与开关；`[look]` 新增 `vignette_enabled` / `saturation_enabled` / `contrast_enabled` / `bloom_enabled` / `temperature_enabled` 五个配置键。**每次进入摄影模式时五项都会恢复默认参数**（数值归中性、开关归默认开），`mod_app` 同步把默认值写回 `config.ini` 并刷新 PBZFM 菜单显示。四语言词典同步新增「重置 / 开 / 关」等文案。核心层 **5,325 项**测试全绿，详见 [CHANGELOG.md](PBZPhotoModeCpp/docs/CHANGELOG.md)。
 
 **2.0.2-cpp** —— 已编译（2026-11-06）：
 

@@ -40,6 +40,9 @@ ToggleOutcome ModRuntime::toggle() {
         engine_.log(LogLevel::Error, "进入摄影模式失败：" + mode_.last_error());
         return ToggleOutcome::EnterFailed;
     }
+    // enter() 会把 [look] 五项恢复默认值：把 PhotoMode 的副本同步回调用方持有的 cfg_，
+    // 避免下一步 PBZFM 菜单/写盘还拿旧值覆盖回引擎。
+    cfg_ = mode_.config();
     return ToggleOutcome::Entered;
 }
 

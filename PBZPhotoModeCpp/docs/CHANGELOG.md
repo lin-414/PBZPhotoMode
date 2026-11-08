@@ -1,3 +1,562 @@
+## 冻结期布料闸门 + 恢复侧硬化：修「衣物部件离身拉条」（2026-11-08，工作区变更）
+
+**背景与定案**：用户实机报「衣服部件离人物身体有距离、像被拉扯一样连着身体」（截图 19:00:29 / 19:04:33），与 UE4SS.log 对齐后用户确认是 mod 造成。机制：冻结期游戏侧布料管理按渲染可见性/距离翻转状态，可能把布料翻回活模拟——活的 Chaos solver 对着被 bPauseAnims/bNoSkeletonUpdate 钉死的骨骼，飘带被越拉越远；拉伸态一旦被再挂起就烤进世界，解冻后玩法里仍是坏姿态（19:04:33 那张是两场摄影模式之间的正常玩法画面，佐证坏状态跨冻结存活）。日志旁证：每场恒有「播放中 1」的网格（冻结期确实有活 tick）；BP_NPC_Xukong_HuanXiang 的 CA_XuKong_Cloth02/03、Hair01、HeadOther 四组件每场「SuspendSimulation 未生效」；19:04:36 场挂起 10 个、0.8 秒后只恢复 4 个（is_ok 静默丢弃，泄漏不可见）。mod 此前的洞：①只在进入瞬间挂一次布料，冻结期零复核；②恢复侧丢弃无日志。
+
+**修复**：
+- **冻结期布料闸门**（`FreezeMotionPort::cloth_gate_tick()`，core 每秒一次、仅布料冻结生效期间跑，放在冻结期每帧块的 MPC 写回之后）：复核冻结时登记的**全部**布料组件（含原本被游戏挂起的、挂起失败的），发现仍在模拟 → 立即重挂，恢复权随之转到我们（解冻由我们 Resume，不再依赖游戏侧翻回）；重挂仍失败 → `SetComponentTickEnabled(false)` 兜底（签名校验单 bool 通道，与相机修饰器同款；模拟不再被驱动），每组件 Warn 一次带全名（不刷屏）。
+- **恢复侧硬化**：闸门停用的 Tick 先还原再 Resume（不还原 Tick，Resume 了模拟也不走）；「挂起过却随对象销毁丢弃」计数打 Info 日志（若数字频繁且对象其实还活着 = is_ok 误判，可据此跟进）；恢复失败原因区分「Resume 调用未生效（反射未命中）」vs「恢复后回读仍挂起」。
+- **冻结侧失败原因区分**：「Suspend 调用未生效（反射未命中）」vs「调用成功但回读仍非挂起态」——下次日志能直接定死 CA_XuKong 那批组件是哪类；挂起失败的组件同步登记进闸门盯防名单（它们最容易被翻成活模拟）。
+
+**改动面**：`engine_port.h`（cloth_gate_tick 虚函数，默认实现返回 0）、`ue4ss_port.h`（ClothComponentState + suspend_failed / tick_disabled_by_us / gate_warned）、`ue4ss_port_micro_motion.cpp`（闸门实现 + 冻结/恢复路径改造）、`photo_mode.h/.cpp`（cloth_gate_accum_ 累加器；闸门在解冻/退出后不跑）、`tests/fake_engine.h`（cloth_gate_tick 桩 + 计数）。无新配置项、无四语言改动（闸门日志走中文原串，与其余引擎日志一致）。
+
+**测试**：核心层 **6,916 项全绿**（+16：闸门 1s 节流按 dt 累计、解冻停跑、再冻结恢复、退出停跑、freeze_cloth=false 不跑、auto_pause_time=false 不跑）。DLL 重建通过（引擎侧闸门/invoke_set_bool/结构体扩展仅在 DLL 目标编译，过 DLL 构建才算编译验证）。
+
+**发行**：`PBZPhotoModeCpp_2.1.1-cpp.zip`（965,404 字节，用户「打包2.1.1」授权；version.h 2.1.0-cpp→2.1.1-cpp，DLL 随版本串重建，2,297,344 字节，sha256 前 16 `ebf99ecc9138c95f`）——**2.1.0 终态 + 本条布料闸门修复**，本条之外无其他代码变更。包内核验：包内 DLL 与 build-dll 逐字节一致、config.ini = config.ini.example、README = docs/README、包内 DLL 版本串 `2.1.1-cpp`、四语言词典齐全；核心层 6,916 项全绿。NEXUS 文案四处安装包名同步 2.1.1-cpp。dist 里 2.1.0 系 preview 包与 2.1.0 正式包保留不动。
+
+**待实机复验**：① 长冻结（≥3 分钟）盯飘带——修复前「冻结中慢慢变长/下垂」，修复后应纹丝不动；② 若日志出现「冻结期布料闸门：组件仍在模拟…」= 抓到现行且已兜底，日志带组件全名，发回即可定位元凶；③ 关注两条新恢复日志的频率：「还原 N 个被闸门停用的 Tick」「N 个已挂起组件随对象销毁丢弃」；④ 拉条已出现时，开关一次时间冻结（Resume 重初始化布料）应能当场复位。
+
+**实机已验证（2026-11-08 20:24 场，UE4SS.log，2.1.1-cpp 包）**：拉条未再出现，用户确认，本条闭环。三条新链路全部按设计工作——① 失败原因区分定性元凶：飞贼 `CA_Male_Type_E_Cloth_01`、驯犬人 `CharacterMesh0` 均为「调用成功但回读仍非挂起态」（游戏自定义布料拒绝 Suspend，与 CA_XuKong 同类），闸门兜底停 Tick，其中驯犬人一件解冻时「还原 1 个被闸门停用的 Tick」完整还原；② **实锤冻结期翻回**：21:11:34 场挂起 16、解冻恢复 17——多出的 1 个是闸门秒检抓到「游戏侧挂起过、被翻回活模拟」的组件重挂成功（拉伸根因路径实机坐实且被拦截）；③ 恢复对账全平（26/26、22/22、15/15）。已知无害项：闸门停 Tick 的组件若解冻前随对象销毁则静默丢弃（飞贼一件，普通怪战斗中销毁），「还原数=0」属预期；若频繁出现停过却对不上，再给销毁路径加计数。
+
+## 审查修复出包：滑条松手提交死码 + tagged 还原 neutralize 兜底 + 两处收尾（2026-11-08，工作区变更）
+
+**背景**：用户终审「全部修复后出包」。先对 11-08 全部并行批次的工作区 diff（39 文件 ~3,400 行）做全量审查，修复四件后按 version.h 现值出正式包。
+
+**P1 滑条「松手提交」死码（回归，`pbzfm_client.cpp` Float 分支）**：重构滑条提交语义时引入。`pending_commit` 是**帧内局部变量**，只在 `changed && IsItemActive()` 的帧置位并在同一帧被 `pending_commit && IsItemDeactivatedAfterEdit()` 消费——而这两个 ImGui 状态互斥（激活中 ≠ 刚失活）；且 vendored ImGui 1.92.1 的 `SliderBehaviorT` 在松手帧先 `ClearActiveID` 再返回（imgui_widgets.cpp `if (!MouseDown[0]) ClearActiveID()` 位于取值更新之前），松手帧 `changed` 恒为 false。两条路都堵死：鼠标拖动（原生回退与框架 SliderFloatEx 同病）与键盘微调只走 `submit_config_preview`（引擎生效、菜单镜像保持），`commit_settings` 永不执行——**config.ini 不写回、无「已应用」日志、mirror generation 不 bump，游戏重启后拖过的值全部回退**；只有 Ctrl+点击输入框与重置按钮还能正常落盘。修复：删掉 pending_commit 概念，`IsItemDeactivatedAfterEdit()` 无条件 `commit_settings`（松手帧草案里就是最后一次拖动值）；Ctrl+点击场景由「changed 且轨道非活动即提交」分支覆盖，且该帧 `DeactivatedItemData.ID` 是输入框不是滑条，两分支不会对同一次编辑双提交。
+
+**P2 tagged 还原补 neutralize 兜底（`ue4ss_port_micro_motion.cpp` 渲染对照还原）**：via_tag 快照此前只走 `unset_cvars_tagged` + 回读校验，而 11-08 取证学费②（tuning.h）已实锤 **UnsetConsoleVariablesWithTag 对模组 tag 确定性无效**——一旦走到 exec 失败换 tagged 通道的 cvar（r.Streamline.DLSSG.Enable / r.PBZ.SuppressFrameGen 那批），解冻还原就会恒败、退避重试耗尽、「渲染对照未恢复」告警且覆盖残留到游戏重启。补兜底：解绑失败退回 **neutralize**——同一 tag 写回快照原值 + 回读校验（Set 通道已实证可用），值还原即记账释放，tag 留在注册表里把原值钉住（Set 覆盖语义；代价=游戏此后对同一 cvar 的主动调整会被钉住，取证记录在案的已接受取舍），打 Info 日志「tag 解绑未生效（11-08 取证同款），已按同 tag 写回原值 neutralize」。DOF 门控的 `tag_unset` 维持原样（11-07 有解绑确认的实机记录，该批 cvar 游戏不逐帧重设）。
+
+**P3a `film_grain` 补登记 Deprecated（`config.cpp`）**：hotfix33 判死时期它列在 legacy 清单（kLegacyLookKeys）里物理清除；2.1 复活批次删清单转正色差时漏了它——旧 config.ini 的残留键退化成通用「未知配置项已忽略」。补专属弃用提示（胶片颗粒 pass 被 r.Tonemapper.Quality 档位跳过，2.1 复活只回了色差）。
+
+**P3b 保存预设后下拉定位（`pbzfm_client.cpp`）**：保存成功后 `preset_selected_ = paths.size()` 假设新文件（编号 max+1）排本帧列表末尾；目录里有合法名但非法序号的文件（如 `look_preset_backup.ini`）时它们排序在后，新预设插中间 → 下拉高亮错到杂牌文件。修复：保存成功后重枚举一次、按路径定位新项下标（刚写完的文件目录迭代器立即可见），找不到再退回末尾。仅显示问题，套用/删除本就有路径锁定保护。
+
+**改动面**：`pbzfm_client.cpp`（Float 提交分支 + 保存定位）、`ue4ss_port_micro_motion.cpp`（还原 neutralize 分支）、`config.cpp`（film_grain 登记）。四语言/头文件/schema 无改动。
+
+**测试**：核心层 6,900 项全绿不变（渲染线程与引擎 SEH 侧不进测试编译面，改动必须过 DLL 构建才算编译验证）；DLL 重建通过（**2,293,248 字节**，sha256 前 16 `bc31ac26d39ecc3f`）。
+
+**发行**：`PBZPhotoModeCpp_2.1.0-cpp.zip`（963,121 字节，用户「全部修复后出包」授权；版本号取 version.h 现值，覆盖 dist 里 11-07 的同名旧产物）——**11-08 全部并行批次的合并终态**：F8 菜单换皮（药丸/SliderFloatEx/Combo，API 3→4）+ 预设终态（保存+下拉+两击删除）+ 调色·进阶三件 + 锐化/超采样整线移除 + NLP 并入总开关 + PV 总开关写后回读 + 输入锁堆叠校正。包内核验：config.ini = config.ini.example、README = docs/README、包内 DLL 与 build-dll 字节一致、neutralize 新串与 film_grain 弃用串均在包内 DLL。框架侧 v4 三导出（CloseMenu/GetApiVersion/SliderFloatEx）已在 exports_baseline 登记（0 missing），无需重建。
+
+**待实机复验**：① F8 菜单拖任一滑条松手 → config.ini 值已更新 + 「PBZFM 菜单：…已更新」日志一行（此前只有预览无落盘）；② 键盘方向键微调、重置按钮同链路回归；③ 若日志出现「tag 解绑未生效…已按同 tag 写回原值 neutralize」= P2 兜底生效且值已还原；④ 保存预设后下拉立即高亮新「预设 n」；⑤ 11-08 各批次遗留的实机复验项（CHANGELOG 各条目所列）随本包一并复核。
+
+## 风格预设下拉行新增「删除预设」按钮：两击确认删文件（2026-11-08，工作区变更）
+
+**背景**：预设终态（保存 + 下拉套用）留下的收尾缺口——删除此前要去 mod 目录手动删 `look_preset_<编号>.ini`（look_preset.h 注释与两份 README 都写着「手动删」）。补进菜单：删除按钮放预设下拉同一行，删的是下拉当前选中项，不必再开目录找文件。
+
+**交互（防误删，无额外弹窗）**：两击确认——第一击按钮换「确认删除？」文案进入确认态，5 秒不点自动复位（与改键捕获 `kCaptureTimeoutSec` 同节奏）；确认目标按**文件路径**锁定而非下标，确认期间换下拉选中即失效，不会删错项。第二击 `std::filesystem::remove` 删文件本体：成功提示「已删除 预设 n」+ Info 日志，失败显示系统错误消息 + Warn 日志；删除成功清下拉选中（防残留索引指向列表里的下一项）。无预设/未选中时按钮禁用。删除后的编号不回收（保存永远取现有最大编号 + 1），外部残留同名文件不会被新预设覆盖。下拉宽度按删除按钮两态文案的最大值留位，按钮换字时下拉宽度不跳。
+
+**改动面**：`pbzfm_client.cpp`（render_look_presets 删除按钮区 + 两态量宽；枚举注释「手动删」同步）、`pbzfm_client.h`（`preset_delete_target_` / `preset_delete_deadline_` 两成员，渲染线程独占归属不变）、`core/look_preset.h`（语义注释：删除入口 + 编号不回收）、四语言（各 +3 键 `#preset_delete` / `#preset_delete_confirm` / `#preset_deleted`，148→151 键）、根 README 与 docs/README 预设描述同步。
+
+**测试**：核心层 6,900 项全绿不变（预设 UI 不进测试编译面）；DLL 重建通过（2,291,712 字节；pbzfm_client.cpp 仅 DLL 目标编译，改动必须过 DLL 构建才算编译验证——产物字节级确认新日志串已在）。
+
+**发行**：`PBZPhotoModeCpp_2.1.0-cpp-look-preview7.zip`（962,902 字节，用户「打包」授权）——含并行批次「锐化/超采样整线判死移除」合并态；staging 同步刷新：config.ini 去 `dof_nlp_enable` 残键（=config.ini.example 现态）、README 带删除按钮描述；包内六项核验过（DLL 新串/DLL 与 build-dll 字节一致/config 无残键/四语言删除键/README）。
+
+**待实机复验**：① 下拉行布局（保存/下拉/删除一行放下）；② 两击确认节奏（5 秒复位、确认中换选中即失效）；③ 删除后下拉即时少一项、消息行提示、日志两行（Info 成功/Warn 失败）。
+
+## 锐化/超采样整线判死移除（2026-11-08，工作区变更，用户终审）
+
+**裁决（preview6 净态实测，UE4SS.log 14:32 会话）**：① 锐化 `r.Tonemapper.Sharpness` 写入通道无效（GetFloat 恒 0；判死闩 3 次即静默，闸门/节流/退避全部按设计工作）；② 超采样 `r.ScreenPercentage` **写入有效**（290% 回读 verified、tag 顶住动态分辨率基线 66.7、退出「写回原值」零失败），但**画面无可见增益**——本作 DRS/最终上采样管线不消费该 cvar 的有效值；写入有效 ≠ 有画面价值。用户终审：无效果 → 整线移除。
+
+**通道学费留档（tuning.h，游戏更新后重启取证时照抄）**：写一次靠 tag 顶住（DOF 闸门模型，勿抄渲染对照的逐帧压回）；`UnsetConsoleVariablesWithTag` 对模组 tag 确定性无效 → 释放 = 同 tag 写回快照原值 + 回读校验（neutralize）；动态分辨率基线（66.7）非常量，写入前必读。
+
+**摘除面**：`config.h/.cpp` 两键（登记 Deprecated——旧 config.ini 残留报一次性「已弃用」而非「未知配置项」）、`tuning.h` 常量删除 + 判死记录、`engine_port.h` PhotoCvarPort 删除、`photo_mode.h/.cpp` 通道生命周期删除（enter/tick/重申链/attempt_restore_all）、`ue4ss_port.h` 成员 + `ue4ss_port_photo_cvars.cpp` 实现文件删除、CMakeLists、`mod_app.cpp` 渲染前重申钩子 + 预览旁路回退、`pbzfm_schema_map.cpp` 两滑条、四语言两键（148 键）、测试两函数 + fake 桩删除。风格预设/三槽位（`core/look_preset.h`）不受影响。
+
+**测试**：核心层 7,159 → **6,900 项**全绿；DLL 重建（2,291,712 字节）；`config.ini.example` 与 `test_count.txt` 重新生成。
+
+## 超采样无法退出/持续卡顿：Unset 确定性无效，释放改「写回原值」（2026-11-08，工作区变更）
+
+**现象（preview5 实机，UE4SS.log 14:16~14:21 会话）**：①超采样提交 300% 后点重置回 100 触发释放 → `解绑失败（保留标签待重试）` 连绵；②退出摄影模式「仍有 1 项未能还原」→ 恢复重试全败 → **再进被拒**（「上次退出的残留改动仍未还原，本次进入已取消」）——用户侧 = 「无法退出相机模式」；③300% 覆盖（基线 66.7 动态分辨率的 ~20 倍像素量）解不掉 → 卡顿持续到退出之后。
+
+**根因**：`UnsetConsoleVariablesWithTag` 对本模组的 tag 在本作**确定性无效**——`SetConsoleVariableTagged` 参数命中、SEH 无异常、写入生效（300% 回读 verified），但 Unset 跨会话每一次都解不掉（`HasConsoleVariablesWithTag` 恒真）。游戏侧该接口对模组来源的 tag 就是空操作。
+
+**修正**：release 弃用 Unset，改**「写回原值」（neutralize）**——同一 tag 再写回首次覆盖前快照的原值（Set 通道已实证可用），回读 == 原值即视为释放；tag 保留在注册表里复用（不换序号，避免积累死标签），现值已等于原值时直接记账释放。副作用：动态分辨率被惰性 tag 钉在快照采样值上（量级即原值本身，可接受）。锐化判死闩/告警节流/core 退避在 preview5 实机均按设计工作（14:18 段干净）。
+
+**附带澄清**（用户报告「拖动画面无明显变化」）：拖动中按预览旁路设计不写引擎（中间值 = 全场景重分配，上一卡顿根因），松手提交才写——拖动无实时反馈是预期行为；300% 提交后卡顿恰证明值已生效（20× 像素量），锐度增益主观不明显，待净态对比复验。
+
+**测试**：核心层 7,159 项全绿不变；DLL 重建（2,304,000 字节）；发行 `PBZPhotoModeCpp_2.1.0-cpp-look-preview6.zip`（966,174 字节）。
+
+**待复验（下一包后）**：① 提交 >100 → 重置回 100 → 日志无解绑失败、画面即时回基线、帧率恢复；② 退出摄影模式干净（无恢复重试）、再进正常；③ 净态对比 66.7 基线 vs 150/200 的锐度增益——**若无可见增益，超采样整线按判死移除**（写入有效但无画面价值即无存在意义）。
+
+## 拖动超采样滑条后异常卡顿：逐帧拉锯判明 + 写一次模型 + 判死闩（2026-11-08，工作区变更）
+
+**现象（用户实机，UE4SS.log 13:23~13:27 会话）**：拖动超采样滑条后异常卡顿。日志三实锤：
+① 锐化拖动期间每帧一条 `r.Tonemapper.Sharpness 写入未生效（当前=0 目标=0.25~0.83）`（~30 条/秒，引擎侧 Warn 无节流）；② 超采样写入本身成功（首启行 `r.ScreenPercentage=112（原 66.7）`），但**画面基线 66.7 是游戏动态分辨率**——初版抄渲染对照的「每帧回读+漂移重写」模型，回读到游戏重设值再重写 = 每帧 66.7↔目标 拉锯 = 全部场景渲染目标逐帧重分配，实机亚 1 帧（解绑重试 ~3s 间隔正是 0.3fps 的 tick 周期）；③ `r.ScreenPercentage tagged 覆盖解绑失败` 连绵到退出之后（亚帧率下逐 tick 重试的放大表现）。
+
+**修正（四件）**：
+1. **引擎模型改「写一次靠 tag 顶住」**（DOF 闸门同模型）：目标变了才写，不逐帧回读——tagged 覆盖本身顶得住游戏改写；渲染对照的逐帧压回是给「写入不生效」的 cvar 准备的兜底节奏，套在这里就是每帧重分配灾难。
+2. **判死闩**：写入回读校验连续失败 3 次 = 该 cvar 写入通道无效（不存在/被游戏钉死），会话级不再尝试不再告警。**r.Tonemapper.Sharpness 实测属此列（tonemapper 家族第 4 项判死，取证补进 tuning.h）**；滑条/配置键保留，游戏更新后按记录重启取证。
+3. **告警节流**：写入失败只打前 2 次 + 判死那一次；解绑失败前 2 次 + 每 10 次。
+4. **core 失败退避 0.5s**（复用 kDofApplyRetryBackoffSec）+ **超采样滑条拖动预览旁路**（`submit_config_preview` 把 pct 钉在已提交值——每个中间值都是全场景重分配，拖动中按住、松手 commit 才写一次）。
+
+**改动面**：`ue4ss_port_photo_cvars.cpp`（apply_photo_cvar 写一次模型 + 判死闩 + 节流；release 节流）、`ue4ss_port.h`（PhotoCvarSnapshot 加 write_failures/release_failures；photo_cvar_*_dead_ 会话闩；实现签名加 dead 引用）、`photo_mode.h/.cpp`（apply_photo_cvars_if_needed(dt) + 退避 + enter 重置）、`mod_app.cpp`（submit_config_preview pct 旁路，带锁读已提交值）、`tests/main.cpp`（失败重试测试适配退避节奏）。
+
+**测试**：核心层 **7,159 项**全绿（= NLP 并入批的 7,157 + 本批失败重试测试 +2；用分段计数探针逐段审计过：所有段落静态断言数 = 运行时数，字段表 O(n²) 段 4,319 条与字段数 85 精确吻合）；DLL 重建（2,306,048 字节）；发行 `PBZPhotoModeCpp_2.1.0-cpp-look-preview5.zip`（966,968 字节；含并行批次 NLP 并入/F8 换皮/PV 加固的合并态）。
+
+**待复验（下一包）**：① 拖动超采样滑条全程流畅（预览旁路 + 无逐帧拉锯），松手后 112/150 上屏；② 滑条回 100 后 cvar 解绑干净（不再出现解绑失败连绵）；③ 锐化滑条拖动不再刷 Warn（前 2 条后静默，3 次后判死一行）；④ 超采样定格出图链路照常。
+
+## NLP 过场渲染档删除独立开关、并入景深总开关（2026-11-08，工作区变更，版本号发布时定）
+
+**决策依据（用户两向实测 + 代码取证）**：①NLP 关 + 总开关开 → 无任何景深——证伪了门控代码里「NLP 失败不否决，DOF 可能仅靠 ShowFlag/画质闸门就能渲染」的备用假设（与旧四通道结论自洽：pass 只在档位下存在）；②NLP 开 + 总开关关 → 原生过场景深在画面里且参数调不动（上一条目已修为严格跟随）。结论：档位才是 DOF pass 的真开关，独立键的唯一现存作用是把总开关变成空操作（纯混淆源）；取证使命已兑现完毕（11-07 崩溃二分用它排除 NLP 原生所有权处理，第 16 轮原生 setter 才是崩因修复），且 gates-only 对照格已证无测试价值。NLP 的全局副作用（SSS/原生 cvar 重设机器/冻结期原生更新）与 DOF pass 本就不可分割，开关从未提供隔离能力——564 出货形态即「总开关=档位+闸门+组件通道」一体。`dof_bokeh_gate` 保留（只影响散景形状，不产生误导状态）。
+
+**改动面**：`config.h/.cpp`（`dof_nlp_enable` 字段/loader/写出器删除，loader 按十键先例登记 `Deprecated`——旧 config.ini 残留该键报一次性「已弃用：已并入景深总开关」而非「未知配置项」）、`config.ini.example` 重新生成、`pbzfm_schema_map.cpp`（DOF 组 7→6 字段）、四语言（各删 `#dof_nlp_enable`，151→150 键）、`engine_port.h`（DofPort 删 `set_nlp_enabled` 虚函数——内部接口非 PBZFM_Api 导出面，不受尾部追加铁律约束）、`ue4ss_port.h/.cpp`（`nlp_enable_config_` 成员删除，NLP 分支条件 = `need_dof && !active && !exhausted`，注释同步取证记录）、`photo_mode.cpp`（`nlp_owed` 去 cfg 条件；`set_nlp_enabled` 调用删除）、`tuning.h`（2.1 复活块追加 11-08 取证：gates-only 无画面实锤 + 并入决策 + bokeh 保留理由）。
+
+**测试**：核心层 7,258 → **7,157 项**全绿（键级自动断言随键删除收缩 -101；`test_dof_nlp_follows_master` 四场景改写为无独立键语义；PBZFM 景深组字段数断言 7→6）；DLL 重建通过（2,305,024 字节）；`config.ini.example` 与 `test_count.txt` 重新生成。
+
+**行为变化（实机复验点）**：总开关开 = cvar 闸门 + NLP 档 + 组件通道一体（景深真正出画面）；总开关关 = 全无（含原生档位释放）。旧配置里 `dof_nlp_enable=true` 的用户升级后无感（总开关开即有档位）；`dof_nlp_enable=false` 用户升级后总开关开将首次看到真实景深（此前 gates-only 无画面）——若属判死期误开请改回 `dof_enabled=false`。
+
+## F8 菜单换皮：药丸开关 / 自绘滑条 / 框架下拉全量接入（2026-11-08，工作区变更）
+
+**背景**：PBZFM 0.7.0 给框架自身页面做了界面美化（自绘药丸开关、带进度填充滑条、风格化下拉），但摄影菜单设置页一直是裸 ImGui 直调（方框 Checkbox、"开/关"文字按钮、原生滑条/下拉）——客户端页是游戏里的主门面，观感与框架页割裂。框架 0.7.0 已把 `PBZFM_Checkbox` 接到药丸开关、`PBZFM_Combo` 接到风格化下拉，客户端捆绑的 SDK 头 Api 结构里成员早已就位，缺的只是接线与一条带 flags 的滑条导出。
+
+**内容**：
+- Bool 行与画面效果独立开关行改走 `api_.Checkbox`（框架药丸开关）；开关行用隐藏标签 `##toggle_<key>` 只画药丸，`EndGroup` 后 `IsItemHovered` 覆盖整组，tooltip 语义不变，原手算按钮宽度的代码删除。
+- 滑条改走 v4 可选导出 `api_.SliderFloatEx`（自绘滑条：标签画进轨道、金色进度填充、Ctrl+点击弹输入框；`PBZFM_SLIDER_LOGARITHMIC` 供对焦距离 1..100000cm / 对焦步进两条对数滑条）。旧框架无该导出（可选成员为 NULL）时回退原生滑条并恢复"标签在左"旧行布局。
+- Enum / 语言选择 / 风格预设三处下拉改走 `api_.Combo`（标签在轨道内、值在右、鎏金箭头、选中行朱砂条）；语言页 `SetNextItemWidth` 窄下拉给"重扫词典"按钮留位，风格预设逐帧物化 items 指针数组。
+- 提交语义不变：拖动实时预览（`submit_config_preview`，不落盘）、松手 `IsItemDeactivatedAfterEdit` 完整提交；框架滑条拖动中 `MarkItemEdited`（框架侧配套），弹窗改值（轨道非活动项）按「changed 且非拖动态即提交」兜底。
+
+**改动面**：`src/pbzfm_client.cpp`（render_language_controls / render_field_widget / look 预设下拉）、`third_party/pbzfm/pbzfm.h`（与框架 sdk 头逐字节同步：`PBZFM_API_VERSION` 3→4、`SliderFloatEx` 成员 + `PBZFM_SLIDER_LOGARITHMIC`，全部尾部追加）。核心层零改动。
+
+**测试**：核心层 7,258 项全绿（控件绘制不进测试编译面）；DLL 重建链接通过。框架侧回归全绿 + ABI 编译守卫通过 + exports 基线检查「0 missing」（框架仓库同期改动，见其 VERIFIED.md）。
+
+**待实机复核**：F8 菜单各页观感与操作——药丸开关点击（含点标签切换与 knob 缓动）、滑条拖动预览+松手落盘、对焦距离/步进对数滑条手感（300~1500cm 可达）、Ctrl+点击输入框、三处下拉与语言切换、风格预设选择；画面效果独立开关的禁用滑条（BeginDisabled 包裹自绘滑条）不得响应拖动。若渲染异常先比对框架 0.7.0 自身页面是否同样异常（区分框架控件 vs 客户端接线）。
+
+## PV 总开关写后回读 + 所有权判定：退出后血条不恢复的防御加固（2026-11-08，工作区变更）
+
+**背景**：实机反馈「进入摄影模式退出后血条 UI 一直处于消失状态」。全量排查结论：进出记账机制本身对称（隐藏/恢复逐条成对、失败保留记账、退避重试覆盖所有标志；`ue4ss_port_hud_ui.cpp` 非本次工作区改动，排除新批次回归），**唯一单点故障是 PV 总开关的恢复 fire-and-forget**——`PBZUIManagerSubsystem::SetHideUIForPV(false)` 调出去就算成功、无状态回读：假成功时 `pv_hide_active_` 清账、`hud_hidden_` 清、重试循环永不启动，而血条等 PV 订阅者（`OnHideUIForPVChanged` 广播）只认这条广播，HUD 根控件回写救不回它们——恰好对应「界面都回来了、只有血条不回来」。mod 564（Soul's Cinematic Studio）`visibility.js` 对同一开关的实现（先读 `IsHideUIForPV` 原值、写后回读、`ownsNative` 所有权判定）是同接口的正确姿势参照。
+
+**内容**：
+- 新 helper `read_ui_manager_pv_hidden`：`IsHideUIForPV` 无参 getter 读 `ReturnValue`（`read_return_number`）；getter 不可用（函数不存在/反射读不到）时 `*available=false`，调用方退回旧的 fire-and-forget 语义（行为与加固前一致，不因旧版缺函数而坏）。
+- 恢复侧（`set_hud_visible(true)` ①）：写 `SetHideUIForPV(false)` 后回读，仍为隐藏 → 保留 `pv_hide_active_` + `ok=false` 交退避重试（Warn 一次）；回读确认才清账（日志带「IsHideUIForPV 回读确认」）。
+- 隐藏侧（`set_hud_visible(false)` 主路径）：**所有权判定**——写之前已是隐藏态且非本 Mod 接管中（游戏自己/其他 mod 藏的）→ 目标已达成但不记账，退出时不写 false，避免把别人的隐藏顺手恢复掉；例外 `pv_hide_active_` 已为 true（上一会话恢复失败的残账）照常重写并保持记账，「重进摄影模式再退出」自愈路保持可用。**写后回读**：确认才记账（返回 true）；回读不一致本轮不算成功且不记账（返回 false 让 core 按秒重试，Warn 一次带「把这条日志发回来」）。
+
+**改动面**：`engine/ue4ss_port_hud_ui.cpp`（helper + 恢复① + 隐藏主路径三处）、`engine/ue4ss_port.h`（`pv_foreign_logged_`/`pv_verify_failed_logged_` 两成员，紧跟 `pv_hide_active_`）。核心层零改动。
+
+**测试**：DLL 重建通过；核心层 7,258 项全绿（与改动前一致，engine 层不进测试编译面）。
+
+**待实机复验**：正常进出摄影模式（日志应出现「IsHideUIForPV 回读确认」）、退出后血条恢复。若血条仍不恢复，日志三选一直接裁决：「回读确认」+血条没回来＝广播后游戏订阅者自身不恢复（另案取证）；「已调用但 IsHideUIForPV() 仍为隐藏」＝恢复侧假成功实锤（重试链路兜底）；「已调用但 IsHideUIForPV() 仍为 false」＝隐藏侧假成功（进模式时血条本就不该消失）。
+
+## NLP 过场渲染档严格跟随景深总开关（2026-11-08，工作区变更，版本号发布时定）
+
+**实机取证（用户报告）**：`dof_nlp_enable=true` 时不开景深总开关，画面里也有随镜头移动的景深，且对焦/光圈参数调不动。
+
+**根因（两处，代码实锤）**：
+1. `ensure_dof_gate` 的 NLP 分支只看 `nlp_enable_config_`，**不看 `need_dof`**——胶片（色差）建控也会顺手请求档位。NLP 档是**全局渲染档**，请求成功游戏原生过场景深立即在画面里渲染（游戏自己的对焦逻辑、随镜头移动）；组件通道 `Scale=0` 只压掉本 mod 写的那一份，压不掉游戏原生档位的，本 mod 参数自然调不动。
+2. 主开关会话内从开转关（按键 / F8 菜单 live 映射 `pbzfm_schema_map`）只把组件通道 Scale=0，NLP 档按「门控保留至退出」设计一直留着，原生景深继续渲染。
+
+**修正（档位严格跟随景深总开关）**：
+- 引擎 `ue4ss_port_dof.cpp`：NLP 分支加 `need_dof` 硬前提（胶片建控绝不开档）；开启方向失败一次即置 `nlp_enable_exhausted_` 会话闩（接口缺失/类缺失/参数不匹配/AV 全是会话内永久性失败，避免每帧解冻重请求；`release_dof_gate` 清零，重进摄影模式重新探测）；新增 `release_nlp_profile()`（自带暂停态解冻窗口，与 `release_dof_gate` 同一纪律；幂等，未开时直接成功）。
+- 接口 `engine_port.h` DofPort 尾部追加三虚函数（默认空实现，出包铁律）：`nlp_profile_active()` / `nlp_enable_exhausted()` / `release_nlp_profile()`。
+- core `photo_mode.cpp`：①`apply_dof_if_needed` 在参数等值早退**之前**做关向同步——主开关关着且档位还开着就走解冻窗口释放（成功日志「NLP 过场渲染档已释放」），失败按 `kDofApplyRetryBackoffSec` 退避重试，退出路径兜底；②`ensure_dof_ready` 早退条件追加 `nlp_owed`（need_dof + 配置开 + 档位未开成功 + 未 exhausted 时放行补建一次）——覆盖按键 `G` 与 F8 菜单两条主开关转开路径；补建复用同一所有权 token（RF_Standalone 进程内存续，564 同款语义）；③主开关关闭日志措辞同步。
+
+**测试**：核心层 7,225 → **7,258 项**全绿（新增 `test_dof_nlp_follows_master` 四场景：①主开关关+色差建控不请求 NLP（取证复现路径）；②开→关立即释放且只发一次→再开欠账补建；③开启失败置 exhausted 不再重试、参数下发不受影响；④释放失败退避重试不每帧重入）；`config.ini.example` 与 `test_count.txt` 重新生成；四语言 `#dof_nlp_enable` 描述同步（补跟随语义）。
+
+**待实机复验**：`dof_nlp_enable=true` + 总开关关 + 色差任意：进入摄影模式画面应**无任何景深**；总开关开→关：原生景深应随关闭立即消失（日志出现「NLP 过场渲染档已关闭（所有权标记释放）」）。
+
+## 风格预设改版：保存预设 + 下拉套用（2026-11-08，工作区变更，用户决策）
+
+**内容**：接上条「风格预设按钮下线」——「画面效果」组页改为「**保存预设**」按钮 + **预设下拉框**：保存 = 当前 9 风格字段 + 5 开关写入 `<mod>/look_preset_<编号>.ini`（编号 = 现有最大编号 + 1，**绝不覆盖已有预设**；删除 = 去 mod 目录手动删文件）；下拉逐帧枚举全部 `look_preset_*.ini`（外部增删即时反映），显示名「预设 n」，**选中即整表套用**（含开关，滑条跳值就是反馈）。空列表显示占位并禁用；文件为空/无 [look] 段拒绝并提示（防静默套默认值）。文件格式与键名不变（真源 `core/look_preset.h`）。UI 演进全程：5 写死按钮 → 3 固定槽位导入导出 → 本形态，三次均为用户决策。
+
+**改动面**：`pbzfm_client.cpp/.h`（render_look_slots → render_look_presets：新增枚举/编号助手 `list_look_presets`/`next_look_preset_path`/`preset_index_from_path`，保存按钮 + ImGui::Combo（items getter 形式，空表占位禁用），`preset_selected_` 成员尾部追加）、四语言（-3 键 `#preset_export/import/saved`，+4 键 `#preset_save/name/none/saved_to`，`#preset_loaded/missing` 文案改 `%s`，各 151 键）。
+
+**测试**：核心层 **7,225 项**全绿不变（客户端改动不进测试编译面）；DLL 重建通过（2,301,952 字节）。
+
+## 风格预设按钮下线（2026-11-08，工作区变更，用户决策）
+
+**决策**：「画面效果」组页的 5 个风格预设按钮（黑白/电影感/冷调/暖调/褪色）整线移除——写死初值整表套用会覆盖用户手动调好的滑条组合，替代不了微调。**三槽位导入导出保留**（导出/导入自己调好的风格快照，价值独立；`look_preset_<1..3>.ini` 文件格式与键名不变）。已发行的 `look-preview4` 包内仍带这排按钮，下一个包起消失。
+
+**摘除面**：`core/look_preset.h`（kLookPreset*/LookPresetValues/apply_look_preset 删除；look_preset_ini_text/parse_look_preset_ini 保留——槽位文件真源）、`pbzfm_client.cpp/.h`（render_look_presets → render_look_slots，预设按钮循环删除，日志措辞改「风格槽位」）、四语言（各 -5 键 `#preset_bw/cinematic/cool/warm/faded`）、测试（预设表断言删除，槽位往返/坏文件拒绝保留）。锐化/超采样两滑条与 PhotoCvarPort 通道不受影响。
+
+**测试**：核心层 7,251 → **7,225 项**全绿；DLL 重建通过（2,293,248 字节）。
+
+## 锐化/超采样 cvar 通道 + 风格预设与三槽位导入导出（2026-11-08，工作区变更，版本号发布时定）
+
+**内容**（后处理路线图 B 组 + D 组）：
+- **锐化**（`[look] sharpness`，0~1.5，0=不覆盖）：`r.Tonemapper.Sharpness` tagged cvar 常驻覆盖，摄影模式内每帧 diff 重申（游戏可能每帧重设渲染 cvar，压回范式照抄渲染对照 render_reassert_tick）。
+- **超采样**（`[look] screen_percentage`，100~300，100=不覆盖）：`r.ScreenPercentage` 同通道常驻。**定格出图语义：F7 定格挂起渲染线程后无新帧，必须在定格前把百分比调到 >100，定格住的最后一帧才是高分辨率帧**；`freeze_render_tuning` 目标表不碰该 cvar（已核实无冲突）。
+- **风格预设**：PBZFM「画面效果」组页一排 5 按钮（黑白/电影感/冷调/暖调/褪色），**整表套用** 9 个风格字段 + 开关全开（非叠加，任意底表可套）；**不碰锐化/超采样**（渲染管线设置非风格）。真源 `core/look_preset.h`（header-only：预设表/套用/导入导出文本全纯函数，核心层直接测试；避开新建 .cpp 的 CMakeLists 与 build_tests.bat 双源列表手工同步）。
+- **三槽位导入导出**：`<mod>/look_preset_1/2/3.ini`（只含 [look] 的 9 风格字段 + 5 开关），组页 3 组导出/导入按钮；导出原子写（临时文件+替换），导入按文件原样套用（含开关）、与导出严格往返；空槽/坏文件拒绝并提示（防「静默套默认值」）。按钮不走 schema（PbzfmField 无「一次写多字段」类型），直接改 draft 走 commit_settings 既有管线（mirror + saver 队列 + submit_config）；**PBZFM_Api/框架零改动**。
+
+**通道实现**：新 `PhotoCvarPort`（engine_port.h 两虚函数，默认空实现，聚合类尾部追加）+ PhotoMode 生命周期（`apply_photo_cvars_if_needed` 值去重下发 / `reassert_photo_cvars_if_needed` 挂 mod_app 渲染前重申链 / attempt_restore_all 逆序解绑 + 退避重试；与 look 同款「进入恢复默认」）。引擎端新文件 `ue4ss_port_photo_cvars.cpp`：每项独立标签（`PBZPM.PC.<n>`，重试复用未解绑标签防泄漏，DOF 闸门同款纪律），写入 `SetConsoleVariableTagged` + 回读校验（读走 `GetConsoleVariableFloatValue` + SEH，dof.cpp 同款防御），中性值即时解绑交还游戏；每帧常态出口 = 目标没变且现值没漂则不写。
+
+**改动面**：`tuning.h`（kSharpness*/kScreenPercentage* 六常量 + 通道/定格语义注释）、`config.h/.cpp`（[look] 两键：schema/解析/reset_look_defaults/config_ini_text；**不进 LookOptions**——cvar 通道与 PPV 通道分离）、`core/look_preset.h`（新）、`engine_port.h`（PhotoCvarPort + 聚合）、`photo_mode.h/.cpp`、`engine/ue4ss_port.h`（override + PhotoCvarSnapshot 成员）、`engine/ue4ss_port_photo_cvars.cpp`（新，CMakeLists 登记）、`mod_app.cpp`（重申链 +1 行）、`pbzfm_schema_map.cpp`（画面效果组 +2 滑条）、`pbzfm_client.h/.cpp`（render_look_presets + 原子写/读小文件助手 + preset_msg_ 成员）、四语言（各 +12 键）。
+
+**测试**：核心层 6,946 → **7,251 项**全绿（config 键默认/夹紧/往返/reset 纳入；photo cvar 生命周期：进入恢复默认不下发、去重、重申门控、中性解绑、失败记账重试、退出还原；预设表逐字段 + 任意底表可套 + 渲染管线键不受影响 + 导入导出往返 + 坏文件拒绝）；DLL 重建通过（2,294,272 字节）；`config.ini.example` 与 `test_count.txt` 重新生成；发行 `PBZPhotoModeCpp_2.1.0-cpp-look-preview4.zip`（961,725 字节；随包 config.ini 为暂存快照不含两新键，装机后新键走中性默认）。
+
+**待复验（preview4）**：
+- **锐化画面可见性**——tonemapper 家族有「写入成功 ≠ 画面变化」判死前科（胶片曲线/白平衡/颗粒，见 tuning.h 判死记录），回读校验只证明 cvar 认账不证明渲染器消费；无效则按 hotfix34 先例判死移除。
+- 超采样：150/200 实机上屏与掉帧幅度；「定格前开启 → F7 定格 → Win+PrintScreen 系统截屏清晰度提升」全链路。
+- 预设 5 按钮套用/滑条跳值/重置手感；三槽位导出导入（含空槽与坏文件提示）；sharpness/screen_percentage 滑条与重置。
+
+## 黑位双向发白：偏移 W 通道修正（2026-11-08，preview3，工作区变更）
+
+**复验发现**：preview2 实机黑位**正负两方向都发白**——推翻 preview1 时「正偏移抬黑发灰=物理行为」的误判（当时只看到了正向）。方向无关 → 嫌疑从值本身转向写入端常量：`set_vector` 对所有 FVector4 恒写第 4 通道 W=1.0，而 ColorOffset 是加算字段（引擎默认 `(0,0,0,0)`），乘算字段（饱和/对比/增益/伽马，默认 `(1,1,1,1)`）写 W=1 无碍，黑位激活时写进的 `(v,v,v,1)` 里那个与方向无关的常量 1 正是双向发白的头号嫌疑（游戏自定义烘焙若消费 W 通道即中招）。
+
+**修正**：`set_vector` 增加 `off_rgb` / `w_value` 参数——乘算字段维持 `(1,1,1,1)` 不变；黑位激活写 `(v,v,v,0)`、失活写回引擎默认 `(0,0,0,0)`。取证结论更新进 `tuning.h`（含 preview1 误判的更正记录）。
+
+**裁决待 preview3**：双向发白消失 → 黑位实锤存活；仍发白 → 游戏自定义烘焙对偏移另有滥用（如 abs()），黑位判死、调色·进阶收成两件（增益/伽马）。核心层 6,946 项全绿不变（纯引擎写入端修正）。
+
+## 调色·进阶实机探针：13 → 3 判死收缩（2026-11-08，工作区变更，版本号发布时定）
+
+**探针（用户实机，UE4SS.log 01:01~01:09 单会话）**：preview1 包逐项拖动验证。写入/回读/POV 诊断三类日志全部按设计工作；裁决矩阵：
+
+| 裁决 | 项 | 证据 |
+| --- | --- | --- |
+| ✅ 存活（3） | `color_gain` / `color_gamma` / `color_offset` | 用户确认亮度/伽马实时生效；黑位写入回读正常（"变很白"=正偏移物理行为：+抬黑发灰，±0.5 满偏即大幅洗白——非 bug，范围收到 ±0.2） |
+| ❌ 字段不存在（4） | ColorCorrectionHighlights/Midtones/Shadows、BloomSoftKnee | 日志 884 行：`这些字段在本 build 里不存在` 一次性 Warn（反射层查无，UE5 裁剪） |
+| ❌ 写入成功引擎不消费（6） | FilmSlope/Toe/Shoulder、WhiteTemp/Tint、BloomThreshold | 字段存在、游戏 POV 全部 覆盖0（排除压制）、体积回读正确，但画面零变化：斜率 0.45~2.0 共 975 次覆盖1 写入、趾部 912、肩部 877、色温 2199~12693K 双向 833、色调 774、泛阈值 -0.9~7.9 共 691 次（7.9 足以掐灭一切 bloom 仍无变化） |
+
+**结论**：本 build 的 ColorGrading/tonemapper 管线只消费每通道经典五件（饱和/对比/伽马/增益/偏移）——胶片曲线、白平衡、泛光阈值在 shipping 裁剪掉，与 DOF pass 判死同型（写入成功 ≠ 引擎肯画）。当日按 hotfix34 先例整线移除十项，取证结论写入 `tuning.h` 顶部，游戏更新后可重启取证。
+
+**改动面**：`tuning.h`（十组常量删除+判死注释；黑位范围 ±0.5→±0.2）、`look.h`（十字段+active 删除，`color_grading_active`/`color_pro_active`/`any_active`/`look_options_equal` 同步）、`config.h`/`config.cpp`（十键删除；**十个键名登记为 `Deprecated`**——preview1 用户的旧 config.ini 里残留这些键时报一次性「已弃用」而非「未知配置项」）、`photo_mode.cpp`、`ue4ss_port_camera_view.cpp`（写入/回读收缩；POV 一次性诊断保留三件存活字段，供游戏更新后复查 POV 压制）、`pbzfm_schema_map.cpp`（调色·进阶页 13→3 条滑条）、四语言（各 -10 键，黑位标签补方向提示）、测试同步收缩。
+
+**测试**：核心层 8,135 → **6,946 项**全绿；DLL 重建通过；`config.ini.example` 与 `test_count.txt` 重新生成；发行 `PBZPhotoModeCpp_2.1.0-cpp-color-preview2.zip`（DLL 2,264,064 字节）。
+
+**待复验（preview2）**：黑位负方向压黑手感（±0.2 新范围）；色差/暗角等存量项无回归。
+
+## 调色·进阶 13 项（2026-11-08，工作区变更，版本号发布时定；同日探针后收缩为三件，见上节）
+
+**内容**：画面效果新增「调色·进阶」菜单组，13 个新调色滑条全部接入已验证的自建后处理体积通道（与饱和/对比同一 `bOverride_*` + 值模式），走 `[look]` 段：
+
+| 配置键 | 引擎字段 | 范围（中性=不覆盖） | 语义 |
+| --- | --- | --- | --- |
+| `color_gain` | ColorGain（FVector4） | 0~4（1） | 亮度增益 |
+| `color_gamma` | ColorGamma（FVector4） | 0.25~4（1） | 伽马 |
+| `color_offset` | ColorOffset（FVector4） | -0.5~0.5（0） | 黑位 |
+| `highlights` / `midtones` / `shadows` | ColorCorrection{Highlights,Midtones,Shadows} | 0~2（1） | 分区调色增益 |
+| `film_slope` / `film_toe` / `film_shoulder` | FilmSlope / FilmToe / FilmShoulder | 0.25~2（0.88）/ 0.25~1（0.55）/ 0.05~0.5（0.26） | 胶片曲线（tonemapper） |
+| `white_temp` / `white_tint` | WhiteTemp / WhiteTint | 2000~15000 K（6500）/ -1~1（0） | 白平衡（烘进 LUT） |
+| `bloom_threshold` / `bloom_soft_knee` | BloomThreshold / BloomSoftKnee | -1~8（-1=引擎自动）/ 0~1（0.7） | 泛光阈值/软膝 |
+
+**关键设计（中性值语义）**：胶片曲线/白平衡/软膝的「不覆盖」值不是恒等值（引擎默认 0.88/6500/0.7，游戏实际调了多少未知）——滑条停在**中性值时不下发 `bOverride_*`**（该项交还游戏），离开中性才写覆盖+绝对值。这与 hotfix33/34 的教训互为对偶：写入成功≠引擎肯画，而「写了中性值」也≠无害。13 项均无独立开关（沿用色差先例：中性即关闭），每次进入摄影模式随 `[look]` 一起恢复默认；`FilmBlackClip/WhiteClip` 明确不做（切点字段风险高收益低）。
+
+**改动面**：
+- `core/tuning.h`：13 组 Min/Max/Default 常量（config.cpp schema 与 pbzfm_schema_map 滑条范围的共同真源）+ 中性值语义注释。
+- `core/look.h`：`LookOptions` 13 个字段 + `*_active()`（偏离中性超 eps 即活跃）+ `color_grading_active()`（LUT 钉 1 依据）/ `color_pro_active()`；`look_options_equal` 扩全。
+- `core/config.h` / `config.cpp`：13 个配置键（schema 行、`config_ini_text` 输出与注释、`reset_look_defaults`）。
+- `core/photo_mode.cpp`：`apply_look_if_needed` 透传 13 字段；首启日志增加「画面效果·进阶」行。
+- `engine/ue4ss_port_camera_view.cpp`：`set_look` 写入 6 个 FVector4 + 7 个标量；**`ColorGradingIntensity` 钉 1 条件扩展**（白平衡与增益/伽马/黑位/分区同烘进 LUT，任一活跃即钉）；回读段扩 13 项；**新增一次性 POV 诊断**——调色项首次活跃时读游戏镜头 POV 对 13 字段的 `bOverride_*` 标志+原值（`画面效果·进阶：游戏 POV 覆盖标志 …`）。这是通道判据：某项覆盖=1 → 体积写入被游戏镜头 POV 压住（暗角/泛光当年即此因），下轮按 `apply_look_to_camera_pov` 闩锁模式扩 POV 重申通道；全部覆盖=0 → 体积通道直接生效。
+- PBZFM：新分组 `#group_color_pro`（调色·进阶），13 条滑条紧跟「画面效果」页；无开关滑条。
+- 四语言各 +14 键（组名 + 13 标签）。
+- `ue4ss_port.h`：+`look_pov_pro_logged_` 诊断闩。
+
+**不做**：新字段的 POV 重申通道（等探针判据）、FilmBlackClip/WhiteClip、独立开关。
+
+**测试**：`test_config_color_pro_keys`（解析/越界夹紧/往返/reset + 中性值语义钉对：white_temp 6500 不活跃 / 7000 活跃）；`test_color_pro_group_isolated`（13 项全在 `#group_color_pro`、全无开关、默认值落在范围内）；`test_photo_mode_look_defaults_on_enter` 扩（进入归中性 + 实时开关往返）；默认值/解析样例/`default_config_text` 往返同步扩。`switch_fields==5` 断言不动（新字段无开关）。核心层 6,579 → **8,135 项**全绿；DLL 全链构建通过（27/27）。
+
+**实机验证未做**：发布前逐项拖滑条（PBZFM 实时预览），核对三类日志——`画面效果：这些字段在本 build 里不存在…`（字段缺失）、`画面效果：回读 …`（写入确认）、`画面效果·进阶：游戏 POV 覆盖标志 …`（通道判据）；不渲染项按上表归属分诊（泛光族→扩 POV 重申；调色族→按缺失/回读日志定位）。
+
+## 审查修复批次：下线功能残留清零 + 门控 tag 泄漏 + NLP AV 会话闩 + 默认值对齐（2026-11-08，工作区变更）
+
+全量代码审查（~2000 行工作区 diff）后修复的问题，按优先级：
+
+**功能/配置面**：
+- `config.ini.example` 删除 `key_pick_confirm` / `key_pick_cancel` 两行——点击取焦整线下线时漏清的残留键，用户照抄会得到「未知配置项已忽略」警告。
+- `docs/README.md` 景深章节按当日终局重写（2.1 复活 → 同日判死、代码保留默认关闭、`dof_nlp_enable`/`dof_bokeh_gate` 为取证开关）；键位表删掉中心取焦（T）/ 世界焦点锁定（B）/ 点击取焦（V）/ 胶片颗粒四行，`[keys]`/`[gamepad]` 可配项清单删掉 focus_center/focus_lock/focus_pick/pick_confirm/pick_cancel 与 `pad_focus_pick` 句；`ForceUpdateCameraView` 表述改为「刷新依赖暂停期常规相机更新」。
+- **`dof_nlp_enable` 默认值 true → false**：原注释「正常保持 true（564 同款机制）」与同日崩溃二分终局（NLP 冻结期踩同址崩溃家族）及 example(false) 自相矛盾，新生成的 config.ini 会把用户引向崩溃关联路径。config.h 注释、`config_ini_text` 生成注释、example 注释、四语言 `#dof_nlp_enable` 标签全部同步为「默认关闭，判死期间保持关闭，日后复查再开」。
+
+**引擎侧缺陷**：
+- **DOF tagged cvar 标签泄漏**：`ensure_dof_gate` 每次重试都 `++serial` 换新标签——上一轮部分建成（某项 gate_write 校验失败）的旧标签已在游戏 tagged-cvar 注册表生效，release 只解绑 active 标签，旧标签的覆盖（如 `ShowFlag.DepthOfField=1`）残留到游戏重启。修复：重试复用同一未解绑标签（同标签重写全部闸门）；解绑成功清空字符串，下次建控用新序号；release 对「非空未 active」的残留标签也解绑；`ensure_dof_gate` 返回不可用前就地解绑部分建成的残留（此时 core 已置 unavailable 闩，退出路径不会再有机会）。
+- **NLP AV「本会话不再尝试」落地**：原日志宣称不再尝试但无标志，胶片闸门补建等路径会再次请求 NLP、再次触发 SEH 拦下的访问违例。新增 `nlp_av_disabled_` 会话闩（只闸开启方向；关闭方向必须保留给退出流程重试，否则门控解不干净），告警文案按方向区分。
+- **无退避的逐帧重试**：`apply_dof` 持续失败时每帧重入 SEH 写入路径。新增 `kDofApplyRetryBackoffSec=0.5` 退避（`apply_dof_if_needed` 收 dt）；`ensure_dof_ready_impl` 的接管回退/独立相机 spawn 失败分支现在也置 `dof_unavailable_` 闩（原来只有门控缺失分支有），消除每帧 Warn 刷屏。新增 FakeEngine `fail_dof_apply` 开关与退避时序测试。
+
+**注释/死代码清理（下线功能残留）**：
+- 删除 `dof_math.h` 零调用者的 `focus_distance_to_point()`（世界焦点锁定残留）及 `math3.h` include。
+- 清理孤儿/过时注释：`photo_mode.h`（点击取焦函数注释悬在 `frozen()` 上、`dof_supported_` 旧名、「拾取态状态机」「世界焦点锁定」孤儿注释、dof_frame_tick 的 ForceUpdateCameraView 表述）、`photo_mode.cpp`（tick 注释「中心取焦、焦点锁定、点击取焦」、handle_focus_intent「释放世界焦点锁定」、日志「色差/颗粒」→「色差」）、`ue4ss_port_dof.cpp`（头注释「LineTraceSingle 取焦」、两个空段落标题）、`engine_port.h`（dof_frame_tick 上方挂着中心取焦 raycast 注释、`色差/颗粒`→`色差`）、`tuning.h`（胶片颗粒「2.1 复活」表述改为「复活→再下线」终态）、`mod_app.h`（「进入/取焦共用」）、`pbzfm.h`（CloseMenu 行尾误粘的 IsMenuOpen 注释）。
+
+**计数对齐**：上一条目（下线批次）声称「测试 6,674 项全绿」与实际不符（实测 6,568）——`test_count.txt` 已漂移；本批修复后由 `tools\update_test_count.bat` 重新生成，当前 **6,579 项**全绿（新增退避测试 +11），DLL 重链接通过。
+
+## F7 定格期间 N 卡截屏快捷键判死（2026-11-07，工作区变更）
+
+**现象**：F7 画面定格（挂起渲染线程的真·最后一帧）期间，NVIDIA App/ShadowPlay 截屏快捷键（`Alt+F1`）静默无响应。
+
+**根因（只此一条）**：N 卡截屏捕获管线跑在游戏进程内（`nvspcap64.dll`），必须等到**下一次 `IDXGISwapChain::Present`** 才能抓帧；定格把渲染线程挂起后永远没有新帧 → 捕获请求悬空、快捷键静默失败（等一帧不会来的画面）。排查中排除了另一嫌疑：`nvspcap64.dll` 等 overlay 线程本就在定格跳过名单里（`mod_app.cpp:209-218`，定格是「除跳过名单外全部挂起」，第三方 overlay 线程被保留），线程没被挂起，死在无帧可抓。这是「连渲染线程一起挂起才是真·最后一帧」设计的固有代价，N 卡侧无解；Steam `F12` 等依赖游戏 Present 的截屏键同理。
+
+**替代（已写入两处 README）**：定格期间用系统级捕获——`Win+PrintScreen`（存 `图片\屏幕截图`）或 Xbox Game Bar `Win+Alt+PrtScr`；走 DWM 合成器、不依赖游戏出帧，定格期间可用，画质为桌面合成结果（8bit SDR PNG）。
+
+**备选（已评估、暂缓）**：模组自带「定格截屏」键——定格 watcher 线程在挂起期间本来活着（轮询 F7 恢复 + `RegisterHotKey` 消息兜底，`mod_app.cpp:112-250`），顺带轮询新键位，触发时用 DXGI Desktop Duplication 从 DWM 合成器抓当前屏面（不依赖游戏线程与新 Present，抓到的正是定格帧）。设计要点：新 `[keys]` 键位（评估时默认 F9）、输出 `<mod>/screenshots/`、stb_image_write 写 PNG（`stbi_write_png_to_func` 回调 + `ofstream` 二进制落盘，规避 ANSI fopen 中文路径问题；d3d11/dxgi 入口 `GetProcAddress` 动态解析，与 PBZFM 客户端同款零链接依赖）、HDR 桌面（R16G16B16A16_FLOAT/scRGB）色调映射成 8bit SDR PNG、复制失败退 GDI BitBlt、结果走原子变量由引擎 Tick 恢复后代日志（watcher 定格期间不写日志的既有铁律不动）。用户决策（2026-11-07）：暂不加代码，只补文档；日后要做按此设计直接落地，无需重新推导。
+
+**改动面**：根 `README.md` F7 bullet、`docs/README.md` 键位表 F7 行 + 表下备注、本条目。纯文档，无代码/配置/语言文件/测试变化。
+
+## 点击取焦整线移除 + 中心取焦/焦点锁定下线 + 胶片颗粒下线（2026-11-07，2.1.0）
+
+**决策**：点击取焦（V+光标+LMB/RMB）实测价值不足（取焦射线在实机多次落空）且与「镜头上升」默认绑定冲突
+（确认帧漏键），整线移除；随后中心取焦（T，沿视线 raycast）与世界焦点锁定（B，每帧视线投影跟焦）一并下线。
+**最终取焦体系 = 纯手动**：对焦距离步进（`,`/`.`，Shift 粗调 Ctrl 微调）+ 光圈步进（`[`/`]`）——可预测、
+无射线、无每帧跟焦状态。手柄 pad_focus_center/lock/pick 三个占位键一并摘除（pad_focus_near/far 保留）。
+
+**摘除面（两轮合计）**：`[keys]`/`[gamepad]` 五键加载+写出、KeyMap/Intent 对应字段、DofPort
+`set_pick_cursor/hide_pick_cursor/finish_pick_cursor_restore/focus_trace_center/focus_trace_screen` 五个
+虚函数与 `dof_line_trace` 助手、光标/捕获快照、photo_mode 拾取机器与焦点锁定每帧重算、
+attempt_restore_all 拾取步、PBZFM「点击取焦」按钮与 BeginPickFocus 动作、schema 五键位、
+四语言词典对应键。旧 config 残留键自然忽略。测试 6,568 项全绿（test_count.txt 当时写的是 6,674，与实测不符，已于 2026-11-08 审查批次重新生成对齐）。
+
+**胶片颗粒下线（用户决策）**：实机无效果（r.Tonemapper.GrainQuantization 闸门 + 组件 FilmGrainIntensity 全写成功但画面零变化），整线移除——config `film_grain`、DofParams/组件写入、胶片闸门 GrainQuantization、PBZFM 滑条、四语言键；**色差保留**（SceneFringeQuality 闸门与组件写入不动）。旧 config 残留 `film_grain` 键解析时忽略。
+
+**附带收益**：取焦退出路径曾是第 4 处崩溃（SetViewportMouseCaptureMode，crash_2026_11_07_12_40），
+整线移除后该风险面清零；LMB 现在只剩「镜头上升」单一语义。
+
+## 崩溃二分终局：DOF 复活判死（2026-11-07，工作区变更）
+
+**矩阵闭合**：三种门控变体全崩、三连逐字节同址（`call rdx`→全零页 0x143DB4F、RSP/RAX 跨会话相同）——
+①NLP on+bokeh on ②NLP off+bokeh on ③NLP off+bokeh off（仅 ShowFlag/画质/kernel+组件通道；
+末轮按下 W 相机移动后崩）。`dof_enabled=false` 稳定。
+
+**结论**：本作 shipping 的 gameplay 渲染管线里 DOF pass 是被剥离/空壳的路径——cvar 与组件设置都能写入，
+但强行使能后渲染 worker 必踩零函数指针（与旧取证「gameplay 档位无 DOF pass」自洽：不止不跑，强跑就崩）；
+NLP 过场档（564 同机制）在冻结期同样踩同址崩溃。**DOF/色差/颗粒以当前 C++ 通道形态判死**，
+`[dof] dof_enabled=false` 为稳定态；`dof_bokeh_gate`/`dof_nlp_enable` 二分开关保留供日后复查
+（游戏更新/找到原生拍照模式 DOF 通道时重启取证）。
+
+**收尾（同日）**：`dof_enabled=false` 后摄影模式卡顿消失——**卡顿与崩溃同根**（均为 DOF 激活的
+渲染路径，含 bokeh/NLP 无关变体）。影之刃零无自带拍照模式，无原生 DOF 通道可借。进模式卡顿排查
+（当日另一议题）至此终结：卡顿、崩溃、FG 抑制失效三案均已定案。
+
+## 崩溃二分：dof_bokeh_gate 取证开关（2026-11-07，工作区变更）
+
+**结论链**：`dof_enabled=false` 实测崩溃消失 → **崩溃触发源=DOF 栈**（此前第 5/6 次崩溃逐字节同址：
+`call rdx`→全零页 0x143DB4F、RSP/RAX 跨会话相同；NLP 开关无关——`dof_nlp_enable=false` 跳过 NLP 后照样崩，
+NLP 假设出局）。崩溃线程=自定义小栈 worker（栈内容=步长 0x30 记录区、序列号 0x20 步进递增），
+渲染器/驱动邻近形态；bokeh gate cvar（`r.DOF.{Gather,Recombine}.EnableBokehSettings`、
+`r.DOF.Recombine.Quality`）开出 shipping 可能无实现的路径 = 嫌疑首位。
+
+**改动**：新增 `[dof] dof_bokeh_gate`（默认 **false**）——false 时整组 bokeh cvar 跳过，DOF 仍走
+ShowFlag/画质/kernel 半径闸门+组件通道（散景形状退化为默认圆盘）；true 恢复原行为。写出器同步
+（`dof_nlp_enable` 上轮已补）。日志判据：`景深门控：dof_bokeh_gate=false，跳过 bokeh 组 cvar（崩溃二分）`。
+
+**测试矩阵**（全部配合 `dof_nlp_enable=false`）：
+- `dof_enabled=true + dof_bokeh_gate=false` → 崩？不崩=bokeh 组实锤，DOF 以「无 bokeh」形态回归；
+  崩=嫌疑转移组件通道（下轮再分：seed memcpy / blend 权重 / FocusSettings 写入）。
+- `dof_enabled=false` → 稳定基线（已实测）。
+
+## FG 抑制写入通道兜底：exec 失效自动走 tagged cvar（2026-11-07，工作区变更）
+
+**背景**：用户实测进入摄影模式后异常卡顿。冻结期帧生成抑制（`freeze_framegen_off=true`）的两个
+cvar（`r.Streamline.DLSSG.Enable=0`、`r.PBZ.SuppressFrameGen=1`）写入后回读不变——DLSSG 全程
+保持开启。对照历史：**2026-11-03 实机同一代码、同 before 值写入成功**（CHANGELOG 1.0.76 期日志），
+本次 `ue4ss_port_micro_motion.cpp` 未改动，排除代码回归；指向 exec 通道
+（`UKismetSystemLibrary::ExecuteConsoleCommand`，本项目已记录其「返回成功但 cvar 不变」实机先例）
+在本作**间歇性失效**。
+
+**改动**（实验与修复一体：跑一次游戏日志即可终审判据）：
+
+- `ue4ss_port_internal.h` 新增共享 tagged 通道：`write_cvar_tagged` / `unset_cvars_tagged`
+  （走 `PBZBlueprintFunctionLibrary.SetConsoleVariableTagged / UnsetConsoleVariablesWithTag`，
+  即 DOF 门控在同一构建实证可用的通道；`seh_process_event` 兜底）。
+- 渲染对照写入（`freeze_render_tuning(true)`）：exec 写入回读失败时自动改走 tagged 通道并回读验证。
+  每条结果都有判据日志——成功 = `exec 通道未生效，已用 tagged 通道写入（回读已验证）`；
+  tagged 也不行 = `exec 与 tagged 通道都未生效（游戏可能在从内部状态重设，写入通道无关）`。
+- 快照结构（`RenderCvarSnapshot`）增 `via_tag/tag` 字段：tagged 写入的项在解冻/退出用
+  `UnsetConsoleVariablesWithTag` 还原（值自动回到打标签前原值），重申（`render_reassert_tick`）
+  按当年写入成功的通道压回。
+- 判读：tagged 成功且后续无「渲染对照重申」日志 → 通道问题，FG 抑制恢复有效；tagged 成功但频繁
+  重申 → 游戏每帧重写（同标签可赢回，观察卡顿是否随之消失）；tagged 也失败 → 该 cvar 受游戏
+  内部状态机管控，需换机制（另行取证）。
+
+## 景深/对焦 + 色差/胶片颗粒复活（2026-11-07，2.1.0）
+
+**一句话**：判死两年的引擎景深、判死一个版本的色差/胶片颗粒，全部复活。缺的从来不是写入通道，
+而是两把游戏自带的「渲染档位开关」——机制由 Soul's Cinematic Studio（Nexus #564）在同一游戏构建上
+用 JS 实证，本版在 UE4SS 反射层用 C++ 复刻。
+
+### 机制（详见 `core/tuning.h` 顶部改写后的取证结论）
+
+- **NLP 过场渲染档**：`PBZLevelSequenceManager.SetNLPProfileCinematicEnable(瞬态LevelSequence, true)`。
+  游戏的「过场渲染配置」，DOF/SSS 等 pass 只在该档位下存在；瞬态序列只作所有权标记、不播放
+  （RF_Standalone 防 GC，进程内复用同一个 token，退出用同一 token 关档）。
+  旧取证「四条通道写入成功画面零变化」与此完全自洽：gameplay 档位里根本没有 pass 可跑。
+- **Tagged cvar 覆盖**：`PBZBlueprintFunctionLibrary.SetConsoleVariableTagged / UnsetConsoleVariablesWithTag`。
+  写 `ShowFlag.DepthOfField`（当年反射拿不到的总开关）、`r.DepthOfFieldQuality=2`、
+  `r.DOF.Kernel.Max{Fore,Back}groundRadius`、`r.DOF.{Gather,Recombine}.EnableBokehSettings`、
+  `r.DOF.Recombine.Quality`；胶片组抬 `r.Tonemapper.Quality=5`、`r.SceneColorFringeQuality`、
+  `r.Tonemapper.GrainQuantization`、`r.LUT.Size`、SDR 下 `r.BackbufferQuantizationDitheringOverride`。
+  每次写入用 `GetConsoleVariableFloatValue` 回读校验，写不进的项逐条告警（NLP 档位本身可能已带 DOF pass）。
+- **画面通道**：spawn 出的相机 Actor 的相机组件 `PostProcessSettings`（权重 1）；首次写入前把管理器 POV
+  的 PostProcessSettings 整份 memcpy 过去保留游戏原调色（SEH 兜底，hotfix31 同款）；CineCamera 存在时
+  额外写 FocusMethod/ManualFocusDistance/CurrentAperture 元数据；参数变化后 `ForceUpdateCameraView`，
+  且 DOF/胶片活动期间每帧强制刷新（世界时钟停住时原生镜头不自动刷新）。
+
+### 功能面
+
+- 景深核心套件：总开关（`G`）、对焦距离步进（`,`/`.`，最小步进= max(配置, 距离×10%)，Shift/Ctrl 变速）、
+  光圈步进（`[`/`]`）、中心取焦（`T`，沿视线 LineTraceSingle）、世界焦点锁定（`B`，每帧按视线投影重算，
+  手动步进自动解锁）、点击取焦（`V`：显示光标+释放捕获，移动/视角抑制，LMB 反投影取焦/RMB 取消，
+  `key_pick_confirm/cancel` 可配）。
+- 色差/胶片颗粒：`[look]` 两键复活（0=不覆盖），与景深共用门控与组件通道；每次进入摄影模式随 [look] 恢复默认。
+- PBZFM 菜单滑条实时预览：数值滑条（画面五项/色差/颗粒/景深参数/手柄速度）拖动中即推引擎
+  （`Host::submit_config_preview`，引擎 Tick 应用、下一帧上屏），松手才写盘+打日志；预览路径不写
+  config.ini、不打「已应用」日志，实时开关仍走差异比对、重复应用零副作用。
+- **修复：色差/颗粒调节无效果**（2026-11-07 12:40 实机）：`ensure_dof_ready` 早退条件只看
+  `dof_gate_active_`——首启建控时色差/颗粒为 0（0=不覆盖），胶片 cvar 闸门
+  （`r.SceneColorFringeQuality`/`r.Tonemapper.GrainQuantization`/`r.Tonemapper.Quality`/`r.LUT.Size`）
+  整块跳过且同会话永远补不上；之后调大滑条只有组件 PP 写入成功，引擎质量闸门关着 → pass 不渲染。
+  现在胶片闸门未建且需要时放行补建一次（impl 幂等，DofPort 新增 `film_gate_active()` 查询）。
+- **取焦退出崩溃加固**（12:40:39.457 dump：DEP-EXEC 野跳 0x143DB4F，与 11:20 同族，纯属性直写
+  后 ~2 帧游戏原生代码踩野指针，dump 无栈无法回溯）：退出取焦态拆两步——本帧只隐藏光标，
+  下一帧 tick 开头恢复鼠标捕获模式，逐步打点（「光标已隐藏」→「捕获模式已恢复」），下次崩溃看
+  最后一条日志即可锁定触发写入；`begin_pick_focus`/`attempt_restore_all` 补完挂起的两步还原。
+- 后端联动：启用景深/胶片时若在接管模式，当场走 `fallback_from_takeover` 同款路径切独立相机
+  （不碰用户的后端配置，下次进入按配置）；景深/胶片生效期间 PBZFM 切回接管会被拒绝并提示。
+- 恢复语义：`dof_gate_active_`/`pick_mode_` 进入 `has_pending_restore`，leave 逆序
+  （拾取态光标 → 胶片 tag → 景深 tag → NLP 关档），失败走既有 1/2/4/8s 退避重试。
+- 诊断：启用后第 8 帧一次性回读 NLP 状态/`ShowFlag.DepthOfField`/`r.DepthOfFieldQuality`/
+  `r.DOF.Recombine.Quality`/`r.SceneColorFormat`/`r.SSS.Quality` 与组件 PP 回读值（`景深诊断：…`）。
+
+### 配置与键位
+
+- `[dof]` 段复活：`dof_enabled/dof_focal_distance(cm)/dof_fstop/dof_sensor_width(mm)/dof_focus_step/dof_aperture_step`；
+  键位复活并新增：`key_dof_toggle/focus_center/focus_lock/focus_pick/pick_confirm/pick_cancel` +
+  原 `key_focus_near/far`、`key_aperture_open/close`；手柄沿用旧默认（LB+BACK 拉近 / LB+START 拉远 /
+  RB+BACK 开光圈 / RB+START 收光圈；LB/RB 单按的滚转连带是旧版同款行为），新增键默认 NONE。
+- 判死时期（hotfix32/34）进 legacy 清单的键名全部转正：`kLegacyDofKeys`/`kLegacyLookKeys` 清空，
+  legacy 机制保留；旧 config.ini 残留这些键时按原值继续生效，不再被清除。
+- PBZFM 菜单：`#group_dof`「景深与对焦」节点复活（1 开关 + 5 滑条，距离/步进/F 值为对数滑条），
+  `[keys]` 增 10 行键位项，`[look]` 增色差/颗粒两滑条；四语言词典同步（143 键）。
+
+### 工程面
+
+- 新文件：`src/core/dof_math.h`（DofParams/视线投影/比例步进/clamp，全纯函数）、
+  `src/engine/ue4ss_port_dof.cpp`（DofPort 实现：门控/组件通道/取焦/光标/诊断）。
+- `engine_port.h` 新增 `DofPort` 子接口（ensure/release gate、apply_dof、两条 trace、set_pick_cursor、
+  dof_frame_tick），`EnginePort` 聚合继承；`PhotoMode` 新增 apply_dof_if_needed / handle_focus_intent /
+  ensure_dof_ready / exit_pick_mode / dof_frame_tick。
+- `mod_app` 的 GameViewportClient Tick 之后写点新增 `mode_->dof_frame_tick()`。
+- 测试：`test_config_legacy_purge` 改写为 `test_config_revived_dof_keys`（复活键解析/夹紧/往返/reset 语义）；
+  `test_dof_group_isolated` 反转为正向断言（6 个 dof 字段全在 #group_dof、对数标志、色差颗粒归 look 组）；
+  `default_config_text` 往返断言更新。核心层 5,329 → **7,058 项**全绿（PBZFM 字段循环随字段数增长 + 景深生命周期 2 案）。
+
+### 实机修复记录
+
+- 2026-11-07 第一次实机（UE4SS.log 01:21 段）：菜单开关/后端切换/tagged cvar 接口全部正常，
+  卡在 NLP token 类路径——`/Script/MovieScene.LevelSequence` 在本作不存在（ULevelSequence 属于
+  LevelSequence 模块）。已改为 `/Script/LevelSequence.LevelSequence` 为主、MovieScene 兜底。
+- 2026-11-07 第二次实机崩溃（crash_2026_11_07_01_37_35.dmp，UE4SS.log 01:37 段）：NLP 开启调用返回
+  后 ~1ms 崩在 PBZ.exe+0x43AE0D4 的虚表调用（`call [rax+0x660]`，读 -1）——时间线与游戏原生更新
+  处理 NLP 所有权请求吻合。本轮三项应对：
+  1. token 的 Outer 从 UWorld 改为 **GameInstance**（与 564 的 native.js `context()` 完全一致，
+     这是 564 与我们仅剩的构造差异）；
+  2. 门控顺序重排：tagged cvar 闸门全部先行，NLP 档最后开——崩溃若再发生，闸门已生效且死点唯一；
+  3. 新增取证开关 `[dof] dof_nlp_enable`（默认 true）：设 false 可实测「仅 cvar 闸门」是否足以让
+     DOF 出画面；首启逐步打点（写 DOF 闸门 → 写胶片闸门 → 请求 NLP 档）便于定位。
+- 2026-11-07 第三次实机仍同址崩溃（crash_2026_11_07_01_51_00.dmp：RIP/RCX/R8 与上次完全一致），
+  排除 Outer 因素（已对齐 564 的 GameInstance，dumpstack 复核 `c` 即 GameInstance）。剩余唯一
+  结构差异是调用时序：564 在世界运行时开 NLP（先开档、最后才 SetGamePaused），我们在进入即冻结
+  后才开档——游戏原生更新在暂停态处理所有权请求会崩。本轮修复：ensure_dof_ready 拆出 impl 并在
+  外层包「解冻 → 建门控 → 恢复冻结」窗口；release_dof_gate 的 NLP 关档同样在解冻窗口内进行。
+
+- 2026-11-07 第四轮（crash_2026_11_07_02_02_17.dmp）：解冻窗口生效——NLP 在世界运行时成功开启、
+  重冻结完整跑完（「时间已冻结」）后 0.6ms 仍崩，且三份 dump RIP/RCX/RAX 完全一致。结合
+  PBZ.exe 仅一个 174MB 的 .idata 节（加壳保护，静态反汇编不可信），把嫌疑从「NLP 时序」转移到
+  「NLP 之后的下一步原生调用」（apply_dof 的 ForceUpdateCameraView 是唯一执行游戏代码的
+  ProcessEvent）。本轮把景深链路的全部原生调用（cvar 读/写、tagged set/unset/has、NLP 开关、
+  ForceUpdateCameraView）统一 SEH 罩住（detail::seh_process_event，注释记载本作在 MPC 场景
+  出过同款「读 -1」崩溃），崩溃变成日志；NLP 失败不再否决门控（任一组闸门生效即继续）。
+  ForceUpdateCameraView 被拦截后自动停用，相机刷新由暂停期常规更新兜底。
+
+- 2026-11-07 第五轮（crash_2026_11_07_02_12_21.dmp）：SEH 立功——「ForceUpdateCameraView 触发访问
+  违例（已拦下并停用）」，**三次同址崩溃的元凶实锤**；拦下后景深全链路正常（诊断行 showflag=1、
+  组件 FOC/F/scale 全部写入），用户实测了 G 开关与点击取焦（光标→LMB→「焦点已获取，景深已开启」），
+  最后崩在 exit_pick_mode 的 SetViewportMouseCaptureMode 恢复（PBZ.exe+0x3CE8432，与前三处不同址）。
+  本轮把 DOF 模块剩余的全部裸 ProcessEvent（Get/SetViewportMouseCaptureMode、GetMousePosition、
+  DeprojectScreenPositionToWorld、LineTraceSingle、K2_GetActorLocation）统一 SEH 罩住，捕获模式恢复
+  失败时放弃还原（重进摄影模式复位），不再可能带崩游戏。
+
+- 2026-11-07 配套框架更新：PBZ-FM 新增 v3 可选导出 `PBZFM_CloseMenu`（g_closeRequest 延迟到帧边界，
+  页面渲染回调内可安全调用）。本 Mod 的 PBZFM「景深与对焦」组新增**「点击取焦」按钮**：点击即关菜单
+  并在引擎线程进入取焦态（与 V 键同一条 `begin_pick_focus` 路径，含幂等/门控前置/降级日志）；
+  旧框架上按钮退化为提示文案（需更新框架）。四语言 +51 键位测试全绿；`PbzfmAction::BeginPickFocus`
+  经既有命令队列消化（mod_app 引擎线程），未激活时静默忽略。
+
+- 2026-11-07 第六轮（crash_2026_11_07_10_45_55.dmp）：**从 PBZFM 菜单进入摄影模式崩溃**——链路全部
+  正常跑完（含被拦下的 ForceUpdateCameraView），崩溃在其后 1.7ms，同族 -1 读（PBZ.exe+0x3CD96FC）。
+  与 run 4（F2 进入、存活 7 秒）的唯一差异是菜单开着；框架 release 构建（无引擎后端）已排除框架侧
+  调用。修复：`PbzfmAction::ToggleMode`/`BeginPickFocus` 在菜单可见时**先 request_close_menu 并把
+  命令推迟一帧**（重试上限 10 次，超限告警后照旧执行），使菜单进入与 F2 进入完全同态；
+  PbzfmClient 新增 menu_open()/request_close_menu()。
+
+- 2026-11-07 第七轮（crash_2026_11_07_11_20_08.dmp，PBZFM 已升 v0.7.0）：菜单→进入→DOF 开关→
+  「点击取焦」按钮→自动关菜单→光标显示→LMB trace 未命中告警——**全链路第一次完整走通**；崩溃在
+  取焦未命中退出取焦态 ~2 帧后（EXEC 到加壳区，垃圾函数指针）。恢复鼠标捕获模式改走
+  `UGameViewportClient.MouseCaptureMode`（0x3BA）**直接属性读写**——GameplayStatics 那对函数内部
+  就是读写它，直写不执行任何游戏代码；取焦流程（显示/恢复光标+捕获）自此零游戏原生调用。
+
+- 2026-11-07 第八轮（UE4SS.log 11:19 段，无崩溃，功能缺陷）：**画面效果重置/开关按钮画面不动**——
+  滑条拖动全程可见（暗角 0.57→0.37 泛光 12.20 都进了画面），重置/开关后体积回读全对
+  （`回读 暗角=0.00(覆盖0)`）但画面停在旧值。根因：暗角/泛光的**相机 POV 重申通道只开不关**——
+  定格/独立相机下 POV 不被 UpdateCamera 重建（这正是该通道需要每帧重申的原因），`apply_look_to_camera_pov`
+  在 `any_active()==false`（或两项同时失活）时早退停止重申，上一帧写进 POV 的「bOverride=1+旧值」
+  永久残留，把已清零的体积压住；体积回读恰好是诊断盲区，把问题盖住了。修复：POV 通道加**残留闩锁**
+  （`pov_vignette_latched_/pov_bloom_latched_`），失活后继续把 bOverride 回写成 false（写成功才落闩，
+  失败下帧重试），两个闩锁都落下才恢复早退；撤残留首见打一行 Info 日志补上诊断盲区。
+  饱和/对比/冷暖三项一直只走体积、无 POV 通道，不受此 bug 影响。
+
+### 实机验证清单（发布前必须跑）
+
+1. 接管模式进入 → 按 `G`：日志应有「已切换到独立相机后端」「NLP 过场渲染档已请求开启」、闸门写入无
+   「写入未生效」告警、第 8 帧 `景深诊断` 行；小 F 值 + 近对焦距离画面变糊。
+2. `,`/`.`/`[`/`]` 步进；`T` 中心取焦；`B` 锁定后移动相机焦点跟随；`V` 点击取焦（光标出现/消失）。
+3. `[look]` 色差/颗粒非零：画面出现色散/颗粒，回读 Tonemapper.Quality=5。
+4. 退出摄影模式：世界正常、NLP 关档日志、config.ini 不被重写；暗角/泛光（体积通道）不受影响。
+5. 若不糊：收集 `景深诊断` 行与 `闸门 … 写入未生效` 告警定位（档位/总开关/画质档三者谁被改掉）。
+6. 第八轮回归：菜单里把暗角/泛光拉到明显值 → 点重置/开关关掉 → **画面必须立刻回默认**
+   （定格状态下也要生效）；日志出现一次「已把相机 POV 上的残留覆盖回写为 覆盖0」。
+
+## 2.0.4-cpp（2026-11-06）
+
+**修复：退出摄影模式后无法移动视角（输入锁残留）。**
+
+### 根因
+
+- UE 的 `AController::SetIgnoreLookInput` / `SetIgnoreMoveInput` 是**堆叠计数**（每次调用 +1/-1），
+  不是布尔开关；并且 `IgnoreLookInput` / `IgnoreMoveInput` 是 `uint8` **非 UPROPERTY**，反射层读不到计数。
+- 2.0.3 及以前进入摄影模式时固定调用一次 `SetIgnoreLookInput(true)`，退出时只配对一次
+  `SetIgnoreLookInput(false)`。如果进入前游戏自己已经持有一把视角锁（暂停/过场/菜单等场景），
+  计数会从 2 变 1，退出后 `IsLookInputIgnored()` 仍为 true，表现就是**角色能走但鼠标完全转不动视角**。
+  `SetIgnoreMoveInput` 的堆叠计数同理，严重时角色移动也会被卡住。
+
+### 修复
+
+- 进入屏蔽前先读 `IsLookInputIgnored()` / `IsMoveInputIgnored()` 记录原始布尔锁状态；
+  退出时按 `plan_ignore_lock_restore()` 校正：
+  - 进入前未锁、退出仍锁 → `ResetIgnoreLookInput()` / `ResetIgnoreMoveInput()` 清掉全部残留；
+  - 进入前已锁、退出被减成未锁 → 补回一把 `SetIgnore*(true)`；
+  - 读不到锁状态 → 直接 `Reset*` 兜底，绝不把玩家留在“视角卡死”状态。
+- 校正动作写入日志（`恢复输入屏蔽：Look 锁残留已校正（进入前=未锁，退出时=锁定）`），
+  下次实机日志可直接确认命中；进入时若游戏本来就持有锁也会记录一行。
+- 核心层新增 `plan_ignore_lock_restore` 的 4 组真值表断言（5,325 → **5,329 项**全绿）。
+
+## 2.0.3-cpp（2026-11-06）
+
+**画面效果操控细化：每个滑块独立重置 + 画面效果五项独立开关，且五项每次进摄影模式恢复默认。**
+
+### 菜单
+
+- 所有数值滑块（相机与移动 / 画面效果 / 手柄等）行尾新增**独立「重置」按钮**：单击把该滑块恢复为
+  编译期默认值（默认值直接由 `Config{}` 读取，不在菜单里另抄一份），并立即写回 `config.ini`。
+- 「画面效果」五项（暗角 / 饱和度 / 对比度 / 泛光 / 冷暖）行首新增**独立开关按钮**（开 / 关）：
+  - 关 ≠ 清零：只停用这一项，滑块值保留；再打开立刻恢复原值，方便 A/B 对比；
+  - 重置按钮会把该行恢复为默认值并重新打开开关；
+  - 开关状态持久化在 `[look]` 段的 `vignette_enabled` / `saturation_enabled` / `contrast_enabled` /
+    `bloom_enabled` / `temperature_enabled` 五个布尔键里（默认全 true）。
+- 画面效果页顶部新增提示：这五项每次打开摄影模式都会恢复默认参数。
+
+### 进入摄影模式时恢复默认
+
+- `PhotoMode::enter()` 在进入成功前调用 `reset_look_defaults()`：五项数值归中性值
+  （暗角 0 / 饱和 1 / 对比 1 / 泛光 0 / 冷暖 0），五个独立开关归默认开。
+- `mod_app::handle_toggle()` 在进入成功后把同一份默认值写回 `config.ini` 并调用
+  `PbzfmClient::sync_from_config()` 刷新菜单显示——不会出现「引擎已用默认值、菜单还显示上次拖的值」。
+- 进入失败时撤回预置默认值，保持用户原来的菜单设置不变。
+
+### 配置与兼容
+
+- `[look]` 新增五个 `*_enabled` 键，全部随 `config_ini_text()` 序列化 / 解析 / 原子写回；
+  旧 `config.ini` 没有这些键时按默认 true 处理，无需手动迁移。
+- 四语言词典新增「重置 / 开 / 关 / 开关提示 / 五项默认提示」，并修正「画面效果（暗角）」组名
+  （组内实际是五项，不再只写暗角）。
+
+### 测试
+
+核心层 5,155 → **5,325 项**断言全绿（新增：进入摄影模式时 [look] 五项恢复默认值 + 首次 tick
+下发中性 LookOptions；所有 Float 滑块默认值重置；五项独立开关读写与重置；配置解析 / 序列化往返）。
+
 ## 2.0.2-cpp（2026-11-06）
 
 **两处实机问题收口：处决/过场中暂停后的角色定格，以及超宽屏暂停变 16:9。**

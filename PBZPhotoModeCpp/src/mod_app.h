@@ -44,6 +44,7 @@ public:
     auto mod_dir() -> std::string override;
     auto current_config() -> Config override;
     auto submit_config(const Config& cfg) -> void override;
+    auto submit_config_preview(const Config& cfg) -> void override;  // 滑条拖动实时预览（不落盘不打日志）
     auto submit_command(const PbzfmCommand& cmd) -> void override;
     auto log(LogLevel level, const std::string& msg) -> void override;
 
@@ -146,7 +147,10 @@ private:
     std::mutex pbzfm_mutex_;
     Config pbzfm_pending_cfg_{};
     bool pbzfm_cfg_dirty_{false};
+    bool pbzfm_cfg_preview_{false};  // 最近一次提交是滑条拖动预览：引擎 Tick 应用但不打日志
     std::vector<PbzfmCommand> pbzfm_commands_;
+    // 菜单「先关再执行」的重试计数（引擎 Tick 线程独占读写）
+    int pbzfm_menu_defer_count_{0};
 };
 
 }  // namespace pbzpm

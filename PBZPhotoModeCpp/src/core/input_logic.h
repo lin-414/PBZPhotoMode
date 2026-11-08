@@ -10,6 +10,19 @@
 
 namespace pbzpm {
 
+// AController 的 IgnoreLookInput / IgnoreMoveInput 是「堆叠锁」：SetIgnore*Input(true/false)
+// 每次只 +1/-1，不是布尔开关。进入摄影模式前若游戏自己已经持有同类锁（比如暂停、过场、
+// 菜单把视角锁住），再配对一次 true/false 会把计数留在 1，表现为退出后视角/移动被永久吞掉。
+// 恢复时用 Is*InputIgnored() 的布尔结果比对进入前状态，决定是否需要 Reset*（清掉全部残留）
+// 或补回一把锁（进入前本来就是锁定的情况）。
+enum class IgnoreLockRestore { None, Reset, Relock };
+
+inline IgnoreLockRestore plan_ignore_lock_restore(bool was_ignored, bool now_ignored) {
+    if (!was_ignored && now_ignored) return IgnoreLockRestore::Reset;
+    if (was_ignored && !now_ignored) return IgnoreLockRestore::Relock;
+    return IgnoreLockRestore::None;
+}
+
 // 配置里的键名解析结果。任一键解析失败会退回默认键并记 warning。
 struct KeyMap {
     int toggle{0x71};    // F2
@@ -34,6 +47,12 @@ struct KeyMap {
     int boost{kShiftGeneric};   // 加速（默认 SHIFT，兼容左右 Shift）
     int slow{kCtrlGeneric};     // 减速（默认 CONTROL）
     int free_look{kAltGeneric}; // 自由转视角门控（默认 ALT；free_look_requires_alt=false 时不使用）
+    // 景深/对焦（2.1 复活，键位见 config.h [keys] 注释）
+    int dof_toggle{'G'};
+    int focus_near{0xBC};   // COMMA：对焦拉近
+    int focus_far{0xBE};    // PERIOD：对焦拉远
+    int aperture_open{0xDB};  // OEM_4 = '['：开大光圈（F 值减小）
+    int aperture_close{0xDD}; // OEM_6 = ']'：收小光圈
     // 画面定格键：只给 PBZFM 菜单显示/回退用。InputLogic 不消费（定格走独立 watcher 线程）。
     int frame_freeze{0x76};
     // 手柄组合键（由 [gamepad] 配置解析而来，见 parse_pad_combo）
@@ -54,9 +73,14 @@ struct KeyMap {
     std::vector<PadButton> pad_slow{PadButton::RS};         // 减速（默认 R3）
     std::vector<PadButton> pad_vertical_up{PadButton::RT};    // 升降上（默认 RT，模拟量）
     std::vector<PadButton> pad_vertical_down{PadButton::LT};  // 升降下（默认 LT，模拟量）
-    // 景深/光圈：解析失败时的回退值。必须与 Config::pad_* 的字符串默认值
-    // （config.h:72-75）逐项一致，否则 ini 写错时手柄会静默换一套键位。
-    // 历史缺陷：下面 3 个曾漂移成单按 BACK/START 与 LB↔RB 互换。
+    // 景深/对焦组合键（默认值必须与 Config::pad_* 的字符串默认值逐项一致，
+    // 否则 ini 写错时手柄会静默换一套键位；NONE 解绑 = 空组合）。
+    // 历史缺陷：旧版曾有单按 BACK/START 与 LB↔RB 互换的漂移。
+    std::vector<PadButton> pad_focus_near{PadButton::LB, PadButton::Back};
+    std::vector<PadButton> pad_focus_far{PadButton::LB, PadButton::Start};
+    std::vector<PadButton> pad_aperture_open{PadButton::RB, PadButton::Back};
+    std::vector<PadButton> pad_aperture_close{PadButton::RB, PadButton::Start};
+    std::vector<PadButton> pad_dof_toggle{};      // 默认 NONE（解绑）
     bool all_resolved{true};
 };
 
@@ -82,6 +106,9 @@ struct Intent {
     bool reset_view{};  // R：回到进入摄影模式时的位姿/FOV
     bool reset_roll{};  // 滚转归零（水平校正）：roll 置 0，位置/俯仰/偏航/FOV 不动
     int fov_nudge{};    // FOV 步进：+1 增大 / -1 缩小（FOV 键或手柄十字键的按下沿；按住时连发折算成多格）
+    int focus_nudge{};     // 对焦步进：+1 拉近（距离减小）/ -1 拉远（按住连发同 FOV）
+    int aperture_nudge{};  // 光圈步进：+1 开大（F 值减小、更虚化）/ -1 收小
+    bool dof_toggle{};        // 景深总开关
     double pad_look_dx{};  // 手柄右摇杆转速（度/秒，正值 = 向右；tick 里乘 dt）
     double pad_look_dy{};  // 手柄右摇杆转速（度/秒，正值 = 向下；invert_y 在 tick 里处理）
 };
@@ -134,6 +161,10 @@ private:
     PadState pad_prev_{};
     RepeatState fov_up_repeat_{};
     RepeatState fov_down_repeat_{};
+    RepeatState focus_near_repeat_{};   // 对焦拉近（对焦/光圈与 FOV 共用同一套连发状态机）
+    RepeatState focus_far_repeat_{};
+    RepeatState aperture_open_repeat_{};
+    RepeatState aperture_close_repeat_{};
 };
 
 }  // namespace pbzpm

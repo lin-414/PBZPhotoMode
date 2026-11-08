@@ -240,6 +240,11 @@ const std::vector<ConfigFieldSpec>& schema() {
         Text("key_boost", "keys", &Config::key_boost, "input_logic"),
         Text("key_slow", "keys", &Config::key_slow, "input_logic"),
         Text("key_free_look", "keys", &Config::key_free_look, "input_logic"),
+        Text("key_dof_toggle", "keys", &Config::key_dof_toggle, "photo_mode::tick"),
+        Text("key_focus_near", "keys", &Config::key_focus_near, "photo_mode::tick"),
+        Text("key_focus_far", "keys", &Config::key_focus_far, "photo_mode::tick"),
+        Text("key_aperture_open", "keys", &Config::key_aperture_open, "photo_mode::tick"),
+        Text("key_aperture_close", "keys", &Config::key_aperture_close, "photo_mode::tick"),
         // 兼容别名（同一字段，不再静默丢弃）
         Text("mouse_vertical_up", "keys", &Config::key_vertical_up, "input_logic", "key_vertical_up 的别名"),
         Text("mouse_vertical_down", "keys", &Config::key_vertical_down, "input_logic", "key_vertical_down 的别名"),
@@ -282,6 +287,11 @@ const std::vector<ConfigFieldSpec>& schema() {
         Text("pad_slow", "gamepad", &Config::pad_slow, "input_logic"),
         Text("pad_vertical_up", "gamepad", &Config::pad_vertical_up, "input_logic"),
         Text("pad_vertical_down", "gamepad", &Config::pad_vertical_down, "input_logic"),
+        Text("pad_focus_near", "gamepad", &Config::pad_focus_near, "input_logic"),
+        Text("pad_focus_far", "gamepad", &Config::pad_focus_far, "input_logic"),
+        Text("pad_aperture_open", "gamepad", &Config::pad_aperture_open, "input_logic"),
+        Text("pad_aperture_close", "gamepad", &Config::pad_aperture_close, "input_logic"),
+        Text("pad_dof_toggle", "gamepad", &Config::pad_dof_toggle, "photo_mode::tick"),
         Text("pad_pan_left", "gamepad", &Config::pad_yaw_left, "input_logic", "1.0.46 起改名为 pad_yaw_left"),
         Text("pad_pan_right", "gamepad", &Config::pad_yaw_right, "input_logic", "1.0.46 起改名为 pad_yaw_right"),
         Number("pad_look_speed", "gamepad", &Config::pad_look_speed, 10.0, 720.0, "input_logic"),
@@ -296,13 +306,47 @@ const std::vector<ConfigFieldSpec>& schema() {
         Bool("ultrawide_unlock", "camera", &Config::ultrawide_unlock, "photo_mode::enter"),
         Bool("takeover_current_camera", "camera", &Config::takeover_current_camera, "photo_mode::enter"),
 
+        // ---- [dof] 景深/对焦（门控 + CineCamera 组件通道；距离 cm，沿用旧版语义）----
+        Bool("dof_enabled", "dof", &Config::dof_enabled, "photo_mode::apply_dof_if_needed"),
+        Number("dof_focal_distance", "dof", &Config::dof_focal_distance, tuning::kDofFocalMinCm,
+               tuning::kDofFocalMaxCm, "photo_mode::apply_dof_if_needed"),
+        Number("dof_fstop", "dof", &Config::dof_fstop, tuning::kDofFstopMin, tuning::kDofFstopMax,
+               "photo_mode::apply_dof_if_needed"),
+        Number("dof_sensor_width", "dof", &Config::dof_sensor_width, tuning::kDofSensorMinMm,
+               tuning::kDofSensorMaxMm, "photo_mode::apply_dof_if_needed"),
+        Number("dof_focus_step", "dof", &Config::dof_focus_step, tuning::kDofFocusStepMinCm,
+               tuning::kDofFocusStepMaxCm, "photo_mode::tick（最小步进）"),
+        Number("dof_aperture_step", "dof", &Config::dof_aperture_step, tuning::kDofApertureStepMin,
+               tuning::kDofApertureStepMax, "photo_mode::tick"),
+        Deprecated("dof_nlp_enable",
+                   "已并入景深总开关（2026-11-08：NLP 档随总开关自动请求/释放，取证在 tuning.h）"),
+        Bool("dof_bokeh_gate", "dof", &Config::dof_bokeh_gate, "ue4ss_port_dof::ensure_dof_gate"),
+
         // ---- [look] 画面效果（后处理体积通道：本作 gameplay 视图里暗角是实测生效的）----
+        // 每项 = 独立开关 + 数值滑块；每次进入摄影模式时 reset_look_defaults() 会把五项恢复默认。
         Number("vignette", "look", &Config::vignette, tuning::kVignetteMin, tuning::kVignetteMax,
                "photo_mode::enter+tick"),
+        Bool("vignette_enabled", "look", &Config::vignette_enabled, "photo_mode::enter+tick"),
         Number("saturation", "look", &Config::saturation, 0.0, 2.0, "photo_mode::enter+tick"),
+        Bool("saturation_enabled", "look", &Config::saturation_enabled, "photo_mode::enter+tick"),
         Number("contrast", "look", &Config::contrast, 0.0, 2.0, "photo_mode::enter+tick"),
+        Bool("contrast_enabled", "look", &Config::contrast_enabled, "photo_mode::enter+tick"),
         Number("bloom", "look", &Config::bloom, 0.0, 20.0, "photo_mode::enter+tick"),
+        Bool("bloom_enabled", "look", &Config::bloom_enabled, "photo_mode::enter+tick"),
         Number("temperature", "look", &Config::temperature, -1.0, 1.0, "photo_mode::enter+tick"),
+        Bool("temperature_enabled", "look", &Config::temperature_enabled, "photo_mode::enter+tick"),
+        // 调色·进阶三件（2026-11-08 批次）：无独立开关，值回中性（= 默认）即不覆盖；范围
+        // 共同真源在 tuning.h（菜单 schema_map 的滑条范围也引用同一批常量）。同批十项判死
+        // 移除（取证在 tuning.h 顶部）。
+        Number("color_gain", "look", &Config::color_gain, tuning::kColorGainMin, tuning::kColorGainMax,
+               "photo_mode::enter+tick"),
+        Number("color_gamma", "look", &Config::color_gamma, tuning::kColorGammaMin, tuning::kColorGammaMax,
+               "photo_mode::enter+tick"),
+        Number("color_offset", "look", &Config::color_offset, tuning::kColorOffsetMin, tuning::kColorOffsetMax,
+               "photo_mode::enter+tick"),
+        // 色差（2.1 复活）：值走门控 + CineCamera 组件通道（DofPort），不走体积通道
+        Number("chromatic_aberration", "look", &Config::chromatic_aberration, 0.0, tuning::kChromaticAberrationMax,
+               "photo_mode::apply_dof_if_needed"),
 
         // ---- [effects] ----
         Bool("hide_player", "effects", &Config::hide_player, "photo_mode"),
@@ -368,6 +412,24 @@ const std::vector<ConfigFieldSpec>& schema() {
         Deprecated("interval_ms", "已移除并忽略（旧版 ImGui 面板轮询间隔）"),
         Deprecated("ui_scale", "已移除并忽略（旧版 ImGui 面板缩放）"),
         Deprecated("time_offset_compensation", "已在 1.0.66 移除并忽略（冻结渲染线程计时会导致移动视角卡顿）"),
+        // 调色·进阶十项判死（2026-11-08 实机探针：字段不存在或写入成功引擎不消费，取证在 tuning.h）
+        Deprecated("highlights", "已判死移除（本 build 无此字段），取证在 tuning.h"),
+        Deprecated("midtones", "已判死移除（本 build 无此字段），取证在 tuning.h"),
+        Deprecated("shadows", "已判死移除（本 build 无此字段），取证在 tuning.h"),
+        Deprecated("film_slope", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("film_toe", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("film_shoulder", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("white_temp", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("white_tint", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("bloom_threshold", "已判死移除（写入成功但引擎不消费），取证在 tuning.h"),
+        Deprecated("bloom_soft_knee", "已判死移除（本 build 无此字段），取证在 tuning.h"),
+        // 锐化/超采样整线判死（2026-11-08 三轮实机：写入通道无效 / 写入有效但画面无增益，取证在 tuning.h）
+        Deprecated("sharpness", "已判死移除（写入通道无效），取证在 tuning.h"),
+        Deprecated("screen_percentage", "已判死移除（写入有效但画面无增益），取证在 tuning.h"),
+        // 胶片颗粒（hotfix33 判死）：色差 2.1 轮复活后它仍是死的——两个 pass 都被 r.Tonemapper.Quality
+        // 档位整段跳过，复活只回了色差。判死时期它列在 legacy 清单里物理清除，清单删除后补登记，
+        // 否则旧配置里的残留键只打通用的「未知配置项」警告。
+        Deprecated("film_grain", "已判死移除（胶片颗粒 pass 被引擎档位跳过，2.1 复活只回了色差），取证在 tuning.h"),
     };
     return table;
 }
@@ -395,6 +457,38 @@ const char* mouse_vertical_mode_name(MouseVerticalMode mode) {
     return mode == MouseVerticalMode::Look ? "look" : "translate";
 }
 
+bool reset_look_defaults(Config& cfg) {
+    const Config defaults{};
+    bool changed = false;
+    const auto set_value = [&changed](double& dst, double def) {
+        if (dst != def) {
+            dst = def;
+            changed = true;
+        }
+    };
+    const auto set_flag = [&changed](bool& dst, bool def) {
+        if (dst != def) {
+            dst = def;
+            changed = true;
+        }
+    };
+    set_value(cfg.vignette, defaults.vignette);
+    set_value(cfg.saturation, defaults.saturation);
+    set_value(cfg.contrast, defaults.contrast);
+    set_value(cfg.bloom, defaults.bloom);
+    set_value(cfg.temperature, defaults.temperature);
+    set_value(cfg.color_gain, defaults.color_gain);
+    set_value(cfg.color_gamma, defaults.color_gamma);
+    set_value(cfg.color_offset, defaults.color_offset);
+    set_value(cfg.chromatic_aberration, defaults.chromatic_aberration);
+    set_flag(cfg.vignette_enabled, defaults.vignette_enabled);
+    set_flag(cfg.saturation_enabled, defaults.saturation_enabled);
+    set_flag(cfg.contrast_enabled, defaults.contrast_enabled);
+    set_flag(cfg.bloom_enabled, defaults.bloom_enabled);
+    set_flag(cfg.temperature_enabled, defaults.temperature_enabled);
+    return changed;
+}
+
 ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
     ConfigLoadResult result;
     result.source = source ? source : "config.ini";
@@ -409,37 +503,15 @@ ConfigLoadResult parse_config(const std::string& ini_text, const char* source) {
                                                          "effects", "ui", "misc"};
     std::unordered_map<std::string, std::string> seen_keys;  // 键名 -> 首次出现的 section
 
-    // 旧版 [dof] 段与对焦/光圈键位：功能已移除（本作不支持引擎景深），
-    // 旧配置文件里若还留着这些键，合并成一条提示后静默忽略，不逐键警告。
-    static const std::set<std::string> kLegacyDofKeys = {
-        "dof_enabled",        "dof_focal_distance", "dof_fstop",        "dof_sensor_width",
-        "dof_focus_step",     "dof_aperture_step",  "key_focus_near",   "key_focus_far",
-        "key_aperture_open",  "key_aperture_close", "pad_focus_near",   "pad_focus_far",
-        "pad_aperture_open",  "pad_aperture_close"};
-
-    // 色差与胶片颗粒的滑条/配置键已移除（两个 pass 都被引擎档位钉死，永远不会出画面）。
-    // 旧 config.ini 里残留这两项时合并成一条提示后静默忽略，与 [dof] 的处理一致。
-    static const std::set<std::string> kLegacyLookKeys = {"chromatic_aberration", "film_grain"};
+    // 旧版判死时期（hotfix32/34）曾把 [dof] 段与色差/颗粒键列进 legacy 清单物理清除；
+    // 2.1 轮功能复活后这些键名重新成为正式键，legacy 机制保留（ConfigLoadResult.legacy_keys
+    // 与 mod_app 的原子重写路径），当前没有需要清除的键。
 
     // 按 schema 统一赋值：类型错误保留默认，数值超范围 clamp 到边界，弃用键只告警一次。
     const auto assign = [&result, &warn_once, &seen_keys](const std::string& key, const std::string& value,
                                                           const std::string& section) {
         const ConfigFieldSpec* spec = find_spec(key);
         if (spec == nullptr) {
-            if (kLegacyLookKeys.count(key) != 0) {
-                result.legacy_keys.push_back(key);
-                warn_once("legacy:look",
-                          "配置里的色差/胶片颗粒已移除（本作这两个后处理 pass 被引擎档位钉死，永远不会"
-                          "出画面），已忽略并将从 config.ini 清理");
-                return;
-            }
-            if (kLegacyDofKeys.count(key) != 0) {
-                result.legacy_keys.push_back(key);
-                warn_once("legacy:dof",
-                          "配置里的景深相关项已废弃（本作不支持引擎景深，功能已移除），已忽略并将从 "
-                          "config.ini 清理");
-                return;
-            }
             warn_once(key, "未知配置项已忽略：" + key);
             return;
         }
@@ -632,7 +704,14 @@ std::string config_ini_text(const Config& c) {
         << "key_boost = " << c.key_boost << "\n"
         << "key_slow = " << c.key_slow << "\n"
         << "key_free_look = " << c.key_free_look << "\n"
-        << "; 景深/手动对焦：PAGE_UP 对焦拉近 / PAGE_DOWN 对焦拉远；[ 开大光圈（更虚化）/ ] 收小光圈（更实）\n"
+        << "; 景深总开关（与 [dof] dof_enabled 同一状态；门控 + CineCamera 组件通道）\n"
+        << "key_dof_toggle = " << c.key_dof_toggle << "\n"
+        << "; 对焦拉近/拉远（实际步进 = max(dof_focus_step, 当前距离×10%)，Shift 粗调 / Ctrl 微调）\n"
+        << "key_focus_near = " << c.key_focus_near << "\n"
+        << "key_focus_far = " << c.key_focus_far << "\n"
+        << "; [ 开大光圈（F 值减小、更虚化）/ ] 收小光圈（更实）\n"
+        << "key_aperture_open = " << c.key_aperture_open << "\n"
+        << "key_aperture_close = " << c.key_aperture_close << "\n"
         << "[control]\n"
         << "; 常规移动速度（单位/秒）；按住 key_boost 加速、key_slow 减速\n"
         << "move_speed = " << c.move_speed << "\n"
@@ -693,6 +772,13 @@ std::string config_ini_text(const Config& c) {
         << "; 升降：默认 RT 上 / LT 下；单键绑定 RT/LT 保留模拟量行程，换其它按钮则为按下/松开\n"
         << "pad_vertical_up = " << c.pad_vertical_up << "\n"
         << "pad_vertical_down = " << c.pad_vertical_down << "\n"
+        << "; 景深/对焦（沿用旧版默认；LB/RB 单按默认是滚转，组合期间会连带滚转，可改键避开）：\n"
+        << "; LB+BACK 对焦拉近 / LB+START 对焦拉远；RB+BACK 开大光圈 / RB+START 收小光圈\n"
+        << "pad_focus_near = " << c.pad_focus_near << "\n"
+        << "pad_focus_far = " << c.pad_focus_far << "\n"
+        << "pad_aperture_open = " << c.pad_aperture_open << "\n"
+        << "pad_aperture_close = " << c.pad_aperture_close << "\n"
+        << "pad_dof_toggle = " << c.pad_dof_toggle << "\n"
         << "; 右摇杆转视角速度（度/秒，全行程）\n"
         << "pad_look_speed = " << c.pad_look_speed << "\n"
         << "; 左摇杆移动速度占 move_speed 的比例\n"
@@ -710,17 +796,54 @@ std::string config_ini_text(const Config& c) {
         << "; 接管当前相机（UUU 式）：true=不 spawn 独立相机、不切 ViewTarget，每帧写当前相机 POV；\n"
         << "; 进入时接管失败会自动回退到独立相机（spawn + SetViewTargetWithBlend）。false=始终用独立相机\n"
         << "takeover_current_camera = " << (c.takeover_current_camera ? "true" : "false") << "\n\n"
+        << "[dof]\n"
+        << "; 景深/对焦（2.1 复活）：走「渲染门控（NLP 过场渲染档 + tagged cvar）+ CineCamera 组件通道」。\n"
+        << "; 启用任一项（含 [look] 的色差）会自动切到独立相机后端并打开门控；退出全部还原。\n"
+        << "; 距离单位 cm。旧 config.ini 里若还留着这些键（判死时期被清除过），会按原值继续生效。\n"
+        << "; 景深总开关（也可用 [keys] key_dof_toggle 在模式内随时开关）\n"
+        << "dof_enabled = " << (c.dof_enabled ? "true" : "false") << "\n"
+        << "; 对焦距离（cm）\n"
+        << "dof_focal_distance = " << c.dof_focal_distance << "\n"
+        << "; 光圈 F 值（越小越虚化）\n"
+        << "dof_fstop = " << c.dof_fstop << "\n"
+        << "; 传感器宽度（mm，影响虚化幅度）\n"
+        << "dof_sensor_width = " << c.dof_sensor_width << "\n"
+        << "; 对焦步进（cm）：最小步进，实际步进 = max(本值, 当前距离×10%)\n"
+        << "dof_focus_step = " << c.dof_focus_step << "\n"
+        << "; 光圈步进（F 值每次增/减多少）\n"
+        << "dof_aperture_step = " << c.dof_aperture_step << "\n"
+        << "; bokeh gate cvar 取证开关（默认 false）：true 才写 r.DOF.{Gather,Recombine}.EnableBokehSettings /\n"
+        << "; Recombine.Quality——2026-11-07 崩溃二分首位嫌疑（shipping 可能无 bokeh 实现）；\n"
+        << "; false 时 DOF 仍走 ShowFlag/画质/kernel 半径闸门+组件通道，散景形状退化为默认。\n"
+        << "dof_bokeh_gate = " << (c.dof_bokeh_gate ? "true" : "false") << "\n\n"
         << "[look]\n"
+        << "; 画面效果五项：每项 = 独立开关 + 数值滑块。\n"
+        << "; 开关 false 只停用这一项、保留滑块值；每次进入摄影模式时五项都会恢复默认参数。\n"
         << "; 暗角强度（0=关闭，1~3 明显；走后处理体积通道，本作 gameplay 视图实测有效）\n"
-        << "vignette = " << c.vignette << "\n\n"
+        << "vignette = " << c.vignette << "\n"
+        << "vignette_enabled = " << (c.vignette_enabled ? "true" : "false") << "\n\n"
         << "; 饱和度倍率（1=原样，<1 去色，>1 更艳）\n"
-        << "saturation = " << c.saturation << "\n\n"
+        << "saturation = " << c.saturation << "\n"
+        << "saturation_enabled = " << (c.saturation_enabled ? "true" : "false") << "\n\n"
         << "; 对比度倍率（1=原样）\n"
-        << "contrast = " << c.contrast << "\n\n"
+        << "contrast = " << c.contrast << "\n"
+        << "contrast_enabled = " << (c.contrast_enabled ? "true" : "false") << "\n\n"
         << "; 泛光强度（0=不覆盖，1~5 明显）\n"
-        << "bloom = " << c.bloom << "\n\n"
+        << "bloom = " << c.bloom << "\n"
+        << "bloom_enabled = " << (c.bloom_enabled ? "true" : "false") << "\n\n"
         << "; 冷暖色调（-1 偏冷，0=不覆盖，+1 偏暖）\n"
-        << "temperature = " << c.temperature << "\n\n"
+        << "temperature = " << c.temperature << "\n"
+        << "temperature_enabled = " << (c.temperature_enabled ? "true" : "false") << "\n\n"
+        << "; 调色·进阶三件（与饱和/对比同一颜色分级通道；菜单在「调色·进阶」组）。\n"
+        << "; 中性值 = 不覆盖该项（交还游戏自己的设置）；离开中性才写覆盖，进入摄影模式恢复默认。\n"
+        << "; 亮度增益（1=原样，0.5 压暗，2.0 提亮）\n"
+        << "color_gain = " << c.color_gain << "\n"
+        << "; 伽马（1=原样，<1 提亮中间调，>1 压暗中间调）\n"
+        << "color_gamma = " << c.color_gamma << "\n"
+        << "; 黑位偏移（0=原样，-压黑更深，+提黑发灰；0.1 已明显）\n"
+        << "color_offset = " << c.color_offset << "\n"
+        << "; 色差（0=不覆盖，1~3 明显；走门控+CineCamera 组件通道，需独立相机后端）\n"
+        << "chromatic_aberration = " << c.chromatic_aberration << "\n\n"
         << "[effects]\n"
         << "hide_player = " << (c.hide_player ? "true" : "false") << "\n"
         << "; 进入摄影模式时隐藏游戏 HUD（退出时恢复原可见性）\n"
