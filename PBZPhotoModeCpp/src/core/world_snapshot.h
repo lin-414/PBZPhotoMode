@@ -11,13 +11,39 @@ namespace pbzpm {
 //
 // 空指针（关卡卸载/切换的窗口期）不换代：否则每次读不到世界都会误作废快照，
 // 把同一世界的原始值丢掉，退出时就再也还原不回去。
+//
+// 换代收尾（2.2.1 修复）：UWorld 变化时 WorldSettings 往往还没跟上（PersistentLevel
+// 尚未赋值/尚未被读），基线里留着上一代的 settings 指针；几十到几百毫秒后第一次读
+// 到新世界的 settings，指针追平。这次追平是**同一次换代的收尾**，不是第二次换代——
+// 2.2.0 在这里误触发 invalidate_world_scoped_state()：实机 2026-11-09 21:09 进图
+// 180ms 后进摄影模式，冻结刚登记的 14 个布料 + 176 个骨骼动画记账被整批清空，
+// 退出时无可恢复，布料留在挂起态，解冻即拉条。追平用 settings_pending_ 闩锁吸收；
+// 追平之后世界没变而 settings 再变（分区流送/世界设置对象重建），仍按换代保护。
 class WorldIdentity {
 public:
-    // 返回 true 表示本次观察发生了换代（调用方可据此清缓存/打日志）
-    bool observe(const void* world, const void* settings) {
+    // 返回 true 表示本次观察发生了换代（调用方可据此清缓存/打日志）。
+    // catchup 出参（可空）：本次是换代收尾（settings 首次追平）时置 true，调用方可打一条
+    // 区别于换代的日志，实机日志里能与「误第二次换代」直接区分开。
+    bool observe(const void* world, const void* settings, bool* catchup = nullptr) {
+        if (catchup != nullptr) *catchup = false;
         bool changed = false;
-        if (world != nullptr && last_world_ != nullptr && world != last_world_) changed = true;
-        if (settings != nullptr && last_settings_ != nullptr && settings != last_settings_) changed = true;
+        bool world_changed = false;
+        bool settings_changed = false;
+        if (world != nullptr && last_world_ != nullptr && world != last_world_) world_changed = true;
+        if (settings != nullptr && last_settings_ != nullptr && settings != last_settings_) settings_changed = true;
+        if (world_changed) {
+            changed = true;
+            // settings 在同一次观测里也变了：新 settings 基线当帧已记下，无需等追平；
+            // 只在世界换了、settings 还没读到时挂起，等收尾。
+            settings_pending_ = !settings_changed;
+        } else if (settings_changed) {
+            if (settings_pending_) {
+                settings_pending_ = false;  // 换代收尾：补齐本代基线，不算换代
+                if (catchup != nullptr) *catchup = true;
+            } else {
+                changed = true;  // 世界没变而 settings 变了：仍按换代处理
+            }
+        }
         if (world != nullptr) last_world_ = world;
         if (settings != nullptr) last_settings_ = settings;
         if (changed) ++generation_;
@@ -30,6 +56,8 @@ public:
 private:
     const void* last_world_{nullptr};
     const void* last_settings_{nullptr};
+    // UWorld 刚换代、WorldSettings 还没追平时的闩锁：下一次 settings 变化视为收尾。
+    bool settings_pending_{false};
     std::uint64_t generation_{0};
 };
 

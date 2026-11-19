@@ -50,6 +50,15 @@ PbzfmField Float(const char* group, const char* key, const char* label, double m
     return f;
 }
 
+// 取景角度滑条：值是实时相机姿态（不落盘），需要摄影模式激活才可用。
+PbzfmField PoseAngle(const char* group, const char* key, const char* label, double mn, double mx,
+                     double (*get)(const Config&), void (*set)(Config&, double), int axis) {
+    PbzfmField f = Float(group, key, label, mn, mx, 1.0, "%.1f", get, set);
+    f.pose_axis = axis;
+    f.requires_photo_mode = true;
+    return f;
+}
+
 PbzfmField Enum(const char* group, const char* key, const char* label, const char* const* options, int count,
                 int (*get)(const Config&), void (*set)(Config&, int)) {
     PbzfmField f;
@@ -90,7 +99,7 @@ constexpr const char* kPadGroup = "#group_pad";
 
 const std::vector<PbzfmField>& pbzfm_fields() {
     static const std::vector<PbzfmField> table = {
-        // ---- 快捷键（键盘；手柄组合键多按钮绑定表达不了，仍留在 config.ini 的 [gamepad]） ----
+        // ---- 快捷键（键盘；手柄组合键多按钮绑定表达不了，仍留在 settings.json 的 pad_* 字段） ----
         Key(kKeysGroup, "key_toggle", "#key_toggle", &Config::key_toggle,
             [](const KeyMap& k) { return k.toggle; }),
         Key(kKeysGroup, "key_freeze", "#key_freeze", &Config::key_freeze,
@@ -274,6 +283,17 @@ const std::vector<PbzfmField>& pbzfm_fields() {
                  c.mouse_vertical_mode = static_cast<MouseVerticalMode>(v);
              }),
 
+        // ---- 取景角度（摄影模式激活时可用；拖滑条 = 直接设绝对角，鼠标/手柄在此基础上继续转）----
+        PoseAngle(kCamGroup, "cam_pitch", "#cam_pitch", -89.0, 89.0,
+                  [](const Config& c) { return c.cam_pitch; },
+                  [](Config& c, double v) { c.cam_pitch = v; }, 0),
+        PoseAngle(kCamGroup, "cam_yaw", "#cam_yaw", -180.0, 180.0,
+                  [](const Config& c) { return c.cam_yaw; },
+                  [](Config& c, double v) { c.cam_yaw = v; }, 1),
+        PoseAngle(kCamGroup, "cam_roll", "#cam_roll", -180.0, 180.0,
+                  [](const Config& c) { return c.cam_roll; },
+                  [](Config& c, double v) { c.cam_roll = v; }, 2),
+
         // ---- 相机后端（可热切换：改这一项立刻拆旧后端、建新后端，不用退出重进）----
         Bool(kCamGroup, "takeover_current_camera", "#takeover_current_camera",
              [](const Config& c) { return c.takeover_current_camera; },
@@ -352,7 +372,7 @@ const std::vector<PbzfmField>& pbzfm_fields() {
               [](const Config& c) { return c.color_offset; },
               [](Config& c, double v) { c.color_offset = v; }),
 
-        // ---- 手柄（组合键绑定仍留在 config.ini 的 [gamepad]） ----
+        // ---- 手柄（组合键绑定仍留在 settings.json 的 pad_* 字段） ----
         Float(kPadGroup, "pad_look_speed", "#pad_look_speed", 10.0, 720.0, 5.0, "%.0f",
               [](const Config& c) { return c.pad_look_speed; },
               [](Config& c, double v) { c.pad_look_speed = v; }),

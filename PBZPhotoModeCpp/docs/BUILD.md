@@ -58,11 +58,13 @@ UE4SS 的 C++ mod 目录结构（注意 `dlls` 子目录，且**不需要写 mod
 <影之刃零>\platform\steam\ue4ss\Mods\PBZPhotoModeCpp\
 ├─ dlls\
 │  └─ PBZPhotoModeCpp.dll
-├─ config.ini
+├─ PBZPhotoModeCpp.modsmenu.json（随包，Mods Menu 描述符）
+├─ languages\（随包，UE4SS 控制台词典）
+├─ PBZPhotoModeCpp.settings.json（首次运行生成）
 └─ enabled.txt
 ```
 
-打包：把上面的目录结构打成 zip（`dist/PBZPhotoModeCpp_1.0.75-cpp.zip`，版本号与 `src/core/version.h` 的 `PBZPM_VERSION` 保持一致）。
+打包：把上面的目录结构打成 zip（`dist/PBZPhotoModeCpp_2.2.0.zip`，版本号与 `src/core/version.h` 的 `PBZPM_VERSION` 保持一致）。
 
 ## 4. 编译期踩过的坑（再遇到别重复排查）
 

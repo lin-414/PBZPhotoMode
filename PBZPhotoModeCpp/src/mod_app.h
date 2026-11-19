@@ -1,5 +1,16 @@
 #pragma once
 
+// windows.h 的 min/max 宏会打坏 std::min / std::numeric_limits；本文件先于 UE4SS 头定义它。
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifdef min
+#undef min
+#endif
+#ifdef max
+#undef max
+#endif
+
 // 只在真正编译 DLL 时需要 UE4SS 头文件；核心层测试不包含这个文件。
 #include <Mod/CppUserModBase.hpp>
 
@@ -13,7 +24,9 @@
 #include "core/input_logic.h"
 #include "core/mod_runtime.h"
 #include "core/photo_mode.h"
+#include "mods_menu_client.h"
 #include "pbzfm_client.h"
+#include "pbzfm_client_lang.h"
 
 namespace pbzpm {
 
@@ -22,7 +35,9 @@ class Win32InputSource;
 class ProcessFreezer;
 
 // UE4SS mod 本体：把输入/引擎事件翻译成 core 层 Intent，再把结果交给 PhotoMode。
-// 游戏内无任何菜单界面（v1.8.0 起纯快捷键）；UI 只有 UE4SS 控制台里的诊断面板。
+// 游戏内设置由两条可选前端承载：PBZFM（F8 覆盖菜单，全量设置含键位捕获）与
+// SLEEP 的 Mods Menu 149（UE4SS Bridge，68 项设置）；两者都读写同一份
+// PBZPhotoModeCpp.settings.json。未装任何前端时保持纯快捷键模式。
 class PhotoModeMod final : public RC::CppUserModBase, public PbzfmClient::Host {
 public:
     PhotoModeMod();
@@ -38,18 +53,25 @@ public:
     auto render_tab_impl() -> void;
 
     // ---- PbzfmClient::Host（PBZFM 菜单框架桥；见 pbzfm_client.h） ----
-    // 客户端在框架线程上只调这四个入口：取配置副本 / 提交配置与动作 / 打日志。
+    // 客户端在框架线程上只调这些入口：取配置副本 / 提交配置与动作 / 打日志。
     // 所有引擎交互由引擎 Tick 线程在 pbzfm_apply_pending() 里执行。
-    // 只声明不内联：log 要解引用 Ue4ssPort（此处仅前置声明）。
     auto mod_dir() -> std::string override;
     auto current_config() -> Config override;
     auto submit_config(const Config& cfg) -> void override;
-    auto submit_config_preview(const Config& cfg) -> void override;  // 滑条拖动实时预览（不落盘不打日志）
+    auto submit_config_preview(const Config& cfg) -> void override;
     auto submit_command(const PbzfmCommand& cmd) -> void override;
     auto log(LogLevel level, const std::string& msg) -> void override;
+    // 取景角度滑条：框架线程只做无锁中转（pending 写 / 快照读），
+    // 真正改姿态在引擎 Tick 线程（apply_pending_pose_angles），避免碰 PhotoMode 的竞态。
+    auto photo_mode_active() const -> bool override;
+    auto pose_angle(int axis, double* degrees) const -> bool override;
+    auto set_pose_angle(int axis, double degrees) -> bool override;
 
 private:
     void reload_config();
+    // 引擎 Tick 线程：消费滑条写入，并把最新姿态写进 pose_angle_live_ 供菜单读取。
+    void apply_pending_pose_angles();
+    void publish_pose_angles();
     void bind_engine_tick();
     void on_engine_tick(double delta_seconds);
     void on_engine_tick_post();
@@ -58,20 +80,35 @@ private:
     void ensure_axis_hook();
     void handle_intent(const Intent& intent, double dt);
     void handle_toggle();
+    // 退出摄影模式后把 [look]/调色恢复默认并写回 settings.json + 刷新两个菜单显示。
+    // 进入路径有单独的“成功后才落盘、失败回滚”逻辑（见 handle_toggle）。
+    void reset_look_after_leave(const char* reason);
     // 帧定格（F7）：独立 Win32 线程轮询快捷键；定格时挂起本进程除自己外的所有线程，
     // 画面停在最后一帧，再按一次恢复。线程不碰任何 UE 对象/锁，只用 Win32 API。
     void frame_freeze_watch_loop();
     // 画面定格准备/恢复：在引擎 Tick 线程处理 watcher 的请求，负责与摄影模式已有的
     // Wwise 状态协调（watcher 不能碰 UE 对象，也不能在挂起线程时打印日志）。
     void handle_frame_freeze_request(const Config& cfg, bool mode_active);
-    void pbzfm_apply_pending();  // 消化 PBZFM 菜单提交的配置与动作（引擎 Tick，持 mutex_）
+    // PBZFM 菜单提交的配置与动作：引擎 Tick 线程应用、写回 settings.json 并镜像到菜单子集。
+    void pbzfm_apply_pending();
+    // Mods Menu 149（SLEEP）通过 UE4SS Bridge 提交的配置：引擎 Tick 线程应用并写回 settings.json。
+    void apply_config_from_mods_menu(const Config& incoming);
     void log_input_diagnostics(const Intent& intent, double dt);
     auto mod_directory() -> std::string;
+
+    // PBZFM 取景角度滑条的三轴中转（0=pitch 1=yaw 2=roll）：
+    // pending 由框架线程写、引擎 Tick 读；live 由引擎 Tick 写、框架线程读。位掩码标记待应用轴。
+    std::atomic<int> pose_angle_mask_{0};
+    std::atomic<double> pose_angle_pending_[3]{};
+    std::atomic<double> pose_angle_live_[3]{};
+    std::atomic<bool> pose_angle_active_{false};  // 激活状态的无锁镜像（框架线程判断滑条是否可用）
 
     std::unique_ptr<Ue4ssPort> port_;
     std::unique_ptr<PhotoMode> mode_;
     Config cfg_{};
     KeyMap keys_{};
+    bool config_read_error_{false};  // settings.json 存在但读不了：本会话不把默认值写回文件/菜单
+    bool settings_created_{false};   // 本次 reload 新建了 settings.json（迁移场景：菜单子集优先）
     // 引擎侧编排（进/退、tick 分工、配置应用与实时开关差异）放在 core/ModRuntime，
     // 依赖按引用注入，便于用 FakeEngine 覆盖完整进退路径（见 tests/test_mod_runtime.cpp）。
     std::unique_ptr<ModRuntime> runtime_;
@@ -96,6 +133,7 @@ private:
 
     // 保护 cfg_ / keys_ / input_ / mode_ 与诊断字段：引擎 Tick 线程是主写者，
     // PBZFM 控制台渲染线程与 mod 卸载路径会读/偶尔写；持锁期间不做全对象扫描等重活。
+    // （3.0 已移除 PBZFM 客户端，这里指 UE4SS 控制台诊断面板线程。）
     std::mutex mutex_{};
     bool tick_hook_installed_{false};
     // GameViewportClientTickPost 是否注册成功：接管模式的 POV 只能写在这个点之后。
@@ -139,18 +177,21 @@ private:
     bool input_diag_enabled_{false};    // 每秒输入诊断默认关（反射摘要+日志落盘有开销），mod 目录放 debug_input_diag.txt 开启
     bool menu_open_last_{false};        // PBZFM 菜单开/关只在状态变化时打一行日志
 
-    // ---- PBZFM 菜单框架客户端（可选组件；框架线程只写下面三个字段，引擎 Tick 消化） ----
-    // 构造期即创建（start() 在引擎初始化时才调）：控制台面板首帧就能共用 lang() 词典
+    // ---- PBZFM 菜单框架客户端（可选组件；框架线程只写队列，引擎 Tick 消化） ----
+    // 词典只有一份：pbzfm_->lang()（控制台诊断面板与 F8 自绘页共用）。
+    // H-6：这里以前还有一份 PbzmI18n lang_，导致控制台帮助文案不跟随 PBZFM 切语言。
     std::unique_ptr<PbzfmClient> pbzfm_{std::make_unique<PbzfmClient>()};
     // 保护 pbzfm_pending_cfg_ / pbzfm_cfg_dirty_ / pbzfm_commands_：PBZFM 框架线程写入，
     // 引擎 Tick 消费；锁内只搬移/拷贝，不调用框架 API。
     std::mutex pbzfm_mutex_;
     Config pbzfm_pending_cfg_{};
     bool pbzfm_cfg_dirty_{false};
-    bool pbzfm_cfg_preview_{false};  // 最近一次提交是滑条拖动预览：引擎 Tick 应用但不打日志
+    bool pbzfm_cfg_preview_{false};  // 最近一次提交是滑条拖动预览：引擎应用但不打日志
     std::vector<PbzfmCommand> pbzfm_commands_;
-    // 菜单「先关再执行」的重试计数（引擎 Tick 线程独占读写）
-    int pbzfm_menu_defer_count_{0};
+    int pbzfm_menu_defer_count_{0};  // 「先关菜单再进入摄影模式」的重试计数（引擎 Tick 独占）
+    // Mods Menu 149（SLEEP）的 UE4SS Bridge 客户端；未安装 Bridge 时 start() 返回 false，
+    // 之后所有入口都空转。文件写盘与轮询只在引擎 Tick（poll）和配置提交处发生。
+    std::unique_ptr<ModsMenuClient> mods_menu_{std::make_unique<ModsMenuClient>()};
 };
 
 }  // namespace pbzpm

@@ -78,6 +78,18 @@ public:
     // RedrawViewports 之前）：这是唯一能把 POV 写进“本帧渲染”的时机。
     void write_takeover_pov_now();
 
+    // 独立相机后端的 FOV 每帧重申（与接管通道同一个写点：由 mod_app 在 GameViewportClient::Tick
+    // 之后、RedrawViewports 之前调用）。
+    // 背景（2026-11-12 实机）：接管通道每帧写 POV（含 FOV），所以 FOV 稳；一旦因为色差/景深切到
+    // 独立相机（组件通道前提），FOV 只在切换那一帧写一次组件属性——之后组件通道
+    // （SetLensSettings/SetFocusSettings）或引擎自己按焦距+Filmback 重建镜头派生状态时，渲染用的
+    // FOV 会被打回默认值，现象就是「调完 FOV 再动色差，FOV 跳回默认」。
+    void reassert_camera_fov_now();
+    // 独立相机后端的 FOV 写入：组件（Lens/FieldOfView 双载体 + CineCamera 焦距联动）+ 本帧 POV。
+    bool write_camera_fov(double fov, bool include_pov);
+    // 把会话 FOV 写进本帧渲染用的 POV（CameraCache.POV）；只在 ViewTarget 确实是我们相机时写。
+    bool write_view_pov_fov(double fov);
+
     // 画面效果（暗角/饱和/对比/泛光/冷暖）：写进自建后处理体积。
     // 体积之后还有相机 POV 的 PostProcessSettings（weight=1，最后覆盖体积）；本作画面里的暗角/泛光
     // 由游戏自己的镜头/画质设置提供，因此 set_look 额外把这两项写进 CameraCache.POV，且在 GVC Tick 后每帧重申。
@@ -105,12 +117,28 @@ public:
     // 调色·进阶诊断（一次性，只读）：游戏 POV 对三件存活字段（增益/伽马/黑位）的
     // bOverride_* 标志+原值。2026-11-08 实机已用一轮：13 项全 覆盖0，排除 POV 压制后十项判死；
     // 保留供游戏更新后复查（覆盖=1 时需扩 POV 重申通道）。只在调色·进阶任一项活跃时打。
-    bool look_pov_pro_logged_{false};
+    // 调色家族诊断（一次性，只读）：游戏 POV 对饱和/对比/增益/伽马/黑位与颜色分级强度的
+    // bOverride_* 标志+原值。2026-11-08 只查过增益/伽马/黑位（全 覆盖0），饱和/对比从未查过；
+    // 2026-11-12 实机饱和 0.22~1.94 写入/回读全对却画面零变化 → 本版补上这两项并扩 POV 重申通道。
+    bool look_pov_color_logged_{false};
     // POV 上还留着本 mod 写的暗角/泛光覆盖（bOverride=1+值）。定格/独立相机下 POV 不被
     // UpdateCamera 重建，失活后必须显式写回 覆盖0 才能撤掉残留，否则旧值永远压过体积
     //（重置/开关按钮画面不动的根因）；撤干净后才允许 apply_look_to_camera_pov 早退。
     bool pov_vignette_latched_{false};
     bool pov_bloom_latched_{false};
+    // 调色家族（饱和/对比/增益/伽马/黑位）与颜色分级强度的 POV 重申闩锁：与暗角/泛光同一套纪律
+    //（失活后继续跑到 POV 撤掉 bOverride，撤干净才允许早退）。为什么它们也要走 POV 通道：
+    // 相机组件/POV 的 PostProcessSettings 在合成顺序里排在体积之后（weight=1），而 DOF 组件通道把
+    // 管理器 POV 的整份 FPostProcessSettings memcpy 进相机组件（语义是「保留游戏自己的调色/曝光」）
+    // ——游戏自己 override 的调色字段就沿着这条链每帧盖回体积：体积里读回全对、画面零变化。
+    bool pov_saturation_latched_{false};
+    bool pov_contrast_latched_{false};
+    bool pov_gain_latched_{false};
+    bool pov_gamma_latched_{false};
+    bool pov_offset_latched_{false};
+    bool pov_color_grading_latched_{false};
+    bool pov_color_logged_{false};
+    bool pov_color_clear_logged_{false};
     bool pov_look_clear_logged_{false};
     // 每次“写入值发生变化”都回读一遍体积里的实际值：写入成功不等于引擎认账
     //（hotfix29 实机：色差 1.98 / 颗粒 7.68 / 饱和 0.74 / 对比 0.81 全都写了却没画面变化，
@@ -282,6 +310,14 @@ private:
     bool takeover_pose_known_{false};
     CameraPose takeover_pose_{};
     double takeover_fov_{90.0};
+    // 会话 FOV 记账（独立相机后端的每帧重申用）：apply_fov 一进来就记；接管通道由 takeover_fov_
+    // 携带同一个值。独立相机下 FOV 会被组件通道/引擎派生状态改写，所以每帧拿这里的值重申。
+    double applied_fov_{0.0};
+    bool applied_fov_known_{false};
+    bool fov_channel_logged_{false};
+    bool fov_divergence_logged_{false};
+    int fov_divergence_seen_{0};
+    int fov_reassert_writes_{0};
     // ---- 自建的无界后处理体积（画面效果专用）----
     // 「画面效果」（暗角/饱和/对比/泛光/冷暖）写在这个体积的 Settings 上：
     // 本作 gameplay 视图里只有体积通道会被采纳。退出/关闭效果时销毁；世界换代时引擎已销毁它，只清指针。

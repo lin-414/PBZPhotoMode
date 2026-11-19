@@ -8,11 +8,19 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <vector>
+
+// Documents 已知文件夹（框架 0.7.6+ 的配置实例写在 Documents\PBZ\PBZFM\PBZFM.ini）
+#include <shlobj.h>
+#pragma comment(lib, "shell32.lib")
+#pragma comment(lib, "ole32.lib")
 
 #include <imgui.h>
 
+#include "core/config_json.h"
 #include "core/input_logic.h"
+#include "core/lang_follow.h"
 #include "core/look_preset.h"
 #include "core/version.h"
 #include "pbzfm_schema_map.h"
@@ -32,7 +40,7 @@ namespace {
 // 框架侧的 section 标题（根节点名；品牌名，保持 ASCII）
 constexpr const char* kSectionName = "PBZ Photo Mode";
 // 树节点名 / 页名走词典键 #node_settings / #node_status / #group_*：
-// 注册前先按 menu_language（auto=跟随 PBZFM.ini）解析语言，用翻译后的名字注册。
+// 注册前先按 menu_language（auto=跟随 PBZFM 当前语言）解析语言，用翻译后的名字注册。
 // 注意：树节点名注册后固化，游戏内切语言不重命名（重启生效）；页内内容仍实时切换。
 // 等框架 DLL 出现的轮询窗口：250ms × 2400 次 = 10 分钟；装了 PBZFM 时它由 UE4SS
 // 一并加载（先后不定），没装就安静退回纯快捷键模式
@@ -50,8 +58,51 @@ double SteadySeconds() {
     return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
-// 原子写小文本文件（风格预设槽位）：临时文件 + 原子替换（save_config_file 同款语义，
-// 但落盘内容由调用方给定，不是整份 config.ini）。
+// 框架的"跟随系统"（language = auto）实际落到的语言。映射与框架
+// i18n.cpp 的 MapSystemLangToSupported 完全一致：zh/en/ja/ko 之外的系统语言
+// 回退 en-US（不是 zh-CN，否则非中文用户会看到看不懂的界面）。
+std::string system_language_tag() {
+    const LANGID langid = ::GetUserDefaultUILanguage();
+    if (langid == 0) return "en-US";  // 系统没有可用的用户 UI 语言
+    switch (PRIMARYLANGID(langid)) {
+        case 0x04: return "zh-CN";
+        case 0x09: return "en-US";
+        case 0x11: return "ja-JP";
+        case 0x12: return "ko-KR";
+        default: return "en-US";
+    }
+}
+
+// 大小写/首尾空白不敏感的 "auto" 判定（手改 ini 可能写成 Auto / " auto "）
+bool is_auto_language(const std::string& value) {
+    const size_t b = value.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    const size_t e = value.find_last_not_of(" \t\r\n");
+    if (e - b + 1 != 4) return false;
+    static const char kAuto[] = "auto";
+    for (size_t i = 0; i < 4; ++i) {
+        char c = value[b + i];
+        if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        if (c != kAuto[i]) return false;
+    }
+    return true;
+}
+
+// 框架 0.7.6+ 的唯一写入点。取不到已知文件夹（异常配置）时返回空路径，
+// 调用方保持现有语言不动，绝不猜路径。
+std::filesystem::path pbzfm_user_ini_path() {
+    PWSTR raw = nullptr;
+    if (FAILED(::SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &raw)) || raw == nullptr) {
+        if (raw != nullptr) ::CoTaskMemFree(raw);
+        return {};
+    }
+    const std::filesystem::path docs(raw);
+    ::CoTaskMemFree(raw);
+    return docs / "PBZ" / "PBZFM" / "PBZFM.ini";
+}
+
+// 原子写小文本文件（风格预设槽位）：临时文件 + 原子替换（save_config_json_file 同款语义，
+// 但落盘内容由调用方给定，不是整份 settings.json）。
 bool save_text_file_atomic(const std::string& path, const std::string& text, std::string* error) {
     const std::string tmp = path + ".tmp";
     {
@@ -220,13 +271,19 @@ PbzfmClient::~PbzfmClient() {
     stop();
 }
 
-void PbzfmClient::start(Host* host) {
-    if (!host || worker_.joinable()) return;
+void PbzfmClient::attach_host(Host* host) {
+    if (host == nullptr || host_ != nullptr) return;
     host_ = host;
+    std::lock_guard<std::mutex> lock(save_mutex_);
+    save_path_ = (std::filesystem::path(host->mod_dir()) / "PBZPhotoModeCpp.settings.json").string();
+}
+
+void PbzfmClient::start(Host* host) {
+    attach_host(host);
+    if (host_ == nullptr || worker_.joinable()) return;
     g_client_self = this;
     {
         std::lock_guard<std::mutex> lock(save_mutex_);
-        save_path_ = (std::filesystem::path(host->mod_dir()) / "config.ini").string();
         save_quit_ = false;
     }
     saver_ = std::thread([this] { saver_main(); });
@@ -263,7 +320,7 @@ void PbzfmClient::stop() {
 void PbzfmClient::sync_from_config(const Config& cfg) {
     if (!alive_.load(std::memory_order_acquire)) return;
     std::lock_guard<std::mutex> lock(mirror_mutex_);
-    mirror_ = cfg;  // 自绘页每次渲染都读 mirror_，重载后显示值即跟随 config.ini
+    mirror_ = cfg;  // 自绘页每次渲染都读 mirror_，重载后显示值即跟随 settings.json
     ++mirror_generation_;  // 外部重载：丢弃渲染线程手里的旧草案，别让拖动中的值回写覆盖它
 }
 
@@ -316,9 +373,13 @@ void PbzfmClient::worker_main() {
 
 void PbzfmClient::register_all() {
     lang_.RescanLanguages(host_->mod_dir(), true);
+    // 先取宿主配置副本，再锁 mirror：host_current_config() 会拿引擎侧的 mutex_，
+    // 而引擎 Tick 的 sync_from_config() 持 mutex_ 后再拿 mirror_mutex_；反过来
+    // 持 mirror_mutex_ 调 current_config() 会形成 ABBA 死锁（启动注册与首帧竞争时）。
+    const Config initial_config = host_->current_config();
     {
         std::lock_guard<std::mutex> lock(mirror_mutex_);
-        mirror_ = host_->current_config();
+        mirror_ = initial_config;
         ++mirror_generation_;
     }
     refresh_language();  // 树节点名按启动时语言注册；此后语言变化经 RenameSection 热改名
@@ -375,7 +436,7 @@ void PbzfmClient::register_all() {
     if (api_.VersionString != nullptr && api_.VersionString() != nullptr) fw = api_.VersionString();
     host_->log(LogLevel::Info,
                std::string("已接入 PBZFM 菜单框架 v") + fw + "：游戏中按呼出键（默认 F8）→ " + kSectionName +
-               "，设置实时生效并写回 config.ini（词典从 languages/*.json 加载，默认 en-US，对照它改译文或新增语言）");
+               "，设置实时生效并写回 settings.json（词典从 languages/*.json 加载，默认 en-US，对照它改译文或新增语言）");
 }
 
 // ---- 自绘页公共部分（框架渲染线程） ----
@@ -410,6 +471,25 @@ bool PbzfmClient::ensure_imgui() {
         return false;
     }
     host_->log(LogLevel::Info, std::string("PBZFM 自绘页 ImGui 版本匹配：") + version);
+
+    // ImGui 1.91.2 起新增「同一个 ID 被多个悬停项重复提交」的调试检查：命中时给该行描红边，
+    // 并在光标处弹出红框「Programmer error: N visible items with conflicting ID!」
+    // （imgui.cpp 的 ItemHoverable/EndFrame 两处；1.91.2 的 #8030 就是为这类叠加写法加的提示）。
+    // 框架的 v4 自绘滑条 PBZFM_SliderFloatEx 走的正是这种写法：轨道项与叠加的悬停项同 ID，
+    // 于是鼠标一停到我们的数值滑条（画面效果/调色等）上就必然弹这条**调试**提示——
+    // 它不影响功能（拖动、松手提交、Ctrl+点击输入框都由框架的 IsItemDeactivatedAfterEdit 正常收尾），
+    // 对玩家只是噪声。正确修法在框架侧（叠加项打 ImGuiItemFlags_AllowDuplicateId 或改用不同 ID），
+    // 本 mod 只能在自绘页这一侧把这条调试提示关掉，并在日志里留一行说明，诊断信息不丢。
+    // 仅在框架确实提供自绘滑条时关闭：旧框架走回退路径（原生 ImGui::SliderFloat，ID 带 ## 且唯一），
+    // 那时保留这条检查对我们没有副作用，也还能替我们抓自己的 ID 冲突。
+    if (api_.SliderFloatEx != nullptr) {
+        ImGuiIO& io = ImGui::GetIO();
+        io.ConfigDebugHighlightIdConflicts = false;
+        io.ConfigDebugHighlightIdConflictsShowItemPicker = false;
+        host_->log(LogLevel::Info,
+                   "PBZFM 菜单：已关闭 ImGui「ID 冲突高亮」调试提示（框架自绘滑条会重复提交同一 ID 的"
+                   "悬停项，触发 1.91.2+ 的新检查；属框架侧调试噪声，滑条功能不受影响）");
+    }
 
     // 框架启动只按它自己的语言加载一个字体（中文环境 = 雅黑，没有谚文字形），分类树里
     // 我们注册的韩语节点名（词典译文）会整串渲染成 '?'。往框架默认字体合并 Malgun
@@ -459,53 +539,164 @@ bool PbzfmClient::ensure_page_font() {
     return true;
 }
 
-void PbzfmClient::refresh_language() {
-    // 生效语言：config.ini 的 menu_language 非 auto 且已加载 → 用之；否则跟随 PBZFM.ini
+// 兼容路径（框架 < v5，没有 PBZFM_GetLanguage）：轮询框架配置实例
+// Documents\PBZ\PBZFM\PBZFM.ini（0.7.6 起框架只写这一份增量实例；模组目录里的
+// PBZFM.ini 已改成只读模板）。按 mtime + 文件大小判变化，变了才重读。
+// 注意增量格式：language 键等于模板默认值（auto）时根本不会写进文件，因此
+// "文件存在但键缺失 / 值为 auto" = 跟随系统，解析成系统语言，而不是""。
+void PbzfmClient::refresh_ini_language() {
+    // 宿主未绑定时不猜路径。2.2.1 的启动崩溃就是这里在 host_ 为空时解引用：
+    // on_unreal_init() 里 reload_config() 早于 pbzfm_->start()，而当时没有 attach_host()。
+    if (host_ == nullptr) return;
+    const std::filesystem::path ini_path = pbzfm_user_ini_path();
+    if (ini_path.empty()) {
+        lang_source_ = "ini降级(Documents 路径获取失败)→无";
+        return;  // 取不到 Documents 目录：保持当前跟随来源
+    }
+    std::error_code ec;
+    const std::int64_t mtime = static_cast<std::int64_t>(
+        std::filesystem::last_write_time(ini_path, ec).time_since_epoch().count());
+    if (ec) {
+        // 没有实例文件：框架仍按模板默认值运行（language = auto → 跟随系统），
+        // 但"没装框架"与"框架从没写过配置"在这里分不开，保持旧行为（无跟随来源）。
+        if (pbzfm_ini_loaded_ && pbzfm_ini_mtime_ < 0) return;
+        if (!pbzfm_lang_.empty()) {
+            host_->log(LogLevel::Warn, "读不到 PBZFM 配置实例（未安装框架或尚未写盘？），菜单语言保持当前设置");
+        }
+        lang_source_ = "ini降级(实例文件不存在)→无";
+        pbzfm_lang_.clear();
+        pbzfm_ini_mtime_ = -1;
+        pbzfm_ini_size_ = 0;
+        pbzfm_ini_loaded_ = true;
+        return;
+    }
+    const std::uint64_t size = static_cast<std::uint64_t>(std::filesystem::file_size(ini_path, ec));
+    if (ec) return;  // 读大小失败：下一帧再试，不改缓存
+    if (pbzfm_ini_loaded_ && mtime == pbzfm_ini_mtime_ && size == pbzfm_ini_size_) return;
+
+    std::ifstream ini(ini_path, std::ios::binary);
+    if (!ini) return;
+    const std::string text((std::istreambuf_iterator<char>(ini)), std::istreambuf_iterator<char>());
+    const std::string raw = parse_pbzfm_language(text);
+    std::string parsed = raw;
+    const bool key_absent = parsed.empty() || is_auto_language(parsed);
+    if (key_absent) {
+        // 增量文件省掉了与模板相同的键：框架实际在跟随系统语言
+        parsed = system_language_tag();
+    }
+    lang_source_ = "ini降级(path=" + ini_path.string() + ", " +
+                   (key_absent ? "language 缺失/auto→跟随系统=" + parsed : "language=" + raw) + ")";
+    if (parsed != pbzfm_lang_) {
+        host_->log(LogLevel::Info, "PBZFM 语言（配置实例）：" + parsed);
+    }
+    pbzfm_lang_ = parsed;
+    pbzfm_ini_mtime_ = mtime;
+    pbzfm_ini_size_ = size;
+    pbzfm_ini_loaded_ = true;
+}
+
+// 首选路径（框架 >= v5）：直接问框架当前生效语言。契约保证返回四项之一、
+// 永不为 "auto"/空；指针仍判空（旧框架），空值也防御性保持现状。
+void PbzfmClient::refresh_api_language() {
+    if (api_.GetLanguage == nullptr) return;
+    lang_source_ = "api(v5)";
+    const char* raw = api_.GetLanguage();
+    if (raw == nullptr || raw[0] == '\0') return;
+    std::string parsed(raw);
+    if (is_auto_language(parsed)) parsed = system_language_tag();  // 契约外防御
+    if (parsed == pbzfm_lang_) return;
+    if (host_ != nullptr) host_->log(LogLevel::Info, "PBZFM 语言（GetLanguage）：" + parsed);
+    pbzfm_lang_ = std::move(parsed);
+    // 一旦走了 v5 接口，旧降级路径的 mtime 缓存作废；框架若被卸载/换回旧版，
+    // 下次能够重新从实例文件读一次。
+    pbzfm_ini_loaded_ = false;
+    pbzfm_ini_mtime_ = -1;
+    pbzfm_ini_size_ = 0;
+}
+
+void PbzfmClient::refresh_language(bool rename_tree) {
+    // 宿主未绑定就没有 mod 目录/日志通道；等 attach_host 后的下一次调用再算。
+    if (host_ == nullptr) return;
+    std::lock_guard<std::mutex> lock(lang_mutex_);
+
+    // 生效语言：settings.json 的 menu_language 显式且已加载 → 用它；否则跟随 PBZFM
     std::string want;
     {
-        std::lock_guard<std::mutex> lock(mirror_mutex_);
+        std::lock_guard<std::mutex> mirror_lock(mirror_mutex_);
         want = mirror_.menu_language;
     }
-    int idx = lang_.FindLanguage(want.c_str());
-    if (idx < 0) {
-        // PBZFM.ini 的 [framework] language（与自绘页同目录树；至多每秒重读一次）
-        const double now = SteadySeconds();
-        if (now >= pbzfm_ini_next_check_) {
-            pbzfm_ini_next_check_ = now + 1.0;
-            std::ifstream ini(std::filesystem::path(host_->mod_dir()).parent_path() / "PBZFM" / "PBZFM.ini",
-                              std::ios::binary);
-            if (ini) {
-                std::string line;
-                while (std::getline(ini, line)) {
-                    const size_t eq = line.find('=');
-                    if (eq == std::string::npos) continue;
-                    std::string key = line.substr(0, eq);
-                    while (!key.empty() && (key.back() == ' ' || key.back() == '\t' || key.back() == '\r')) key.pop_back();
-                    if (key != "language") continue;
-                    std::string value = line.substr(eq + 1);
-                    const size_t b = value.find_first_not_of(" \t");
-                    if (b == std::string::npos) break;
-                    const size_t e = value.find_last_not_of(" \t\r\n");
-                    pbzfm_ini_lang_ = value.substr(b, e - b + 1);
-                    break;
-                }
-            }
+
+    const std::vector<PbzmI18n::LanguageInfo> langs = lang_.Languages();
+    std::vector<std::string> ids;
+    ids.reserve(langs.size());
+    for (const PbzmI18n::LanguageInfo& info : langs) ids.push_back(info.id);
+
+    // 显式选择已在词典里就不碰文件（这个分支每帧都会走到，不做文件 IO）
+    const bool pinned = want != "auto" && lang_.FindLanguage(want.c_str()) >= 0;
+    if (!pinned) {
+        // 跟随来源：框架 v5 的 GetLanguage 实时查询优先；旧框架（指针为 NULL）
+        // 才降级轮询 Documents 下的配置实例。两条路径都写入 pbzfm_lang_。
+        // alive_ 还是 false 时 api_ 正被注册线程逐字段填充：不碰指针，先走 ini
+        // 兼容路径（注册完成后的首个引擎 Tick 就会切到 v5 实时值）。
+        if (api_.GetLanguage != nullptr && alive_.load(std::memory_order_acquire)) {
+            refresh_api_language();
+        } else {
+            refresh_ini_language();
         }
-        // 按 id 选择：重扫可能重排语言表，用旧下标会选错
-        lang_.SetLanguageById(pbzfm_ini_lang_);
-    } else {
-        lang_.SetLanguageById(want);
     }
-    rename_tree_for_language();
+
+    // 决策是纯逻辑（core/lang_follow）：显式 > PBZFM > 兜底 zh-CN，都没有就保持现状。
+    // 保持现状很关键：读不到 ini 时不能 SetLanguageById("")，那会把语言归位到 0 号。
+    const std::string resolved = decide_menu_language(want, pbzfm_lang_, ids, "zh-CN");
+    // 启动诊断（只打一次，等注册完成后再打，避免把注册期的临时 ini 路径误报成最终来源）：
+    // 从这行就能判断跟随走的是 api(v5) 还是 ini 降级、读的哪个文件、最终解析成什么。
+    if (!lang_diag_logged_ && alive_.load(std::memory_order_acquire)) {
+        lang_diag_logged_ = true;
+        std::string source;
+        if (pinned) {
+            source = "settings.json 显式选择(" + want + ")";
+        } else if (lang_source_.empty()) {
+            source = "无";
+        } else {
+            source = lang_source_;
+        }
+        host_->log(LogLevel::Info,
+                   "[lang] 跟随来源 = " + source +
+                       "; resolved=" + (resolved.empty() ? std::string("<保持现状>") : resolved) +
+                       "; current=" + lang_.CurrentId());
+    }
+    if (resolved.empty()) {
+        if (rename_tree) rename_tree_for_language();
+        return;
+    }
+    if (lang_.CurrentId() != resolved) {
+        lang_.SetLanguageById(resolved);
+        lang_changed_at_ = SteadySeconds();
+        const char* source = pinned ? "settings.json 显式选择"
+                                    : (pbzfm_lang_.empty() ? "默认（未读到 PBZFM 语言）" : "跟随 PBZFM");
+        host_->log(LogLevel::Info, std::string("菜单语言 → ") + resolved + "（" + source + "）");
+    }
+    if (rename_tree) rename_tree_for_language();
+}
+
+void PbzfmClient::tick_language() {
+    // 只在引擎 Tick 里补一次"跟随"：切语言时人可能停在框架自己的页面上，
+    // 本模组的页面回调根本不跑，旧实现就会一直用旧语言、标签也不改名。
+    // RenameSection 与注册期（工作线程）用的是同一份 section 存储，离渲染线程改名的
+    // 窗口只在语言真正变化的那一帧出现。
+    refresh_language();
 }
 
 // 生效语言变化时，把 0.5.0+ 分类树节点重命名为新语言（页内内容本来就地实时）。
 // 顺序：先改分组（路径含旧父名），再改父与兄弟；改名成功才更新 node_names_。
+// 任一改名失败不记账，1 秒后重试（否则会永久停在旧标签）。
 void PbzfmClient::rename_tree_for_language() {
     if (api_.RenameSection == nullptr || api_.AddSectionItemPath == nullptr) return;  // 0.4.x：无树
     const std::string lang_id = lang_.CurrentId();
-    if (renamed_lang_id_ == lang_id || node_names_.empty()) return;
-    renamed_lang_id_ = lang_id;
+    if (lang_id.empty() || renamed_lang_id_ == lang_id || node_names_.empty()) return;
+    const double now = SteadySeconds();
+    if (now < rename_retry_at_) return;  // 上次改名失败，退避重试
+    bool all_ok = true;
 
     const std::string root = kSectionName;
     for (const std::string& group_key : group_keys_) {
@@ -515,20 +706,36 @@ void PbzfmClient::rename_tree_for_language() {
         const std::string path = root + "/" + old_name;
         if (api_.RenameSection(path.c_str(), new_name.c_str()) == 1) {
             node_names_[group_key] = new_name;
+        } else {
+            all_ok = false;
         }
     }
     const std::string new_language = lang_.T("#node_language");
     if (node_names_["language"] != new_language) {
         const std::string path = root + "/" + node_names_["language"];
-        if (api_.RenameSection(path.c_str(), new_language.c_str()) == 1) node_names_["language"] = new_language;
+        if (api_.RenameSection(path.c_str(), new_language.c_str()) == 1) {
+            node_names_["language"] = new_language;
+        } else {
+            all_ok = false;
+        }
     }
     // 语言节点已移到末位：改名次序与显示次序无耦合，仅保持代码可读
     const std::string new_status = lang_.T("#node_status");
     if (node_names_["status"] != new_status) {
         const std::string path = root + "/" + node_names_["status"];
-        if (api_.RenameSection(path.c_str(), new_status.c_str()) == 1) node_names_["status"] = new_status;
+        if (api_.RenameSection(path.c_str(), new_status.c_str()) == 1) {
+            node_names_["status"] = new_status;
+        } else {
+            all_ok = false;
+        }
     }
     api_.SetSection(kSectionName);  // 文档建议：改名后重设调用线程 current
+    if (all_ok) {
+        renamed_lang_id_ = lang_id;
+        rename_retry_at_ = 0.0;
+    } else {
+        rename_retry_at_ = now + 1.0;
+    }
 }
 
 void PbzfmClient::request_save(const Config& draft) {
@@ -553,10 +760,10 @@ void PbzfmClient::saver_main() {
             save_dirty_ = false;
             lock.unlock();
             std::string err;
-            if (save_config_file(path, cfg, &err)) {
-                host_->log(LogLevel::Info, "PBZFM 菜单：config.ini 已原子写回");
+            if (save_config_json_file(path, cfg, &err)) {
+                host_->log(LogLevel::Info, "PBZFM 菜单：settings.json 已原子写回");
             } else {
-                host_->log(LogLevel::Warn, "PBZFM 菜单：config.ini 写回失败：" + err);
+                host_->log(LogLevel::Warn, "PBZFM 菜单：settings.json 写回失败：" + err);
             }
             lock.lock();
             continue;
@@ -572,19 +779,20 @@ void PbzfmClient::commit_settings(const Config& draft, const std::string& what) 
         ++mirror_generation_;  // 本帧草案已提交：页面收尾不必再写回
     }
     // 渲染线程不再直接写盘：落盘由 saver_main 用「临时文件 + 原子替换」完成，
-    // 避免框架渲染线程与引擎 tick 线程同时读写 config.ini 造成半写/读到旧值。
+    // 避免框架渲染线程与引擎 tick 线程同时读写 settings.json 造成半写/读到旧值。
     if (saver_running_.load(std::memory_order_acquire)) {
         request_save(draft);
     } else {
         // 兜底（正常不会走到：commit 只可能由注册后的渲染回调触发）：同步原子写
         std::string err;
-        const std::string ini_path = (std::filesystem::path(host_->mod_dir()) / "config.ini").string();
-        if (!save_config_file(ini_path, draft, &err)) {
-            host_->log(LogLevel::Warn, "PBZFM 菜单：config.ini 写回失败：" + err);
+        const std::string json_path =
+            (std::filesystem::path(host_->mod_dir()) / "PBZPhotoModeCpp.settings.json").string();
+        if (!save_config_json_file(json_path, draft, &err)) {
+            host_->log(LogLevel::Warn, "PBZFM 菜单：settings.json 写回失败：" + err);
         }
     }
     host_->submit_config(draft);  // 引擎 Tick 线程应用（键位表重建 + 实时开关）
-    host_->log(LogLevel::Info, "PBZFM 菜单：" + what + " 已更新（config.ini 写回已排队）");
+    host_->log(LogLevel::Info, "PBZFM 菜单：" + what + " 已更新（settings.json 写回已排队）");
 }
 
 void PbzfmClient::RenderSettingsThunk(void* userdata) {
@@ -611,7 +819,7 @@ void PbzfmClient::OnMenuEventThunk(int open, void* userdata) {
     if (!open) self->menu_closed_tick_.store(true, std::memory_order_release);
 }
 
-// 语言切换区块（语言页与 0.4.x 回退整页共用）：写进 config.ini 的 [ui] menu_language
+// 语言切换区块（语言页与 0.4.x 回退整页共用）：写进 settings.json 的 menu_language
 void PbzfmClient::render_language_controls(Config& draft) {
     // 一次性拷出整份语言列表：后续遍历期间即便另一线程重扫词典，本帧仍然一致。
     const std::vector<PbzmI18n::LanguageInfo> languages = lang_.Languages();
@@ -677,6 +885,12 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
             // 画面效果五项才有独立开关（f.get_enabled 非空）；其它数值滑块只有重置按钮。
             const bool has_switch = f.get_enabled != nullptr && f.set_enabled != nullptr;
             bool enabled = has_switch ? pbzfm_read_enabled(f, draft) : true;
+            // 取景角度滑条：值来自实时姿态（host 不可用/未激活时回退到普通配置值），
+            // 未进入摄影模式时整行置灰（与"开关关闭"的既有处理一致）。
+            const bool pose_axis = f.pose_axis >= 0;
+            const bool mode_locked = f.requires_photo_mode && !(host_ != nullptr && host_->photo_mode_active());
+            double pose_deg = 0.0;
+            const bool pose_live = pose_axis && host_ != nullptr && host_->pose_angle(f.pose_axis, &pose_deg);
 
             if (has_switch) {
                 // 独立开关走框架药丸（隐藏标签只画开关；EndGroup 后 IsItemHovered
@@ -701,12 +915,12 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
                 ImGui::SameLine();
             }
 
-            float v = static_cast<float>(pbzfm_read_field(f, draft, keys));
+            float v = static_cast<float>(pose_live ? pose_deg : pbzfm_read_field(f, draft, keys));
             const float reset_w =
                 ImGui::CalcTextSize(reset_text.c_str()).x + style.FramePadding.x * 2.0f + 2.0f * scale;
             const float avail = ImGui::GetContentRegionAvail().x;
             ImGui::SetNextItemWidth(std::max(80.0f * scale, avail - reset_w - style.ItemSpacing.x));
-            if (!enabled) ImGui::BeginDisabled();
+            if (!enabled || mode_locked) ImGui::BeginDisabled();
             const bool changed =
                 use_fw
                     // 框架自绘滑条：标签画在轨道内（金色进度填充 + Ctrl+点击弹输入框）
@@ -719,7 +933,7 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
                                          ImGuiSliderFlags_AlwaysClamp |
                                              (f.logarithmic && f.mn > 0.0 ? ImGuiSliderFlags_Logarithmic
                                                                           : 0)) != 0;
-            if (!enabled) ImGui::EndDisabled();
+            if (!enabled || mode_locked) ImGui::EndDisabled();
             // 拖动实时预览：草案直接推引擎（引擎 Tick 应用，下一帧上屏），不写盘不打日志；
             // 松手 IsItemDeactivatedAfterEdit 再走完整提交（落盘 + 正式日志 + 再次应用）。
             // 松手帧 ImGui 的 SliderBehaviorT 先 ClearActiveID 再返回（imgui_widgets.cpp：
@@ -730,17 +944,24 @@ void PbzfmClient::render_field_widget(const PbzfmField& f, Config& draft, const 
             // 框架自绘滑条的 Ctrl+点击输入框在弹窗里改值（轨道已非活动项），changed 且
             // 轨道不在拖动态时直接提交，与"松手提交"同语义；此时 DeactivatedItemData.ID
             // 是输入框不是滑条，两个分支不会对同一次编辑双提交。
-            if (changed) {
+            if (changed && pose_axis) {
+                // 绝对角度：直接写实时姿态（宿主在引擎 Tick 线程落地），不进 Config、不落盘。
+                // 拖完之后鼠标/手柄可在该角上继续累加——滑条下一帧读到的就是累加后的实时值。
+                if (host_ != nullptr) host_->set_pose_angle(f.pose_axis, static_cast<double>(v));
+            } else if (changed) {
                 f.set_num(draft, v);
                 host_->submit_config_preview(draft);
                 if (!ImGui::IsItemActive()) commit_settings(draft, label_text);
             }
-            if (ImGui::IsItemDeactivatedAfterEdit()) {
+            if (ImGui::IsItemDeactivatedAfterEdit() && !pose_axis) {
                 commit_settings(draft, label_text);
             }
             ImGui::SameLine();
             if (ImGui::Button((reset_text + "##reset_" + f.key).c_str())) {
-                if (pbzfm_reset_field(f, draft)) {
+                if (pose_axis) {
+                    // 归零 = 俯仰/旋转回水平、左右回正前（等价于"回到水平取景"）
+                    if (host_ != nullptr) host_->set_pose_angle(f.pose_axis, 0.0);
+                } else if (pbzfm_reset_field(f, draft)) {
                     enabled = pbzfm_read_enabled(f, draft);
                     commit_settings(draft, label_text + " " + reset_text);
                 }

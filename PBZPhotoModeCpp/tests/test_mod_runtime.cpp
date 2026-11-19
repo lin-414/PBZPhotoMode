@@ -147,6 +147,19 @@ void test_enter_tick_config_leave() {
 
 // ---- 景深/胶片（DofPort）：门控不可用拒绝启用 → 重进重新探测 → 生效与退出释放 ----
 void test_dof_gate_lifecycle() {
+    // 2.2.3：景深总开关是「每次进入归默认关」的会话级项——进入前预置 true，enter 后必须已经归零、
+    // 首次 tick 不下发 DOF（复位走 reset_session_defaults，与 [look] 同一时机）。
+    {
+        Fixture pre;
+        Config pre_cfg = pre.cfg;
+        pre_cfg.dof_enabled = true;
+        pre.runtime.apply_config(pre_cfg);
+        CHECK(pre.runtime.toggle() == ToggleOutcome::Entered);
+        CHECK(!pre.mode.config().dof_enabled);
+        pre.runtime.dispatch(Intent{}, 0.016);
+        CHECK_INT(pre.engine.dof_apply_calls, 0);
+        CHECK(pre.runtime.toggle() == ToggleOutcome::Left);
+    }
     section("ModRuntime 集成：景深门控生命周期");
     Fixture f;
 
@@ -165,7 +178,8 @@ void test_dof_gate_lifecycle() {
     f.engine.dof_gate_available = true;
     const int ensures_before = static_cast<int>(f.engine.dof_calls.size());
     CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
-    f.runtime.dispatch(Intent{}, 0.016);  // dof_enabled 仍在配置里：进入后自动启用
+    f.runtime.apply_config(with_dof);  // 2.2.3 起 enter 把景深总开关归默认关：进入后重新打开
+    f.runtime.dispatch(Intent{}, 0.016);
     CHECK(static_cast<int>(f.engine.dof_calls.size()) > ensures_before);
     CHECK(f.engine.dof_calls[ensures_before] == "ensure_dof_gate(dof,-)");
     CHECK(f.engine.dof_apply_calls >= 1);
@@ -552,6 +566,44 @@ void test_config_tick_concurrency() {
     CHECK(!f.mode.recovery_pending());
 }
 
+// ---- 会话 FOV 必须挺过「色差触发的后端切换」（2026-11-12 实机：调完 FOV 再动色差，FOV 跳回默认）----
+// 色差走「门控 + CineCamera 组件通道」，前提是独立相机：接管模式下把色差调大一定会触发
+// 接管 → 独立相机 的就地切换。切换后必须重新下发**会话 FOV**（不是 config 的 fov_default），
+// 否则玩家刚调好的取景会被打回默认值——这正是实机反馈的现象。
+void test_fov_survives_backend_switch() {
+    section("ModRuntime 集成：色差触发的后端切换不丢会话 FOV");
+    Fixture f;
+    f.engine.takeover_supported = true;
+    f.engine.record_camera_extras = true;
+    CHECK(f.runtime.toggle() == ToggleOutcome::Entered);
+    CHECK(f.mode.takeover_active());
+
+    // 接管模式下调 FOV（会话值），写点走 POV
+    CHECK(f.mode.set_fov(45.0));
+    CHECK_NEAR(f.mode.fov(), 45.0, 1e-9);
+    CHECK_NEAR(f.engine.last_fov, 45.0, 1e-9);
+
+    // 调大色差：组件通道要求独立相机，接管模式下必须就地切换
+    Config with_ca = f.cfg;
+    with_ca.chromatic_aberration = 0.6;
+    f.engine.reset_calls();
+    f.runtime.apply_config(with_ca);
+    f.runtime.dispatch(Intent{}, 0.016);
+    CHECK(!f.mode.takeover_active());
+    CHECK_INT(f.engine.count("leave_camera_takeover"), 1);
+    CHECK_INT(f.engine.count("spawn_camera"), 1);
+    CHECK_INT(f.engine.count("attach_view"), 1);
+    // 关键断言：切换后写出去的仍是会话 FOV，而不是 config 的 fov_default(90)
+    CHECK(f.engine.has("apply_fov"));
+    CHECK_NEAR(f.engine.last_fov, 45.0, 1e-9);
+    CHECK_NEAR(f.engine.last_pose.fov, 45.0, 1e-9);
+
+    // 切换后 FOV 继续可调（独立相机后端同样吃 set_fov）
+    CHECK(f.mode.set_fov(30.0));
+    CHECK_NEAR(f.engine.last_fov, 30.0, 1e-9);
+    CHECK(f.runtime.toggle() == ToggleOutcome::Left);
+}
+
 }  // namespace
 
 void run_mod_runtime_tests() {
@@ -562,6 +614,7 @@ void run_mod_runtime_tests() {
     test_dof_film_gate_late_build();
     test_dof_apply_backoff();
     test_dof_nlp_follows_master();
+    test_fov_survives_backend_switch();
     test_enter_rejected();
     test_live_toggle_failures();
     test_recovery_retry_limit();

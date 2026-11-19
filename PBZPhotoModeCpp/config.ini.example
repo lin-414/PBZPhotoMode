@@ -1,5 +1,5 @@
 ; ================================================================
-; 2.1.0-cpp 配置文件（UTF-8，可留空使用默认值）
+; 2.2.0 配置文件（UTF-8，可留空使用默认值）
 ; 改完存盘后按 F2 重进摄影模式即可生效（或重启游戏）
 ; ================================================================
 
@@ -293,9 +293,9 @@ frame_freeze_timeout_seconds = 60
 
 [ui]
 ; UE4SS 控制台里的只读诊断面板（需要 UE4SS 控制台窗口）；false=不注册该 tab
-; 游戏内无菜单，纯快捷键操作；可写设置的唯一入口是 PBZFM 菜单页
+; 游戏内设置见 SLEEP Mods Menu 149；键位/画面效果等高级项编辑 PBZPhotoModeCpp.settings.json
 imgui_tab = true
-; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id
+; UE4SS 控制台词典语言：auto=默认（简体中文）；或词典 id
 ;（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）
 menu_language = auto
 

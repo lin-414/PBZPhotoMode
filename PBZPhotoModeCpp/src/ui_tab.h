@@ -21,8 +21,8 @@ struct UiCommands {
     double new_fov{0.0};
 };
 
-// 画一帧只读诊断面板（不修改 cfg，也不改 mode）。可写设置项的唯一入口是 PBZFM 页。
-// 文案取自 lang（外部 languages/*.json；与 PBZFM 自绘页共用同一份词典实例）。
+// 画一帧只读诊断面板（不修改 cfg，也不改 mode）。可写设置入口是 PBZFM 菜单与 Mods Menu 149。
+// 文案取自 lang（外部 languages/*.json）。
 void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, bool& request_reload_config,
                            UiCommands& commands, PbzmI18n& lang);
 

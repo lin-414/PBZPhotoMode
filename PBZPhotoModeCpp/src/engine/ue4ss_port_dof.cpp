@@ -746,7 +746,7 @@ bool Ue4ssPort::apply_dof(const DofParams& params) {
         // SetLensSettings(FCameraLensSettings)：一次性镜头骨架（对焦/光圈范围按 564）
         lens_ok = set_struct_members_seh(
             component, "SetLensSettings",
-            {{"MinFocalLength", 12.0},
+            {{"MinFocalLength", 1.0},  // 1mm：支持 FOV 上限（FOV>90 需 <12mm 焦距）
              {"MaxFocalLength", 200.0},
              {"MinFStop", 1.0},
              {"MaxFStop", 32.0},

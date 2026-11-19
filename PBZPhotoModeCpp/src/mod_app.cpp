@@ -1,5 +1,6 @@
 // UE4SS mod 主体：把输入/引擎事件翻译成 core 层 Intent，再把结果交给 PhotoMode。
-// 游戏内无任何菜单界面（v1.8.0 起纯快捷键，v1.8.1 起代码彻底移除）。
+// 游戏内设置由可选的 PBZFM（F8 全量菜单）与 Mods Menu 149（68 项）承载；
+// 两者都只提交数据，引擎调用统一留在引擎 Tick 线程。
 #ifdef PBZPM_WITH_UE4SS
 
 #include "mod_app.h"
@@ -25,6 +26,8 @@
 #include "core/tuning.h"
 #include "core/retry_policy.h"
 #include "core/version.h"
+#include "core/config_json.h"
+#include "core/mods_menu.h"
 #include "engine/process_freeze.h"
 #include "engine/ue4ss_port.h"
 #include "ui_tab.h"
@@ -73,7 +76,9 @@ PhotoModeMod::PhotoModeMod() {
 }
 
 PhotoModeMod::~PhotoModeMod() {
-    // 先停画面定格 watcher（若它还挂着暂停，会在退出前恢复所有线程）。
+    // PBZFM 客户端先停：它的写盘线程要在 DLL 卸载前 flush 最后一次改动。
+    if (pbzfm_) pbzfm_->stop();
+    // 再停画面定格 watcher（若它还挂着暂停，会在退出前恢复所有线程）。
     frame_freeze_stop_.store(true, std::memory_order_relaxed);
     if (frame_freeze_thread_.joinable()) frame_freeze_thread_.join();
     // watcher 退出时可能没等到引擎 Tick 处理“恢复音频”请求（例如游戏退出/模组卸载）：
@@ -85,16 +90,14 @@ PhotoModeMod::~PhotoModeMod() {
     //   1) 先注销 UE4SS 钩子与 Engine Tick 回调：此后引擎不再派发新回调，避免回调进入正在
     //      拆卸的成员；注销失败会在这里打 Error 并说明残留后果。
     //   2) 再把 g_mod 置空：注销后偶有已入队的派发，也只看到 nullptr，不会解引用已析构对象。
-    //   3) 停 PBZFM 线程：框架线程会调 host_->log()/current_config()，必须在 port_ 销毁前停。
-    //   4) 卸载输入层：低级鼠标钩子是 Windows 全局回调，必须先于 DLL 卸载撤掉。
-    //   5) 最后 mode_->leave()：恢复引擎状态（视角/时间缩放/隐藏项）仍需要 port_ 存活。
-    //   6) 析构结束由成员析构顺序销毁 port_/mode_（delete 由 uninstall_mod 负责）。
+    //   3) 卸载输入层：低级鼠标钩子是 Windows 全局回调，必须先于 DLL 卸载撤掉。
+    //   4) 最后 mode_->leave()：恢复引擎状态（视角/时间缩放/隐藏项）仍需要 port_ 存活。
+    //   5) 析构结束由成员析构顺序销毁 port_/mode_（delete 由 uninstall_mod 负责）。
     if (port_) {
         port_->unregister_all_hooks();
     }
     g_mod.store(nullptr, std::memory_order_release);
 
-    if (pbzfm_) pbzfm_->stop();
     if (input_source_ != nullptr) {
         input_source_->uninstall();
     }
@@ -315,9 +318,55 @@ void PhotoModeMod::handle_frame_freeze_request(const Config& cfg, bool mode_acti
 }
 
 void PhotoModeMod::reload_config() {
-    const std::filesystem::path path = std::filesystem::path(mod_directory()) / "config.ini";
-    const ConfigLoadResult result = load_config_file(path.string());
-    cfg_ = result.cfg;
+    const std::filesystem::path dir(mod_directory());
+    const std::filesystem::path settings_path = dir / "PBZPhotoModeCpp.settings.json";
+    ConfigLoadResult result = load_config_json_file(settings_path.string());
+    bool settings_created = false;
+
+    // 首次升级：settings.json 不存在时，从旧 config.ini 迁移一次（成功后把旧文件改名留档）。
+    if (result.file_missing) {
+        const std::filesystem::path legacy_path = dir / "config.ini";
+        std::error_code exists_error;
+        const bool legacy_exists = std::filesystem::exists(legacy_path, exists_error) && !exists_error;
+        if (legacy_exists) {
+            const ConfigLoadResult legacy = load_config_file(legacy_path.string());
+            if (legacy.ok) {
+                result = legacy;
+                result.source = "config.ini（已迁移到 settings.json）";
+                std::string save_error;
+                if (save_config_json_file(settings_path.string(), result.cfg, &save_error)) {
+                    settings_created = true;
+                    std::error_code rename_error;
+                    std::filesystem::rename(legacy_path, legacy_path.string() + ".migrated", rename_error);
+                    if (port_) port_->log(LogLevel::Info, "配置迁移：config.ini -> PBZPhotoModeCpp.settings.json 完成（旧文件保留为 config.ini.migrated）");
+                } else if (port_) {
+                    port_->log(LogLevel::Warn, "配置迁移：settings.json 写入失败：" + save_error);
+                }
+            } else if (port_) {
+                port_->log(LogLevel::Warn, "配置迁移：旧 config.ini 读取失败，使用内置默认值");
+            }
+        } else {
+            std::string save_error;
+            if (save_config_json_file(settings_path.string(), Config{}, &save_error)) {
+                settings_created = true;
+            } else if (port_) {
+                port_->log(LogLevel::Warn, "首次运行：settings.json 写入失败：" + save_error);
+            }
+            result.source = "内置默认值（已创建 settings.json）";
+        }
+    }
+
+    // 读取失败时保留当前内存配置，绝不把默认值覆盖回文件。
+    config_read_error_ = result.read_error;
+    settings_created_ = settings_created;
+    if (!result.read_error) cfg_ = result.cfg;
+    if (!result.read_error) {
+        // 词典与 F8 自绘页共用同一份实例（H-6：之前 mod_app 自己留了一份，
+        // 控制台帮助文案永远不会跟随 PBZFM 切语言）。
+        // 语言只由 refresh_language 统一决策：显式选择 > PBZFM.ini > 兜底 zh-CN。
+        pbzfm_->lang().RescanLanguages(mod_directory(), true);
+        pbzfm_->refresh_language(/*rename_tree=*/false);  // 树改名交给引擎 Tick，避免在控制台线程动框架树
+    }
     // 渲染前写点不可用时不允许再启用接管（见 bind_engine_tick）：否则 F2 重载配置会把它翻回 true，
     // 又把摄影模式变成“镜头不动”。
     if (!gvc_tick_hook_ok_) cfg_.takeover_current_camera = false;
@@ -337,31 +386,24 @@ void PhotoModeMod::reload_config() {
         port_->log(LogLevel::Info, "配置来源：" + result.source);
     }
 
-    // 已废弃的键（[dof] 段、色差/胶片颗粒）不从文件里删掉就会一直留在用户机器上：
-    // 解析时收集到 legacy_keys 后，这里按当前格式原子重写一次 config.ini，把它们物理清掉。
-    if (!result.legacy_keys.empty()) {
-        std::string names;
-        const std::size_t shown = std::min<std::size_t>(result.legacy_keys.size(), 8);
-        for (std::size_t i = 0; i < shown; ++i) {
-            if (!names.empty()) names += ", ";
-            names += result.legacy_keys[i];
-        }
-        if (result.legacy_keys.size() > shown) {
-            names += " 等 " + std::to_string(result.legacy_keys.size()) + " 项";
-        }
+    // 已废弃的键只可能来自旧 JSON/迁移文件：按当前格式重写一次 settings.json。
+    if (!result.read_error && !result.legacy_keys.empty()) {
         std::string error;
-        if (save_config_file(path.string(), cfg_, &error)) {
-            port_->log(LogLevel::Info, "配置清理：已从 config.ini 删除 " + std::to_string(result.legacy_keys.size()) +
-                                           " 个已废弃键并重写文件（" + names + "）");
+        if (save_config_json_file(settings_path.string(), cfg_, &error)) {
+            if (port_) port_->log(LogLevel::Info, "配置清理：已从 settings.json 删除 " +
+                                                       std::to_string(result.legacy_keys.size()) + " 个已废弃键");
         } else if (port_) {
-            port_->log(LogLevel::Warn, "配置清理：删除已废弃键后重写 config.ini 失败：" + error);
+            port_->log(LogLevel::Warn, "配置清理：重写 settings.json 失败：" + error);
         }
     }
     if (mode_) {
         mode_->set_config(cfg_);
     }
-    if (pbzfm_) {
-        pbzfm_->sync_from_config(cfg_);  // 菜单显示值跟着 config.ini 走
+    if (mods_menu_ && !result.read_error) {
+        mods_menu_->write_config_json(cfg_);  // Mods Menu 149 的菜单子集 JSON 跟着 settings.json 走
+    }
+    if (pbzfm_ && !result.read_error) {
+        pbzfm_->sync_from_config(cfg_);  // PBZFM 自绘页显示值跟着 settings.json 走
     }
 }
 
@@ -433,14 +475,14 @@ void PhotoModeMod::bind_engine_tick() {
             port_->track_global_failure("UE4SS.GameViewportClientTickPost");
             port_->log(LogLevel::Error,
                        "GameViewportClient Tick Post 回调注册失败：接管模式无法在渲染前写入 POV，"
-                       "镜头将完全无法移动；请在 config.ini [camera] 把 takeover_current_camera 设为 false");
+                       "镜头将完全无法移动；请在 settings.json 把 takeover_current_camera 设为 false");
         }
     } else if (port_) {
         port_->track_global_callback("UE4SS.GameViewportClientTickPost", gvc_id);
     }
 
     // 接管模式全部依赖上面这个回调：没有它，POV 只能写在 EngineTickPost（RedrawViewports 之后），
-    // 赶不上当帧渲染 → 表现就是“镜头完全不动”。以前这里只记一条 Error 让用户自己去改 config.ini，
+    // 赶不上当帧渲染 → 表现就是“镜头完全不动”。以前这里只记一条 Error 让用户自己去改配置文件，
     // 一旦钩子真的不可用，摄影模式等于废掉。现在本会话直接降级到独立相机，保证还能用。
     gvc_tick_hook_ok_ = (gvc_id != RC::Unreal::Hook::ERROR_ID);
     if (!gvc_tick_hook_ok_ && cfg_.takeover_current_camera) {
@@ -449,7 +491,7 @@ void PhotoModeMod::bind_engine_tick() {
         if (port_) {
             port_->log(LogLevel::Warn,
                        "接管模式的渲染前写点不可用：本会话已自动降级为独立相机（spawn + SetViewTarget），"
-                       "摄影模式仍可正常使用；要永久走独立相机可把 config.ini [camera] 的 "
+                       "摄影模式仍可正常使用；要永久走独立相机可把 settings.json 的 "
                        "takeover_current_camera 设为 false");
         }
     }
@@ -478,6 +520,11 @@ void PhotoModeMod::on_game_viewport_tick_post() {
     // MPC 快照必须在 World Tick 之后写：游戏在 World Tick 里会覆盖参数，写在 pre-tick 会被下一帧盖回去。
     mode_->reassert_mpc_hold_if_needed();
     port_->write_takeover_pov_now();
+    // 独立相机后端：FOV 也要在同一个写点每帧重申。接管模式由上一行写 POV 时就带了 FOV；
+    // 切到独立相机后 FOV 只在切换那一帧写一次组件属性，之后任何一次镜头状态重建（色差/景深的
+    // 组件通道、引擎按焦距+Filmback 重算）都会把渲染用的 FOV 打回默认值——实机现象就是
+    // 「调完 FOV 再动色差，FOV 跳回默认」。这里每帧回读比对 + 重申（组件与本帧 POV 都写）。
+    port_->reassert_camera_fov_now();
     // 相机 POV 的 FPostProcessSettings 每帧由 UpdateCamera 重建：暗角/泛光这类被游戏镜头
     // PostProcessSettings 覆盖的项必须在这里每帧重申（体积通道会被 POV 最后覆盖）。
     port_->apply_look_to_camera_pov();
@@ -488,11 +535,49 @@ void PhotoModeMod::on_game_viewport_tick_post() {
 }
 
 void PhotoModeMod::on_unreal_init() {
+    // 先绑定 PBZFM 宿主再读配置：reload_config() 里的 refresh_language() 要读 mod 目录。
+    // 2.2.1 忘了这一步（start() 才设 host_），启动时 host_->mod_dir() 空指针读 → 进游戏必崩。
+    if (pbzfm_) pbzfm_->attach_host(this);
     reload_config();
+    // Mods Menu 149（SLEEP）的 UE4SS Bridge：只有装了 PBZModsMenuBridge 才启用；
+    // 未装时 start() 返回 false，之后所有入口空转。启动时若菜单子集 JSON 与
+    // settings.json 不一致（上次游戏在写回前退出），这里载入菜单值并写回 settings.json。
+    bool mods_menu_config_changed = false;
+    bool mods_menu_save_failed = false;
+    const bool mods_menu_active =
+        !config_read_error_ && mods_menu_ &&
+        mods_menu_->start(mod_directory(), cfg_, &mods_menu_config_changed, settings_created_);
+    if (mods_menu_active && mods_menu_config_changed) {
+        const std::filesystem::path settings_path =
+            std::filesystem::path(mod_directory()) / "PBZPhotoModeCpp.settings.json";
+        std::string save_error;
+        const bool saved = save_config_json_file(settings_path.string(), cfg_, &save_error);
+        keys_ = build_keymap(cfg_, nullptr);
+        const int freeze_vk = vk_from_name(cfg_.key_frame_freeze);
+        if (freeze_vk != 0) frame_freeze_vk_.store(freeze_vk, std::memory_order_relaxed);
+        frame_freeze_timeout_ms_.store(
+            static_cast<unsigned long long>(std::clamp(cfg_.frame_freeze_timeout_seconds, 5.0, 300.0) * 1000.0),
+            std::memory_order_relaxed);
+        if (!saved) {
+            // 端口尚未创建，先记下错误，建好端口后统一打日志。
+            mods_menu_save_failed = true;
+        }
+    }
     port_ = std::make_unique<Ue4ssPort>(std::filesystem::path(mod_directory()));
+    if (mods_menu_active && port_) {
+        port_->log(LogLevel::Info, "Mods Menu 149：已接入（" + mods_menu_->status() + "，暴露 " +
+                                       std::to_string(mods_menu_settings().size()) +
+                                       " 项设置；安装 PBZModsMenuBridge 后可在游戏设置 Mods Menu 页调整）");
+    }
+    if (mods_menu_save_failed) {
+        port_->log(LogLevel::Warn, "Mods Menu 149：载入上次菜单保存后写回 settings.json 失败");
+    }
     process_freezer_ = std::make_unique<ProcessFreezer>();
     mode_ = std::make_unique<PhotoMode>(*port_, cfg_);
     runtime_ = std::make_unique<ModRuntime>(*port_, *mode_, cfg_, keys_);
+    // PBZFM（可选）：后台线程等待 PBZFM.dll 出现后注册菜单页；没装就安静退回快捷键模式。
+    // 放在 mode_/runtime_ 之后：页面首帧就能取到完整快照，日志也有 port_ 可写。
+    if (pbzfm_) pbzfm_->start(this);
 
     input_source_ = &Win32InputSource::instance();
     // 排障开关：mod 目录里放一个 no_wheel_hook.txt 就不装低级鼠标钩子
@@ -536,9 +621,6 @@ void PhotoModeMod::on_unreal_init() {
     }
     load_message += " 进入摄影模式";
     port_->log(LogLevel::Info, load_message);
-
-    // PBZFM 菜单框架（可选组件）：后台线程轮询 PBZFM.dll，装了就注册设置页与诊断页
-    pbzfm_->start(this);
 }
 
 void PhotoModeMod::on_ui_init() {
@@ -547,7 +629,7 @@ void PhotoModeMod::on_ui_init() {
     // imgui_tab 之前是一个没人读取的配置项（解析、dump、ini 示例都齐全，唯一缺消费者），
     // 于是面板永远无条件注册。这里补上唯一的消费点：false 时不注册该 tab。
     if (!cfg_.imgui_tab) {
-        if (port_) port_->log(LogLevel::Info, "配置 imgui_tab=false：不注册 UE4SS 控制台面板（可写设置仍在 PBZFM 菜单页）");
+        if (port_) port_->log(LogLevel::Info, "配置 imgui_tab=false：不注册 UE4SS 控制台面板（设置仍可在 PBZFM 菜单或游戏设置 Mods Menu 页调整）");
         return;
     }
     register_tab(STR("PBZ Photo Mode"), &PhotoModeMod::render_tab_bridge);
@@ -574,7 +656,7 @@ void PhotoModeMod::render_tab_impl() {
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    pbzfm_->lang().RescanLanguages(mod_dir(), false);  // 内部 2 秒节流，热加载
+    pbzfm_->lang().RescanLanguages(mod_directory(), false);  // 内部 2 秒节流，热加载
     PbzmI18n& lang = pbzfm_->lang();
     const std::string state_text = mode_->active() ? lang.T("#console_state_on") : lang.T("#console_state_off");
     ImGui::TextUnformatted(state_text.c_str());
@@ -601,7 +683,9 @@ void PhotoModeMod::render_tab_impl() {
         mode_->toggle_freeze();
     }
     if (commands.exit_mode) {
+        const bool was_active = mode_->active();
         mode_->leave("imgui");
+        if (was_active) reset_look_after_leave("ImGui 退出摄影模式");
         input_.reset();
     }
 }
@@ -613,20 +697,22 @@ void PhotoModeMod::handle_toggle() {
     bool look_reset = false;
     if (entering) {
         // [look] 五项画面效果每次打开摄影模式都恢复默认参数（数值 + 五个独立开关）。
-        // 先落到 ModRuntime 的 cfg_ / PhotoMode 的副本，enter() 成功后再写回 config.ini
-        // 并刷新 PBZFM 菜单显示，避免“引擎已用默认值、菜单还显示上次拖的值”。
-        look_reset = reset_look_defaults(cfg_);
+        // 先落到 ModRuntime 的 cfg_ / PhotoMode 的副本，enter() 成功后再写回 settings.json
+        // 并刷新 Mods Menu 菜单显示，避免“引擎已用默认值、菜单还显示上次拖的值”。
+        look_reset = reset_session_defaults(cfg_);
         if (look_reset) runtime_->apply_config(cfg_);
     }
     const ToggleOutcome outcome = runtime_->toggle();
     if (outcome == ToggleOutcome::Entered) {
         if (look_reset) {
-            const std::filesystem::path ini_path = std::filesystem::path(mod_directory()) / "config.ini";
+            const std::filesystem::path settings_path =
+                std::filesystem::path(mod_directory()) / "PBZPhotoModeCpp.settings.json";
             std::string save_error;
-            if (save_config_file(ini_path.string(), cfg_, &save_error)) {
-                port_->log(LogLevel::Info, "画面效果：[look] 五项已恢复默认参数，config.ini 已更新");
+            if (save_config_json_file(settings_path.string(), cfg_, &save_error)) {
+                port_->log(LogLevel::Info, "画面效果：[look] 五项已恢复默认参数，settings.json 已更新");
+                if (mods_menu_) mods_menu_->write_config_json(cfg_);
             } else {
-                port_->log(LogLevel::Warn, "画面效果：五项已恢复默认参数，但写回 config.ini 失败：" + save_error);
+                port_->log(LogLevel::Warn, "画面效果：五项已恢复默认参数，但写回 settings.json 失败：" + save_error);
             }
             if (pbzfm_) pbzfm_->sync_from_config(cfg_);
         }
@@ -647,9 +733,31 @@ void PhotoModeMod::handle_toggle() {
         cfg_ = before;
         runtime_->apply_config(cfg_);
         if (pbzfm_) pbzfm_->sync_from_config(cfg_);
+    } else if (outcome == ToggleOutcome::Left) {
+        // [look]/调色是会话级参数：退出摄影模式时也恢复默认（引擎侧 leave() 已还原，
+        // 这里同步 cfg_ / settings.json / 两个菜单，避免菜单显示上一次的数值）。
+        reset_look_after_leave("退出摄影模式");
     }
     // 进入失败时 ModRuntime 已打 Error 日志（含 PhotoMode::last_error()）
     input_.reset();
+}
+
+void PhotoModeMod::reset_look_after_leave(const char* reason) {
+    if (!reset_session_defaults(cfg_)) return;
+    if (runtime_) runtime_->apply_config(cfg_);
+
+    const std::filesystem::path settings_path =
+        std::filesystem::path(mod_directory()) / "PBZPhotoModeCpp.settings.json";
+    std::string save_error;
+    if (save_config_json_file(settings_path.string(), cfg_, &save_error)) {
+        port_->log(LogLevel::Info, std::string("画面效果：") + (reason ? reason : "退出") +
+                                      "，[look]/调色已恢复默认参数，settings.json 已更新");
+        if (mods_menu_) mods_menu_->write_config_json(cfg_);
+    } else {
+        port_->log(LogLevel::Warn, std::string("画面效果：") + (reason ? reason : "退出") +
+                                      "，[look]/调色已恢复默认参数，但写回 settings.json 失败：" + save_error);
+    }
+    if (pbzfm_) pbzfm_->sync_from_config(cfg_);
 }
 
 // ---- PbzfmClient::Host（PBZFM 菜单框架桥） ----
@@ -668,9 +776,6 @@ auto PhotoModeMod::submit_config(const Config& cfg) -> void {
     pbzfm_cfg_preview_ = false;
 }
 
-// 滑条拖动实时预览（pbzfm_client Float 控件每帧调用）：与 submit_config 同一条队列，
-// 引擎 Tick 消化时按预览处理——应用照常（实时开关有差异比对，重复应用零副作用），
-// 只是不打「已应用并写回 config.ini」日志；写盘由菜单侧直接跳过（见 pbzfm_client）。
 auto PhotoModeMod::submit_config_preview(const Config& cfg) -> void {
     std::lock_guard<std::mutex> lock(pbzfm_mutex_);
     pbzfm_pending_cfg_ = cfg;
@@ -687,12 +792,53 @@ auto PhotoModeMod::log(LogLevel level, const std::string& msg) -> void {
     if (port_ != nullptr) port_->log(level, msg);
 }
 
+// 取景角度滑条：框架线程读快照 / 写 pending，均不接触 PhotoMode（姿态只在引擎 Tick 线程改）。
+auto PhotoModeMod::photo_mode_active() const -> bool {
+    return pose_angle_active_.load(std::memory_order_relaxed);
+}
+
+auto PhotoModeMod::pose_angle(int axis, double* degrees) const -> bool {
+    if (degrees == nullptr || axis < 0 || axis > 2) return false;
+    if (!photo_mode_active()) return false;
+    *degrees = pose_angle_live_[axis].load(std::memory_order_relaxed);
+    return true;
+}
+
+auto PhotoModeMod::set_pose_angle(int axis, double degrees) -> bool {
+    if (axis < 0 || axis > 2) return false;
+    if (!photo_mode_active()) return false;
+    pose_angle_pending_[axis].store(degrees, std::memory_order_relaxed);
+    pose_angle_mask_.fetch_or(1 << axis, std::memory_order_release);
+    return true;
+}
+
+// 引擎 Tick 线程：把菜单拖动的绝对角落到当前姿态（本帧 tick 内就会 apply_pose）。
+void PhotoModeMod::apply_pending_pose_angles() {
+    const int mask = pose_angle_mask_.exchange(0, std::memory_order_acquire);
+    if (mask == 0 || mode_ == nullptr) return;
+    for (int axis = 0; axis < 3; ++axis) {
+        if ((mask & (1 << axis)) == 0) continue;
+        mode_->set_pose_angle(axis, pose_angle_pending_[axis].load(std::memory_order_relaxed));
+    }
+}
+
+// 引擎 Tick 线程：把姿态写进无锁快照，供菜单下一帧读取（鼠标转过的角度也能立刻反映到滑条）。
+void PhotoModeMod::publish_pose_angles() {
+    const bool active = mode_ != nullptr && mode_->active();
+    pose_angle_active_.store(active, std::memory_order_relaxed);
+    if (!active) return;
+    for (int axis = 0; axis < 3; ++axis) {
+        double deg = 0.0;
+        if (mode_->pose_angle(axis, &deg)) pose_angle_live_[axis].store(deg, std::memory_order_relaxed);
+    }
+}
+
 // PBZFM 菜单提交的配置与动作在这里消化（引擎 Tick 线程，持 mutex_）。
-// 框架的渲染/变更回调在框架线程触发，那边只做数据提交，绝不直接碰引擎。
+// 框架线程只提交数据；写盘由 PBZFM 的 saver 线程负责，本函数只把结果镜像到 Mods Menu 子集。
 void PhotoModeMod::pbzfm_apply_pending() {
     Config incoming{};
     bool has_config = false;
-    bool is_preview = false;  // 滑条拖动预览：照常应用，只是不打日志（每帧一条会刷爆控制台）
+    bool is_preview = false;
     std::vector<PbzfmCommand> commands;
     {
         std::lock_guard<std::mutex> lock(pbzfm_mutex_);
@@ -707,35 +853,30 @@ void PhotoModeMod::pbzfm_apply_pending() {
     }
 
     if (has_config) {
-        // 渲染前写点不可用时，菜单也不能把接管打开：接管靠每帧在 GameViewportClient Tick 之后
-        // 写 POV，钩子缺失时写早了会表现为「镜头完全不动」。这里按 false 应用（菜单随即回显为关，
-        // 与实际情况一致），而不是让用户点开一个必然失效的开关。
+        // 渲染前写点不可用时，菜单也不能把接管打开（与 Mods Menu 同一条红线）。
         if (!gvc_tick_hook_ok_ && incoming.takeover_current_camera) {
             incoming.takeover_current_camera = false;
             if (!is_preview) {
                 port_->log(LogLevel::Warn,
-                           "接管不可用（缺 GameViewportClientTickPost 钩子）：菜单里的接管开关已按关闭处理");
+                           "PBZFM：接管不可用（缺 GameViewportClientTickPost 钩子），接管开关已按关闭处理");
             }
         }
-        // 需要实时通道的开关由 ModRuntime 按差异就地生效（含相机后端热切换）；
-        // 其余字段走 set_config（下一轮冻结/下次进入/每秒重试路径按新配置执行）
         if (runtime_) runtime_->apply_config(incoming);
-        // 画面定格热键在独立 watcher 线程里，不走 keys_：菜单里改了 key_frame_freeze
-        // 必须同步原子量，否则要等下一次 reload_config 才换键。
         const int freeze_vk = vk_from_name(incoming.key_frame_freeze);
         if (freeze_vk != 0) frame_freeze_vk_.store(freeze_vk, std::memory_order_relaxed);
         frame_freeze_timeout_ms_.store(
             static_cast<unsigned long long>(std::clamp(incoming.frame_freeze_timeout_seconds, 5.0, 300.0) * 1000.0),
             std::memory_order_relaxed);
-        if (!is_preview) port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用并写回 config.ini");
+        if (!is_preview) {
+            // 全量配置的 68 项菜单子集跟着变：PBZFM 改完 Mods Menu 里不会显示旧值。
+            if (mods_menu_ && !config_read_error_) mods_menu_->write_config_json(incoming);
+            port_->log(LogLevel::Info, "PBZFM 菜单：设置已应用（settings.json 写回已排队）");
+        }
     }
 
     for (const PbzfmCommand& cmd : commands) {
         switch (cmd.action) {
             case PbzfmAction::ToggleMode:
-                // 从菜单进入摄影模式：先关菜单、推迟一帧再进，让 enter 跑在「菜单已关」
-                // 的帧上（与 F2 进入完全同态；10:45 实机：菜单开着进模式，冻结+NLP 状态下
-                // 游戏原生代码读 -1 崩溃）。重试上限防框架未关成功时死循环。
                 if (mode_ != nullptr && !mode_->active() && pbzfm_ != nullptr && pbzfm_->menu_open()) {
                     if (pbzfm_->request_close_menu() && pbzfm_menu_defer_count_ < 10) {
                         ++pbzfm_menu_defer_count_;
@@ -752,7 +893,6 @@ void PhotoModeMod::pbzfm_apply_pending() {
                 if (mode_ && mode_->active()) mode_->toggle_freeze();
                 break;
             case PbzfmAction::ResetView:
-                // 重置走 tick 的 reset_view 分支（与 R 键完全同一条路径）
                 if (mode_ && mode_->active()) {
                     Intent reset;
                     reset.reset_view = true;
@@ -763,7 +903,7 @@ void PhotoModeMod::pbzfm_apply_pending() {
                 if (mode_) mode_->set_fov(cmd.value);
                 break;
             case PbzfmAction::ReloadConfig:
-                reload_config();  // 内部会同步 PBZFM 菜单显示值
+                reload_config();
                 break;
         }
     }
@@ -801,6 +941,41 @@ void PhotoModeMod::pbzfm_apply_pending() {
         if (input_source_ != nullptr) s.pad_backend = input_source_->pad_backend();
         pbzfm_->publish_snapshot(s);
     }
+}
+
+// Mods Menu 149（SLEEP）通过 UE4SS Bridge 提交的配置。调用方已持 mutex_，本函数在
+// 引擎 Tick 线程执行：应用配置、重建键位、写回 settings.json、刷新 Mods Menu 显示。
+void PhotoModeMod::apply_config_from_mods_menu(const Config& incoming) {
+    Config next = incoming;
+    // 渲染前写点不可用时不允许打开接管（否则镜头完全不动）。
+    if (!gvc_tick_hook_ok_ && next.takeover_current_camera) {
+        next.takeover_current_camera = false;
+        port_->log(LogLevel::Warn,
+                   "Mods Menu 149：接管不可用（缺 GameViewportClientTickPost 钩子），接管开关已按关闭处理");
+    }
+    if (runtime_) {
+        runtime_->apply_config(next);
+    } else {
+        cfg_ = next;
+        keys_ = build_keymap(cfg_, nullptr);
+    }
+    const int freeze_vk = vk_from_name(next.key_frame_freeze);
+    if (freeze_vk != 0) frame_freeze_vk_.store(freeze_vk, std::memory_order_relaxed);
+    frame_freeze_timeout_ms_.store(
+        static_cast<unsigned long long>(std::clamp(next.frame_freeze_timeout_seconds, 5.0, 300.0) * 1000.0),
+        std::memory_order_relaxed);
+
+    const std::filesystem::path settings_path =
+        std::filesystem::path(mod_directory()) / "PBZPhotoModeCpp.settings.json";
+    std::string save_error;
+    if (save_config_json_file(settings_path.string(), next, &save_error)) {
+        port_->log(LogLevel::Info, "Mods Menu 149：设置已应用并写回 settings.json");
+        if (mods_menu_) mods_menu_->write_config_json(next);
+    } else {
+        // 写回失败时保留菜单写下的 config.json；下次启动按 mtime/内容比较再补回。
+        port_->log(LogLevel::Warn, "Mods Menu 149：设置已应用，但写回 settings.json 失败：" + save_error);
+    }
+    if (pbzfm_) pbzfm_->sync_from_config(next);  // PBZFM 菜单若开着，显示值同步（写盘失败也要同步）
 }
 
 // 引擎输入钩子：PlayerController 只有进游戏后才有，所以进摄影模式后开始尝试。
@@ -889,9 +1064,8 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
 
     // ---- 共享状态与配置快照（M-9）----
     // 线程归属：
-    //   cfg_ / keys_ 的写者 = 本线程的 pbzfm_apply_pending()（持 mutex_）+ 渲染线程
-    //     render_tab_impl() → reload_config()（持 mutex_）；读者 = 本函数、
-    //     PBZFM 框架线程的 current_config()（持 mutex_）。
+    //   cfg_ / keys_ 的写者 = 本线程的 pbzfm_apply_pending()/apply_config_from_mods_menu()（持 mutex_）
+    //     + 渲染线程 render_tab_impl() → reload_config()（持 mutex_）；读者 = 本函数。
     //     所以本函数在入口持锁一次性拷出 cfg_snap / keys_snap，之后整帧只读这份副本，
     //     锁外阶段不再直接读 cfg_ / keys_（锁外读 std::string / std::vector 会与写者构成数据竞争）。
     //   mode_ / port_：只在入口快照里持锁读一次 active，其余访问一律留在下面的持锁段。
@@ -903,8 +1077,8 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
     // 取舍：每帧持锁拷一份 Config / KeyMap（约 30 个短字符串基本走 SSO，只有少量堆分配），
     // 换到锁外阶段完全不碰共享配置。反方案（把语音钩子安装 / UI 修复 / 输入轮询挪进锁内）
     // 会让这些走引擎反射的步骤拖长渲染线程等锁的时间，所以不用。
-    // 副作用：本帧开头 PBZFM 菜单刚改的配置从下一帧生效（差 1 帧，肉眼不可见）；
-    // 三个实时开关（hide_player / block_game_input / hide_game_hud）仍由 pbzfm_apply_pending
+    // 副作用：本帧开头 Mods Menu 刚提交的配置从下一帧生效（差 1 帧，肉眼不可见）；
+    // 三个实时开关（hide_player / block_game_input / hide_game_hud）由 apply_config_from_mods_menu
     // 当帧直接下发到 mode_，不受影响。
     Config cfg_snap;
     KeyMap keys_snap;
@@ -968,7 +1142,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
         }
     }
 
-    // PBZFM 菜单是“同一进程内的覆盖窗”：Win32InputSource 的 foreground_is_ours()
+    // PBZFM 菜单是同一进程内的覆盖窗：Win32InputSource 的 foreground_is_ours()
     // 对它同样返回真，而鼠标键走 GetAsyncKeyState 全量轮询（VK 1..255）——
     // 菜单里的左键会直接命中 key_vertical_up（默认 MOUSE_LEFT）→ 相机上升。
     // 菜单可见期间暂停采集（框架 v1+ 导出 PBZFM_IsMenuOpen），关菜单后恢复。
@@ -1018,6 +1192,32 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
 
     // PBZFM 菜单提交的配置与动作：在游戏线程消化（框架线程只提交数据）
     pbzfm_apply_pending();
+    // 取景角度滑条：菜单拖动写的是绝对角，在这里落到姿态上，本帧 tick 就会 apply_pose
+    apply_pending_pose_angles();
+
+    // 语言跟随（H-6）：PBZFM.ini 的 [framework] language 一变就重算生效语言。
+    // 放在引擎 Tick 而不是只放在自绘页回调里：玩家在框架自己的设置页切语言时，
+    // 本模组的页面回调不跑，旧实现会让菜单/标签/控制台帮助文案一直停在旧语言。
+    // 未变化时只有一次 last_write_time 与 CurrentId 比较，开销可忽略。
+    if (pbzfm_) pbzfm_->tick_language();
+
+    // Mods Menu 149（SLEEP）：UE4SS Bridge 每保存一次写一行 events，这里 250ms 轮询，
+    // 读到新编号后把菜单子集 config.json 覆盖到 Config。应用、写回 settings.json、
+    // 刷新菜单显示全部留在引擎 Tick 线程。
+    if (mods_menu_ && mods_menu_->active() && !config_read_error_) {
+        Config mods_menu_cfg;
+        std::vector<std::string> mods_menu_warnings;
+        if (mods_menu_->poll(cfg_, &mods_menu_cfg, &mods_menu_warnings)) {
+            for (const std::string& warning : mods_menu_warnings) {
+                port_->log(LogLevel::Warn, "Mods Menu 149：" + warning);
+            }
+            apply_config_from_mods_menu(mods_menu_cfg);
+        }
+        const std::string mods_menu_error = mods_menu_->take_error();
+        if (!mods_menu_error.empty()) {
+            port_->log(LogLevel::Warn, "Mods Menu 149：" + mods_menu_error);
+        }
+    }
 
     // 首选引擎自己的鼠标增量（PlayerController::GetInputMouseDelta）：
     // 它就是游戏用来转视角的那份数据，不依赖 OS 钩子，前台/窗口化/光标捕获都不影响。
@@ -1095,6 +1295,7 @@ void PhotoModeMod::on_engine_tick(double delta_seconds) {
 
     const Intent intent = input_.build(cfg, keys, dt);
     handle_intent(intent, dt);
+    publish_pose_angles();  // 菜单下一帧读到的就是含鼠标增量在内的实时角度
     retry_view_attach(dt);
     ensure_axis_hook();
     log_input_diagnostics(intent, dt);

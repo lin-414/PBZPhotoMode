@@ -5,6 +5,7 @@
 
 #include "engine/ue4ss_port_internal.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include "core/input_logic.h"
@@ -200,6 +201,10 @@ bool Ue4ssPort::spawn_camera(const CameraPose& pose) {
     last_applied_pose_ = pose;
     last_applied_pose_known_ = false;
     view_verify_fail_streak_ = 0;
+    // 新生成的相机停在自己的默认 FOV（CineCamera 是默认焦距）上：pose 里带着会话 FOV，
+    // 这里立刻写一次。调用方随后还会 apply_fov，本行是兜底——早期 ensure_dof_ready_impl 的
+    // 「补建独立相机」分支就漏了这一步（现象：开色差触发切换后 FOV 回到默认值）。
+    if (pose.fov > 1.0) (void)apply_fov(pose.fov);
     return true;
 }
 
@@ -537,24 +542,15 @@ bool Ue4ssPort::apply_pose(const CameraPose& pose) {
 }
 
 bool Ue4ssPort::apply_fov(double fov) {
+    // 会话 FOV 记账：独立相机后端的每帧重申（reassert_camera_fov_now）要用它；
+    // 接管通道则由 takeover_fov_ 携带同一个值。
+    applied_fov_ = fov;
+    applied_fov_known_ = true;
     if (takeover_active_) {
         takeover_fov_ = fov;
         return write_takeover_pov();
     }
-    UObject* component = camera_component();
-    if (!is_ok(component)) return false;
-    const bool ok = write_number(find_property(component, "FieldOfView"), component, fov);
-    // CineCameraComponent：同步真实焦距。CurrentFocalLength 由 Filmback.SensorWidth 与水平 FOV 换算；
-    // 读不到 Filmback 时用 35mm 全画幅近似，并只在首次告警一次。
-    if (camera_is_cine_ && ok) {
-        double sensor_width = 35.0;
-        (void)read_struct_number(find_property(component, "Filmback"), component, "SensorWidth", sensor_width);
-        const double focal = focal_length_from_fov(sensor_width, fov);
-        if (focal > 0.0) {
-            write_number(find_property(component, "CurrentFocalLength"), component, focal);
-        }
-    }
-    return ok;
+    return write_camera_fov(fov, true);
 }
 
 bool Ue4ssPort::destroy_camera() {
@@ -636,7 +632,186 @@ auto write_pov_fov(FProperty* pov_property, void* pov_base, double fov) -> bool 
     return any;
 }
 
+// 相机组件上的 FOV 载体：UE5.5+ 相机 Lens 重构同样可能把组件的 FOV 挪进 Lens（POV 已经这么挪了），
+// 旧字段 FieldOfView 也一起写——引擎只认其中一个，两边都保持同一个值才不留矛盾状态。
+auto component_lens_property(UObject* component) -> FProperty* {
+    return find_property(component, "Lens");
+}
+
+auto component_lens_fov_property(UObject* component) -> FProperty* {
+    return struct_member(component_lens_property(component), "FieldOfView");
+}
+
+auto write_component_fov(UObject* component, double fov) -> bool {
+    bool any = false;
+    if (FProperty* lens = component_lens_property(component); lens != nullptr) {
+        if (FProperty* lens_fov = struct_member(lens, "FieldOfView"); lens_fov != nullptr) {
+            any = write_number(lens_fov, struct_member_base(lens, component), fov) || any;
+        }
+    }
+    if (FProperty* legacy = find_property(component, "FieldOfView"); legacy != nullptr) {
+        any = write_number(legacy, component, fov) || any;
+    }
+    return any;
+}
+
+auto read_component_fov(UObject* component, double& out) -> bool {
+    if (FProperty* lens = component_lens_property(component); lens != nullptr) {
+        if (FProperty* lens_fov = struct_member(lens, "FieldOfView"); lens_fov != nullptr) {
+            if (read_number(lens_fov, struct_member_base(lens, component), out)) return true;
+        }
+    }
+    return read_number(find_property(component, "FieldOfView"), component, out);
+}
+
+// CineCamera 的 Filmback.SensorWidth（mm）：读不到按 35mm 全画幅近似（与旧 apply_fov 同口径）。
+auto component_sensor_width_mm(UObject* component) -> double {
+    double sensor = 0.0;
+    if (read_struct_number(find_property(component, "Filmback"), component, "SensorWidth", sensor) && sensor > 0.0) {
+        return sensor;
+    }
+    return 35.0;
+}
+
+// CineCamera 的焦距限位（FCameraLensSettings.MinFocalLength/MaxFocalLength）：
+// SetCurrentFocalLength 会按这两个值夹紧，而 FOV 与焦距是反比——广角端（FOV 越大）需要越小的焦距。
+// 默认 / 景深骨架把它钉在 12mm，于是焦距被夹在 12mm、FOV 卡在约 89°：现象就是
+// 「FOV 调到 90 以上没反应」（2026-11-12 实机日志：目标=129.2 → 组件FOV=89.42 焦距=12.00mm）。
+// 这里在写 CurrentFocalLength 之前，把限位按需放宽到能容纳目标焦距（只放宽、不收紧，避免每帧抖动）。
+auto ensure_lens_focal_range(UObject* component, double focal) -> void {
+    if (!(focal > 0.0)) return;
+    FProperty* lens = find_property(component, "LensSettings");
+    if (lens == nullptr) return;
+    double min_focal = 0.0;
+    if (read_struct_number(lens, component, "MinFocalLength", min_focal) && min_focal > focal) {
+        const double widened = focal * 0.98 > 0.1 ? focal * 0.98 : 0.1;
+        (void)write_struct_number(lens, component, "MinFocalLength", widened);
+    }
+    double max_focal = 0.0;
+    if (read_struct_number(lens, component, "MaxFocalLength", max_focal) && max_focal < focal) {
+        (void)write_struct_number(lens, component, "MaxFocalLength", focal * 1.05 + 1.0);
+    }
+}
+
+// 组件上的 FOV 与目标值的容差（与接管 POV 回读同量级：0.1° 以内算一致）。
+constexpr double kComponentFovTolerance = 0.1;
+
 }  // namespace
+
+// ---- 独立相机后端的 FOV 通道（2026-11-12 实机：调完 FOV 再动色差，FOV 跳回默认值）----
+//
+// 两条后端的 FOV 写点曾经不对称：
+//   * 接管当前相机：每帧在 GameViewportClient Tick 之后写 CameraCache.POV（位姿 + FOV），
+//     写的就是本帧渲染真正读取的那个值，所以 FOV 稳。
+//   * 独立相机（CineCameraActor）：FOV 只在 enter/切换/重置那一帧写一次相机组件的属性——
+//     而组件通道（景深/色差的 SetLensSettings/SetFocusSettings）与引擎自己按焦距 + Filmback
+//     重建镜头派生状态的路径都会改写 FOV，画面于是回到相机自己的默认 FOV。色差恰好是
+//     「必须切到独立相机」的触发条件，所以玩家看到的是「调完 FOV 一动色差就跳回默认」。
+// 这里把接管通道的同款做法搬到独立相机：同一个写点每帧重申（组件 + 本帧 POV 两边都写），
+// 并在回读发现被改写时留一行证据（下一轮排查直接看这行）。
+
+bool Ue4ssPort::write_camera_fov(double fov, bool include_pov) {
+    UObject* component = camera_component();
+    if (!is_ok(component)) return false;
+
+    // 原生 setter 先行：直接写属性会让组件内部派生状态与属性值脱节（景深通道第 15 轮的同一教训）。
+    // 本 build 没有该函数时静默退回属性写入，不算失败。
+    (void)invoke_set_number(component, "SetFieldOfView", fov);
+    const bool wrote_fov = write_component_fov(component, fov);
+
+    // CineCameraComponent：CurrentFocalLength 与水平 FOV 联动（focal = 0.5·sensor/tan(fov/2)）；
+    // 引擎按「焦距 + Filmback」重建 POV，所以这一项必须跟着一起写。
+    bool wrote_focal = false;
+    if (camera_is_cine_) {
+        if (FProperty* focal_prop = find_property(component, "CurrentFocalLength"); focal_prop != nullptr) {
+            const double sensor_width = component_sensor_width_mm(component);
+            const double focal = focal_length_from_fov(sensor_width, fov);
+            if (focal > 0.0) {
+                // 先放宽 LensSettings 限位，再设焦距：SetCurrentFocalLength 会按限位夹紧，
+                // 限位不够宽时大 FOV（小焦距）会被静默夹住（FOV>90 失效 / 跳回 ~90 的根因）。
+                ensure_lens_focal_range(component, focal);
+                (void)invoke_set_number(component, "SetCurrentFocalLength", focal);
+                wrote_focal = write_number(focal_prop, component, focal);
+            }
+        }
+    }
+    if (!wrote_fov && !wrote_focal) return false;
+
+    if (include_pov) (void)write_view_pov_fov(fov);
+
+    // 首启一行证据：三个载体的实际值都打出来（引擎只认其中一个，谁在动、动到多少全靠这行）。
+    if (!fov_channel_logged_) {
+        fov_channel_logged_ = true;
+        double comp_fov = 0.0;
+        double comp_focal = 0.0;
+        double sensor_out = 0.0;
+        const bool have_fov = read_component_fov(component, comp_fov);
+        const bool have_focal = read_number(find_property(component, "CurrentFocalLength"), component, comp_focal);
+        const bool have_sensor = read_struct_number(find_property(component, "Filmback"), component, "SensorWidth", sensor_out);
+        double lens_min = 0.0;
+        double lens_max = 0.0;
+        const bool have_lens_min = read_struct_number(find_property(component, "LensSettings"), component, "MinFocalLength", lens_min);
+        const bool have_lens_max = read_struct_number(find_property(component, "LensSettings"), component, "MaxFocalLength", lens_max);
+        char buf[420]{};
+        std::snprintf(buf, sizeof(buf),
+                      "FOV 通道（独立相机）：写入=%.1f → 组件FOV=%.2f(%s) 焦距=%.2fmm(%s) 传感器=%.1fmm(%s) "
+                      "Lens.FieldOfView=%s 焦距限位=[%.2f, %.2f]mm（每帧重申，防止组件通道/引擎把 FOV 打回默认）",
+                      fov, comp_fov, have_fov ? "读到" : "读不到", comp_focal, have_focal ? "读到" : "读不到",
+                      have_sensor ? sensor_out : 35.0, have_sensor ? "读到" : "默认35",
+                      component_lens_fov_property(component) != nullptr ? "有" : "无",
+                      have_lens_min ? lens_min : 0.0, have_lens_max ? lens_max : 0.0);
+        log(LogLevel::Info, buf);
+    }
+    return true;
+}
+
+// 独立相机后端：把会话 FOV 写进本帧渲染用的 POV。
+// 只在 ViewTarget 确实是我们相机时写——否则会把游戏的过场/玩家相机 FOV 改掉。
+bool Ue4ssPort::write_view_pov_fov(double fov) {
+    UObject* pc = controller();
+    if (!is_ok(pc)) return false;
+    UObject* observed = nullptr;
+    bool readable = false;
+    (void)read_view_target_target(observed, readable);
+    if (!readable || !is_ok(observed) || observed != camera_actor_) return false;
+    PovView pv;
+    if (!resolve_pov_view(pv)) return false;
+    return write_pov_fov(pv.pov, pv.base, fov);
+}
+
+void Ue4ssPort::reassert_camera_fov_now() {
+    // 接管通道自己每帧写 POV（含 FOV），这里只服务独立相机后端。
+    if (takeover_active_) return;
+    if (!applied_fov_known_) return;
+    UObject* component = camera_component();
+    if (!is_ok(component)) return;
+
+    // 回读比对：组件上的两个载体（FieldOfView / Lens.FieldOfView）与「焦距反算出来的 FOV」
+    // 任一偏离目标就记账，然后无条件重申（组件 + 本帧 POV 都写）。
+    double comp_fov = 0.0;
+    double comp_focal = 0.0;
+    bool diverged = false;
+    if (read_component_fov(component, comp_fov) && std::abs(comp_fov - applied_fov_) > kComponentFovTolerance) {
+        diverged = true;
+    }
+    if (read_number(find_property(component, "CurrentFocalLength"), component, comp_focal) && comp_focal > 0.0) {
+        const double from_focal = fov_from_focal_length(component_sensor_width_mm(component), comp_focal);
+        if (from_focal > 0.0 && std::abs(from_focal - applied_fov_) > kComponentFovTolerance) diverged = true;
+    }
+    if (diverged) {
+        ++fov_divergence_seen_;
+        // 首次必打，之后每 600 次（约 10 秒）一行心跳：每帧都打会把日志淹掉
+        if (!fov_divergence_logged_ || fov_divergence_seen_ % 600 == 0) {
+            fov_divergence_logged_ = true;
+            char buf[300]{};
+            std::snprintf(buf, sizeof(buf),
+                          "FOV 被改写：目标=%.1f → 组件FOV=%.2f 焦距=%.2fmm（第 %d 次；已重申，独立相机通道）",
+                          applied_fov_, comp_fov, comp_focal, fov_divergence_seen_);
+            log(LogLevel::Warn, buf);
+        }
+    }
+    if (write_camera_fov(applied_fov_, true)) ++fov_reassert_writes_;
+}
 
 bool Ue4ssPort::resolve_pov_view(PovView& out) {
     out = PovView{};
@@ -704,7 +879,7 @@ bool Ue4ssPort::verify_takeover_pov() {
         log(LogLevel::Warn,
             "接管当前相机未生效：本帧渲染前的 CameraCache.POV 仍是游戏自己的位姿（连续 " +
                 std::to_string(takeover_pov_mismatch_streak_) +
-                " 帧被覆盖），说明写点没有赶在 RedrawViewports 之前；请把 config.ini [camera] 的 "
+                " 帧被覆盖），说明写点没有赶在 RedrawViewports 之前；请把 settings.json 的 "
                 "takeover_current_camera 设为 false，本次将自动回退独立相机");
     }
     return false;
@@ -854,7 +1029,7 @@ bool Ue4ssPort::write_takeover_pov() {
             takeover_write_fail_logged_ = true;
             log(LogLevel::Warn,
                 "接管当前相机运行中连续写 POV 失败（画面可能不再跟随输入）；退出重进摄影模式可重建接管，"
-                "或在 config.ini [camera] 关闭 takeover_current_camera 改用独立相机");
+                "或在 settings.json 关闭 takeover_current_camera 改用独立相机");
         }
         return false;
     };
@@ -1213,11 +1388,25 @@ void Ue4ssPort::apply_look_to_camera_pov() {
     // false 撤残留，撤干净（两个闩锁都落下）才允许早退。
     const bool want_vignette = look_active_ && look_current_.vignette_active();
     const bool want_bloom = look_active_ && look_current_.bloom_active();
-    // 调色·进阶诊断（一次性）：即使用户没动暗角/泛光，只要用了调色项也要放行过这个早退，
-    // 读一遍游戏 POV 对三件调色字段的覆盖标志（只读，不写；读完即记，后续帧恢复早退）。
-    const bool pro_diag_pending =
-        !look_pov_pro_logged_ && look_active_ && look_current_.color_pro_active();
-    if (!want_vignette && !pov_vignette_latched_ && !want_bloom && !pov_bloom_latched_ && !pro_diag_pending) {
+    // 调色家族（FVector4 五件）与颜色分级强度也要走这条通道：体积之后还有相机组件/POV 的同名字段
+    //（weight=1，合成顺序里排在体积之后）。DOF 组件通道把管理器 POV 的整份 FPostProcessSettings
+    // memcpy 进相机组件（语义是「保留游戏自己的调色/曝光」），游戏自己 override 的调色项因此每帧
+    // 回到画面、压过体积里写好的值。2026-11-12 实机取证：饱和 0.22~1.94 全程下发+回读正确、
+    // 颜色分级强度=1，画面零变化（对比度同批）；而同族的增益/伽马 2026-11-08 实测生效（同一 LUT）
+    // ——差异只能是「这几项被 POV 那条链压住」，与本通道存在的理由同型（暗角/泛光当年即此因）。
+    const bool want_saturation = look_active_ && look_current_.saturation_active();
+    const bool want_contrast = look_active_ && look_current_.contrast_active();
+    const bool want_gain = look_active_ && look_current_.color_gain_active();
+    const bool want_gamma = look_active_ && look_current_.color_gamma_active();
+    const bool want_offset = look_active_ && look_current_.color_offset_active();
+    const bool want_color_grading = look_active_ && look_current_.color_grading_active();
+    // 调色诊断（一次性）：即使用户没动暗角/泛光，只要用了调色项也要放行过这个早退，
+    // 读一遍游戏 POV 对这五件 + 强度字段的覆盖标志（只读，不写；读完即记，后续帧恢复早退）。
+    const bool color_diag_pending = !look_pov_color_logged_ && want_color_grading;
+    if (!want_vignette && !pov_vignette_latched_ && !want_bloom && !pov_bloom_latched_ &&
+        !want_saturation && !pov_saturation_latched_ && !want_contrast && !pov_contrast_latched_ &&
+        !want_gain && !pov_gain_latched_ && !want_gamma && !pov_gamma_latched_ && !want_offset &&
+        !pov_offset_latched_ && !pov_color_grading_latched_ && !color_diag_pending) {
         return;
     }
 
@@ -1239,11 +1428,12 @@ void Ue4ssPort::apply_look_to_camera_pov() {
         (void)read_number(struct_member(pv.pov, "PostProcessBlendWeight"), pv.base, pov_blend_weight);
     }
 
-    // 调色·进阶诊断（一次性，只读）：游戏 POV 对三件存活字段的 bOverride_* 标志 + 原值。
-    // 2026-11-08 实机判据已用掉一轮：当时 13 项全部 覆盖0（排除 POV 压制），十项判死定案；
-    // 保留三件的一次性日志供游戏更新后复查（字段若被游戏 override，需按暗角/泛光的
-    // 闩锁模式扩 POV 重申通道）。
-    if (pro_diag_pending && !look_pov_pro_logged_) {
+    // 调色家族诊断（一次性，只读，读在写之前）：游戏 POV 对饱和/对比/增益/伽马/黑位与颜色分级
+    // 强度的 bOverride_* 标志 + 原值。判据：覆盖1 = 这条链（相机组件/POV，排在体积之后）会压住
+    // 体积写入，必须靠本函数的每帧重申；全 覆盖0 = 体积通道本来就通，问题在别处（引擎档位/字段）。
+    // 2026-11-08 只查过增益/伽马/黑位（全 覆盖0）；饱和/对比此前从未查过——2026-11-12 实机它们
+    // 写入/回读全对却零画面变化，本版补上这两项并据此扩通道。
+    if (color_diag_pending && !look_pov_color_logged_) {
         // FVector4 项取首通道（X 或 R，与 set_look 的 vector_channels 同语义，只读无日志副作用）。
         auto first_channel_value = [&](const char* value_name, double& out) {
             FProperty* vector_prop = struct_member(settings, value_name);
@@ -1252,19 +1442,21 @@ void Ue4ssPort::apply_look_to_camera_pov() {
             const bool rgba = struct_member(vector_prop, "R") != nullptr;
             return read_number(struct_member(vector_prop, rgba ? "R" : "X"), vector_base, out);
         };
-        struct ProField {
+        struct ColorField {
             const char* label;
             const char* override_name;
             const char* value_name;
         };
-        static const ProField kProFields[] = {
+        static const ColorField kColorFields[] = {
+            {"饱和", "bOverride_ColorSaturation", "ColorSaturation"},
+            {"对比", "bOverride_ColorContrast", "ColorContrast"},
             {"增益", "bOverride_ColorGain", "ColorGain"},
             {"伽马", "bOverride_ColorGamma", "ColorGamma"},
             {"黑位", "bOverride_ColorOffset", "ColorOffset"},
         };
-        std::string text = "画面效果·进阶：游戏 POV 覆盖标志（覆盖1=游戏镜头自己 override 该项，"
-                           "体积写入会被压住）";
-        for (const ProField& f : kProFields) {
+        std::string text = "画面效果·调色通道诊断：游戏 POV 覆盖标志（覆盖1=游戏自己的调色会压住"
+                           "体积写入，本通道的每帧重申就是为它准备的）";
+        for (const ColorField& f : kColorFields) {
             double o = 0.0;
             double v = 0.0;
             const bool flag_ok = read_number(struct_member(settings, f.override_name), base, o);
@@ -1277,7 +1469,19 @@ void Ue4ssPort::apply_look_to_camera_pov() {
                 text += std::string(" ") + f.label + "=<读不到>";
             }
         }
-        look_pov_pro_logged_ = true;
+        // 颜色分级强度一并读：本作若把它压成 0，整个颜色分级 LUT 不参与合成，
+        // 饱和/对比/增益/伽马/黑位写得再准也进不了画面（体积端钉 1 拦不住 POV 覆盖）。
+        double cg_value = -1.0;
+        double cg_override = -1.0;
+        if (read_number(struct_member(settings, "bOverride_ColorGradingIntensity"), base, cg_override) &&
+            read_number(struct_member(settings, "ColorGradingIntensity"), base, cg_value)) {
+            char part[64]{};
+            std::snprintf(part, sizeof(part), " 颜色分级强度=%.2f(覆盖%.0f)", cg_value, cg_override);
+            text += part;
+        } else {
+            text += " 颜色分级强度=<读不到>";
+        }
+        look_pov_color_logged_ = true;
         log(LogLevel::Info, text);
     }
 
@@ -1311,6 +1515,87 @@ void Ue4ssPort::apply_look_to_camera_pov() {
             cleared = cleared || clear_bloom;
         }
     }
+    // 调色家族（FVector4）每帧重申：通道名与体积端同规则（FVector4 = X/Y/Z/W；FLinearColor 才是
+    // R/G/B/A）。失活走「只撤覆盖标志」分支——值字段原样留给游戏：POV 每帧由 UpdateCamera 从相机
+    // 组件重建，残留值不参与合成，也不该由我们去改写游戏自己的原值。
+    struct PovVector {
+        const char* label;
+        const char* override_name;
+        const char* value_name;
+        bool want;
+        bool* latched;
+        double value;
+        double w_value;  // 乘算字段（饱和/对比/增益/伽马）=1；加算字段（黑位）=0
+    };
+    PovVector vectors[] = {
+        {"饱和", "bOverride_ColorSaturation", "ColorSaturation", want_saturation, &pov_saturation_latched_,
+         look_current_.saturation, 1.0},
+        {"对比", "bOverride_ColorContrast", "ColorContrast", want_contrast, &pov_contrast_latched_,
+         look_current_.contrast, 1.0},
+        {"增益", "bOverride_ColorGain", "ColorGain", want_gain, &pov_gain_latched_, look_current_.color_gain,
+         1.0},
+        {"伽马", "bOverride_ColorGamma", "ColorGamma", want_gamma, &pov_gamma_latched_,
+         look_current_.color_gamma, 1.0},
+        {"黑位", "bOverride_ColorOffset", "ColorOffset", want_offset, &pov_offset_latched_,
+         look_current_.color_offset, 0.0},
+    };
+    bool color_wrote = false;
+    bool color_cleared = false;
+    for (PovVector& item : vectors) {
+        const bool clear = !item.want && *item.latched;
+        if (!item.want && !clear) continue;
+        FProperty* override_prop = struct_member(settings, item.override_name);
+        FProperty* value_prop = struct_member(settings, item.value_name);
+        if (override_prop == nullptr || value_prop == nullptr) {
+            if (!item.want) *item.latched = false;  // 字段缺失：撤不了残留，也别每帧重试
+            continue;
+        }
+        bool ok = false;
+        if (!item.want) {
+            ok = write_bool(override_prop, base, false);
+        } else {
+            void* vector_base = struct_member_base(value_prop, base);
+            const bool rgba = struct_member(value_prop, "R") != nullptr;
+            const char* channels[4] = {rgba ? "R" : "X", rgba ? "G" : "Y", rgba ? "B" : "Z",
+                                       rgba ? "A" : "W"};
+            ok = write_bool(override_prop, base, true);
+            for (int i = 0; i < 3; ++i) {
+                FProperty* channel = struct_member(value_prop, channels[i]);
+                if (channel == nullptr || !write_number(channel, vector_base, item.value)) ok = false;
+            }
+            FProperty* w = struct_member(value_prop, channels[3]);
+            if (w == nullptr || !write_number(w, vector_base, item.w_value)) ok = false;
+        }
+        if (!ok) continue;  // 写失败不落闩，下一帧重试
+        *item.latched = item.want;
+        color_wrote = color_wrote || item.want;
+        color_cleared = color_cleared || clear;
+    }
+    // 颜色分级强度：调色家族任一活跃就把 LUT 强度钉成 1（本作若把它压成 0，整个颜色分级 LUT 不参与
+    // 合成——体积里写的饱和/对比/增益/伽马/黑位全都进不了画面）；失活撤覆盖标志、值留给游戏。
+    {
+        const bool clear = !want_color_grading && pov_color_grading_latched_;
+        if (want_color_grading || clear) {
+            FProperty* override_prop = struct_member(settings, "bOverride_ColorGradingIntensity");
+            FProperty* value_prop = struct_member(settings, "ColorGradingIntensity");
+            if (override_prop != nullptr && value_prop != nullptr) {
+                bool ok = write_bool(override_prop, base, want_color_grading);
+                if (ok && want_color_grading) ok = write_number(value_prop, base, 1.0);
+                if (ok) {
+                    pov_color_grading_latched_ = want_color_grading;
+                    color_wrote = color_wrote || want_color_grading;
+                    color_cleared = color_cleared || clear;
+                }
+            }
+        }
+    }
+    if (color_wrote && !pov_color_logged_) {
+        pov_color_logged_ = true;
+        log(LogLevel::Info,
+            "画面效果：调色家族已加走相机 POV 每帧重申通道（饱和/对比/增益/伽马/黑位 + 颜色分级强度）"
+            "——相机组件/POV 的同名字段排在体积之后，只写体积会被游戏自己的调色覆盖压住");
+    }
+
     if (wrote && !look_pov_logged_) {
         look_pov_logged_ = true;
         double v = -1.0, b = -1.0, vf = -1.0, bf = -1.0;
@@ -1332,6 +1617,12 @@ void Ue4ssPort::apply_look_to_camera_pov() {
         log(LogLevel::Info,
             "画面效果：暗角/泛光失活，已把相机 POV 上的残留覆盖回写为 覆盖0"
             "（定格/独立相机下 POV 不被 UpdateCamera 重建，残留必须显式撤除，否则压过体积）");
+    }
+    if (color_cleared && !pov_color_clear_logged_) {
+        pov_color_clear_logged_ = true;
+        log(LogLevel::Info,
+            "画面效果：调色家族（饱和/对比/增益/伽马/黑位/颜色分级强度）失活，已把相机 POV 上的"
+            "残留覆盖回写为 覆盖0（理由同暗角/泛光：POV 残留会永远压过体积）");
     }
 }
 

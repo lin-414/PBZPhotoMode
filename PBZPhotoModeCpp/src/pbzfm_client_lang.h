@@ -1,6 +1,6 @@
 #pragma once
 
-// PBZFM 自绘设置页的客户端自治 i18n。
+// 客户端自治 i18n（UE4SS 控制台诊断面板用）。
 //
 // 词典全部来自外部 JSON，DLL 不内置任何文本：
 //   - 词典文件：<mod 目录>\languages\<语言 id>.json，扁平 UTF-8 JSON：

@@ -177,7 +177,16 @@ RC::Unreal::UObject* Ue4ssPort::world_settings() {
 //     否则换图后这些设置会一直停在摄影模式的取值上（回滚失败不重试：旧对象归属不确定）；
 //   · 进程级状态（Wwise 整引擎挂起、函数指针与钩子）不属于世界，保持不动。
 void Ue4ssPort::observe_world(UObject* scene, UObject* settings) {
-    if (!world_identity_.observe(scene, settings)) return;
+    bool catchup = false;
+    if (!world_identity_.observe(scene, settings, &catchup)) {
+        if (catchup) {
+            // 换代收尾：UWorld 已换代、WorldSettings 首次追平。只补齐基线，不清任何缓存——
+            // 2.2.0 把这次追平当成第二次换代，进图后立刻进摄影模式会清空刚登记的
+            // 布料/骨骼冻结记账（实机 2026-11-09 21:09 拉条回归的根因）。
+            log(LogLevel::Info, "世界换代收尾：WorldSettings 已追平本代基线（不触发失效清理）");
+        }
+        return;
+    }
     invalidate_world_scoped_state();
     log(LogLevel::Info, "检测到世界换代（generation=" + std::to_string(world_identity_.generation()) +
                             "）：旧世界的对象缓存与原始值快照已作废");

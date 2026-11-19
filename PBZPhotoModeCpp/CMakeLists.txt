@@ -13,11 +13,14 @@ endif()
 # 不含任何 UE4SS/UE 头文件：配置解析、输入状态机、数学、摄影模式状态机。
 add_library(pbzpm_core STATIC
     src/core/config.cpp
+    src/core/config_json.cpp
     src/core/gamepad.cpp
     src/core/hook_registry.cpp
     src/core/i18n_logic.cpp
     src/core/input_logic.cpp
+    src/core/lang_follow.cpp
     src/core/mod_runtime.cpp
+    src/core/mods_menu.cpp
     src/core/photo_mode.cpp
     src/core/vk.cpp
     src/pbzfm_client_lang.cpp
@@ -32,6 +35,8 @@ if (PBZPM_BUILD_TESTS)
         tests/test_mod_runtime.cpp
         tests/test_input_pure.cpp
         tests/test_pbzfm_validation.cpp
+        tests/test_mods_menu.cpp
+        tests/test_config_json.cpp
     )
     target_link_libraries(pbzpm_tests PRIVATE pbzpm_core)
     # 不注册 ctest：本项目的测试入口统一是 tools/build_tests.bat，
@@ -78,6 +83,7 @@ if (PBZPM_WITH_UE4SS)
         src/engine/ue4ss_port_diagnostics.cpp     # 冻结诊断/状态转储
         src/engine/process_freeze.cpp             # F7 画面定格（全线程冻结 + 时间 API 补偿）
         src/mod_app.cpp
+        src/mods_menu_client.cpp
         src/pbzfm_client.cpp
         src/ui_tab.cpp
         src/win_input.cpp

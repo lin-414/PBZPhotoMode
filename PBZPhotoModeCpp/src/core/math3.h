@@ -66,6 +66,23 @@ inline double wrap_angle_180(double angle_deg) {
     return a - 180.0;
 }
 
+// 取景角度滑条的归一（PBZFM 相机组 pitch/yaw/roll；单位度）：
+//   0=pitch -> 夹到 ±pitch_limit（与鼠标俯仰同一上限，避免菜单滑条把镜头翻过顶）
+//   1=yaw   -> [-180, 180)（内部仍是 0..360，等价角；对称区间便于滑条显示）
+//   2=roll  -> [-180, 180)
+// 非法轴原样返回。纯函数，菜单写入与相机姿态读取共用，单测覆盖。
+inline double normalize_pose_angle(int axis, double angle_deg, double pitch_limit_deg = 89.0) {
+    switch (axis) {
+        case 0:
+            return clamp_pitch(angle_deg, pitch_limit_deg);
+        case 1:
+        case 2:
+            return wrap_angle_180(angle_deg);
+        default:
+            return angle_deg;
+    }
+}
+
 inline Vec3 offset_by_local(const Vec3& loc, const Rot& rot, const Vec3& local_dir, double scale) {
     const Vec3 fwd = forward_from_angles(rot.pitch, rot.yaw);
     const Vec3 right = right_from_yaw(rot.yaw);

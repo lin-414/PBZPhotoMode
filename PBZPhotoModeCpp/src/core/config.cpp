@@ -1,5 +1,6 @@
 #include "core/config.h"
 
+#include "core/mods_menu.h"
 #include "core/tuning.h"
 #include "core/version.h"
 
@@ -9,10 +10,15 @@
 #include <cmath>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <limits>
+#include <locale>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string_view>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace pbzpm {
@@ -453,6 +459,11 @@ const char* log_level_name(LogLevel level) {
     return "info";
 }
 
+const char* config_section_for_key(const std::string& key) {
+    const ConfigFieldSpec* spec = find_spec(key);
+    return spec != nullptr ? spec->section : nullptr;
+}
+
 const char* mouse_vertical_mode_name(MouseVerticalMode mode) {
     return mode == MouseVerticalMode::Look ? "look" : "translate";
 }
@@ -486,6 +497,18 @@ bool reset_look_defaults(Config& cfg) {
     set_flag(cfg.contrast_enabled, defaults.contrast_enabled);
     set_flag(cfg.bloom_enabled, defaults.bloom_enabled);
     set_flag(cfg.temperature_enabled, defaults.temperature_enabled);
+    return changed;
+}
+
+bool reset_session_defaults(Config& cfg) {
+    bool changed = reset_look_defaults(cfg);
+    // 景深总开关：与 [look] 同为会话级（每次进入都从关闭开始）。这里显式写默认值而不是
+    // 复用 defaults.dof_enabled，是为了让「默认=关」这件事在代码里一眼可见。
+    const bool dof_default = Config{}.dof_enabled;
+    if (cfg.dof_enabled != dof_default) {
+        cfg.dof_enabled = dof_default;
+        changed = true;
+    }
     return changed;
 }
 
@@ -949,14 +972,162 @@ std::string config_ini_text(const Config& c) {
         << "frame_freeze_timeout_seconds = " << c.frame_freeze_timeout_seconds << "\n\n"
         << "[ui]\n"
         << "; UE4SS 控制台里的只读诊断面板（需要 UE4SS 控制台窗口）；false=不注册该 tab\n"
-        << "; 游戏内无菜单，纯快捷键操作；可写设置的唯一入口是 PBZFM 菜单页\n"
+        << "; 游戏内设置见 SLEEP Mods Menu 149；键位/画面效果等高级项编辑 PBZPhotoModeCpp.settings.json\n"
         << "imgui_tab = " << (c.imgui_tab ? "true" : "false") << "\n"
-        << "; PBZFM 菜单界面语言：auto=跟随 PBZFM 菜单；或词典 id\n"
+        << "; UE4SS 控制台词典语言：auto=默认（简体中文）；或词典 id\n"
         << ";（内置 zh-CN/en-US/ja-JP/ko-KR，或 languages/*.json 的文件名）\n"
         << "menu_language = " << c.menu_language << "\n\n"
         << "[misc]\n"
         << "log_level = " << log_level_name(c.log_level) << "\n";
     return out.str();
+}
+
+namespace {
+
+std::string enum_value_text(const ConfigFieldSpec& spec, const Config& cfg) {
+    const std::string key = spec.key != nullptr ? spec.key : "";
+    if (key == "freeze_mode") return cfg.freeze_mode == FreezeMode::Pause ? "pause" : "dilation";
+    if (key == "mouse_vertical_mode") return cfg.mouse_vertical_mode == MouseVerticalMode::Look ? "look" : "translate";
+    if (key == "menu_language") return cfg.menu_language;
+    if (key == "log_level") return log_level_name(cfg.log_level);
+    return {};
+}
+
+std::string value_as_text(const ModsMenuValue& value) {
+    switch (value.type) {
+        case ModsMenuValueType::String: return value.text;
+        case ModsMenuValueType::Bool: return value.boolean ? "true" : "false";
+        case ModsMenuValueType::Number: {
+            std::ostringstream stream;
+            stream.imbue(std::locale::classic());
+            stream << std::setprecision(std::numeric_limits<double>::max_digits10) << value.number;
+            return stream.str();
+        }
+        case ModsMenuValueType::Null:
+        case ModsMenuValueType::Other: return {};
+    }
+    return {};
+}
+
+}  // namespace
+
+std::string config_json_text(const Config& cfg) {
+    ModsMenuValues values;
+    for (const ConfigFieldSpec& spec : schema()) {
+        if (spec.kind == FieldKind::Deprecated || spec.key == nullptr) continue;
+        ModsMenuValue item;
+        switch (spec.kind) {
+            case FieldKind::Text:
+                item.type = ModsMenuValueType::String;
+                item.text = cfg.*spec.text;
+                break;
+            case FieldKind::Bool:
+                item.type = ModsMenuValueType::Bool;
+                item.boolean = cfg.*spec.boolean;
+                break;
+            case FieldKind::Number:
+                item.type = ModsMenuValueType::Number;
+                item.number = cfg.*spec.number;
+                break;
+            case FieldKind::Enum:
+                item.type = ModsMenuValueType::String;
+                item.text = enum_value_text(spec, cfg);
+                break;
+            case FieldKind::Deprecated: break;
+        }
+        values[spec.key] = std::move(item);
+    }
+    return write_mods_menu_json(values);
+}
+
+ConfigLoadResult parse_config_json(const std::string& text, const char* source) {
+    ConfigLoadResult result;
+    result.source = source != nullptr ? source : "config.json";
+    ModsMenuValues values;
+    std::string parse_error;
+    if (!parse_mods_menu_json(text, values, &parse_error)) {
+        result.ok = false;
+        result.read_error = true;
+        result.warnings.push_back("配置 JSON 解析失败：" + parse_error);
+        return result;
+    }
+
+    for (const auto& [key, value] : values) {
+        const ConfigFieldSpec* spec = find_spec(key);
+        if (spec == nullptr) {
+            result.warnings.push_back("未知配置项已忽略：" + key);
+            continue;
+        }
+        switch (spec->kind) {
+            case FieldKind::Deprecated:
+                result.warnings.push_back("配置项 " + key + " 已弃用：" +
+                                           std::string(spec->note != nullptr ? spec->note : "已忽略"));
+                break;
+            case FieldKind::Text: {
+                const std::string text_value = value_as_text(value);
+                if (text_value.empty()) {
+                    result.warnings.push_back("值为空：" + key + "（保留默认）");
+                } else {
+                    result.cfg.*spec->text = text_value;
+                }
+                break;
+            }
+            case FieldKind::Bool: {
+                bool parsed = false;
+                bool ok = false;
+                if (value.type == ModsMenuValueType::Bool) {
+                    parsed = value.boolean;
+                    ok = true;
+                } else if (value.type == ModsMenuValueType::Number) {
+                    parsed = value.number != 0.0;
+                    ok = true;
+                } else if (value.type == ModsMenuValueType::String) {
+                    ok = parse_bool(value.text, parsed);
+                }
+                if (ok) {
+                    result.cfg.*spec->boolean = parsed;
+                } else {
+                    result.warnings.push_back("值不是合法布尔：" + key + "（保留默认）");
+                }
+                break;
+            }
+            case FieldKind::Number: {
+                double parsed = 0.0;
+                bool ok = false;
+                if (value.type == ModsMenuValueType::Number) {
+                    parsed = value.number;
+                    ok = true;
+                } else if (value.type == ModsMenuValueType::String) {
+                    ok = parse_double(value.text, parsed);
+                }
+                if (!ok) {
+                    result.warnings.push_back("值不是合法数字：" + key + "（保留默认）");
+                    break;
+                }
+                if (parsed < spec->min || parsed > spec->max) {
+                    parsed = std::clamp(parsed, spec->min, spec->max);
+                    result.warnings.push_back("值超出范围：" + key + "，已夹紧");
+                }
+                result.cfg.*spec->number = parsed;
+                break;
+            }
+            case FieldKind::Enum: {
+                std::string enum_value;
+                if (value.type == ModsMenuValueType::String) {
+                    enum_value = value.text;
+                } else if (value.type == ModsMenuValueType::Number) {
+                    const int index = static_cast<int>(value.number);
+                    if (key == "freeze_mode") enum_value = index != 0 ? "pause" : "dilation";
+                    if (key == "mouse_vertical_mode") enum_value = index != 0 ? "look" : "translate";
+                }
+                if (spec->apply_enum == nullptr || enum_value.empty() || !spec->apply_enum(result.cfg, enum_value)) {
+                    result.warnings.push_back("取值非法：" + key + "（保留默认）");
+                }
+                break;
+            }
+        }
+    }
+    return result;
 }
 
 std::string default_config_text() {
@@ -968,6 +1139,10 @@ bool save_config_file(const std::string& path, const Config& cfg, std::string* e
         if (error) *error = "配置文件路径为空";
         return false;
     }
+    // 全进程串行化：仅保留给旧 INI 迁移/测试工具；3.0 运行时不再写 config.ini。
+    // 共用同一个 .tmp 名；不串行会互相覆盖/rename 失败。
+    static std::mutex save_mutex;
+    std::lock_guard<std::mutex> save_lock(save_mutex);
     // 原子写：先写 <path>.tmp，成功后再 rename 覆盖目标。引擎 tick / 菜单两个线程读盘时
     // 要么读到旧文件、要么读到完整的新文件，不会读到半写的中间态。
     const std::string tmp = path + ".tmp";

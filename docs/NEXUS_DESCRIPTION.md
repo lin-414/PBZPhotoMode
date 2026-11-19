@@ -3,7 +3,7 @@
 ## 1. Short description（短简介，≤255 字符）
 
 ```text
-Free-camera photo mode for Phantom Blade Zero. F2 (or L3+R3) freezes time and detaches the camera: fly anywhere, tune FOV, add look effects, colour grading and engine depth of field, or hold the frame with F7. Optional menu. Native UE4SS C++ mod.
+Free-camera photo mode for Phantom Blade Zero. F2 (or L3+R3) freezes time and detaches the camera: fly anywhere, tune FOV, add look effects and depth of field, or hold frames with F7. Recommended PBZFM, optional Mods Menu 149. Native UE4SS C++ mod.
 ```
 
 ## 2. Full description（完整简介，Nexus BBCode 格式；标题只用 [b] 加粗、不用 [size]——Nexus 新版编辑器粘贴时会把 size 加粗标题自动转成 [h2] 标题）
@@ -30,13 +30,13 @@ Free-camera photo mode for Phantom Blade Zero. F2 (or L3+R3) freezes time and de
 [*][b]Colour grading[/b] — a separate 调色·进阶 (advanced colour) group with lift-gamma-gain style controls: brightness gain, gamma and black offset, driving the game's own colour-grading pipeline. Neutral values are no-ops.
 [*][b]Chromatic aberration[/b] — real RGB fringing driven through the game's cinematic render gate (0 = untouched; enabling it switches the photo camera to the separate-camera backend automatically and restores your backend choice on exit).
 [*][b]Engine depth of field[/b] — real DOF through the game's own cinematic render profile, switched off by default and toggled with [b]G[/b]: focus distance, F-stop and sensor width, with [b],[/b] / [b].[/b] pulling focus closer / farther (proportional steps, hold to repeat) and [b][[/b] / [b]][/b] opening / closing the aperture. Turning it on switches to the separate-camera backend automatically; the gate and all values are restored on exit.
-[*][b]Look presets[/b] — save the current look (all nine look values plus the five switches) to numbered preset files from the menu and re-apply any preset from a dropdown; delete with a two-click confirmation. Presets never overwrite each other, so you can keep a library of grades.
 [*][b]Seamless entry[/b] — the photo camera inherits the game camera's exact position, aim and FOV, so there is no jump when you enter.
 [*][b]Ultrawide support[/b] — the game's 16:9 framing restriction is lifted on entry, so 21:9 and 32:9 displays are filled, and restored on exit.
 [*][b]Input isolation[/b] — the game receives no movement or attack input while photo mode is active, so you can hold a mouse button to move the camera without swinging a sword. Everything is restored on exit.
-[*][b]Optional in-game menu[/b] — with the free [url=https://www.nexusmods.com/phantombladezero/mods/314]PBZ-Framework-Menu[/url] installed, its menu key (default F8) opens a PBZ Photo Mode section: press-to-capture key rebinding, behaviour / hide / freeze toggles, camera, movement, gamepad, look, colour-grading and depth-of-field parameters, plus look presets. Changes apply live and are written back to config.ini, and a Status page shows the current state, pose readouts and quick buttons. Without it the mod is pure hotkeys with zero dependencies.
-[*][b]Menu languages[/b] — English / 简体中文 / 日本語 / 한국어 out of the box. Texts live in plain JSON files inside the mod folder, so you can edit a translation or drop in a new language and the menu reloads it within seconds.
-[*][b]Fully configurable[/b] — every keybind, speed, sensitivity, FOV range, freeze option, visibility toggle, and every look, colour-grading, chromatic-aberration and depth-of-field value can be changed in config.ini, and invalid values are clamped or ignored with a warning in the log.
+[*][b][url=https://www.nexusmods.com/phantombladezero/mods/314]PBZ-Framework-Menu[/url] (PBZFM, recommended)[/b] — the recommended in-game menu: press [b]F8[/b] for the full PBZ Photo Mode settings pages — behaviour, hide toggles, freeze, camera / movement, gamepad, depth of field, click-to-capture keyboard hotkeys (including mouse buttons), look effects and advanced colour grading, plus a status page and language page. Changes apply live and are written back to [code]PBZPhotoModeCpp.settings.json[/code].
+[*][b]Mods Menu 149 support (optional, basic settings)[/b] — with SLEEP's [url=https://www.nexusmods.com/phantombladezero/mods/149]Mods Menu - In-Game Mod Settings[/url] and its optional [b]UE4SS Bridge[/b] installed, the game's Settings menu gets a PBZ Photo Mode section with 68 basic settings: 41 behaviour / hide / freeze / camera / depth-of-field switch / gamepad settings plus 27 keyboard hotkey choice rows at the end. For the full set — including look effects, colour grading and detailed depth-of-field values — use the recommended PBZFM (F8) or PBZPhotoModeCpp.settings.json. Changes apply within seconds and are written back to PBZPhotoModeCpp.settings.json. The key rows offer 64 common key names (including mouse buttons); for any other key use PBZFM (F8) or edit the JSON. Look effects and colour grading reset when entering and leaving photo mode.
+[*][b]Console languages[/b] — English / 简体中文 / 日本語 / 한국어 for the UE4SS console diagnostics panel. Texts live in plain JSON files inside the mod folder, so you can edit a translation or drop in a new language and it reloads within seconds.
+[*][b]Fully configurable[/b] — every keybind, speed, sensitivity, FOV range, freeze option, visibility toggle, and every look, colour-grading, chromatic-aberration and depth-of-field value can be changed in PBZPhotoModeCpp.settings.json, and invalid values are clamped or ignored with a warning in the log.
 [/list]
 
 [b]Controls (default)[/b]
@@ -55,11 +55,11 @@ Free-camera photo mode for Phantom Blade Zero. F2 (or L3+R3) freezes time and de
 [*][b]R[/b] — reset camera to the position, rotation and FOV from when you entered photo mode
 [*][b]F[/b] — freeze / unfreeze time
 [*][b]F7[/b] — hold / release the current frame
-[*][b]G[/b] — depth of field on / off (off by default; see config.ini [code][dof][/code])
+[*][b]G[/b] — depth of field on / off (off by default; see PBZPhotoModeCpp.settings.json [code][dof][/code])
 [*][b], / .[/b] — pull focus nearer / farther (hold to repeat; Shift coarse / Ctrl fine)
 [*][b][ / ][/b] — open / close the aperture (smaller / larger F-stop)
 [/list]
-All keys can be rebound in [code]config.ini[/code]. Without the optional menu framework the mod is pure hotkeys; an in-game menu is available (see below).
+All keys can be rebound in [code]PBZPhotoModeCpp.settings.json[/code]. Without Mods Menu the mod is pure hotkeys; the optional in-game menu is described below.
 
 [b]Gamepad controls (default)[/b]
 [list]
@@ -78,56 +78,56 @@ All keys can be rebound in [code]config.ini[/code]. Without the optional menu fr
 [*][b]LB + BACK / LB + START[/b] — pull focus nearer / farther
 [*][b]RB + BACK / RB + START[/b] — open / close the aperture
 [/list]
-(The focus and aperture combos share the bumpers with roll, so the camera rolls a little while a combo is held — rebind in config.ini if that bothers you. A gamepad key for the DOF master switch exists but is unbound by default.)
-Gamepad bindings live in the gamepad section of [code]config.ini[/code]. Button names in both Xbox (LS, RS, START…) and PlayStation (L3, R3, OPTIONS…) styles are accepted; several buttons joined with + form a combo that must be held together, and [code]NONE[/code] unbinds an action.
+(The focus and aperture combos share the bumpers with roll, so the camera rolls a little while a combo is held — rebind in PBZPhotoModeCpp.settings.json if that bothers you. A gamepad key for the DOF master switch exists but is unbound by default.)
+Gamepad bindings live in the gamepad section of [code]PBZPhotoModeCpp.settings.json[/code]. Button names in both Xbox (LS, RS, START…) and PlayStation (L3, R3, OPTIONS…) styles are accepted; several buttons joined with + form a combo that must be held together, and [code]NONE[/code] unbinds an action.
 [b]Important — turn off Steam Input:[/b] in Steam, right-click the game → Properties → Controller and disable [b]Enable Steam Input[/b]. With Steam Input on, the game may not see your controller at all, or the mod's gamepad hotkeys (L3 + R3 to enter / exit, A/B FOV, D-pad tilt / turn, stick-click speed shift, X freeze, Y reset) may not trigger — see Troubleshooting below.
 
-[b]In-game menu (optional)[/b]
-Optionally install [url=https://www.nexusmods.com/phantombladezero/mods/314][b]PBZ-Framework-Menu[/b][/url] (extract it into ue4ss/Mods next to this mod). Its menu key (default [b]F8[/b]) then opens a PBZ Photo Mode section in-game:
+[b]In-game menus (optional; PBZFM recommended)[/b]
+[b]PBZ-Framework-Menu (PBZFM, recommended)[/b] — install [url=https://www.nexusmods.com/phantombladezero/mods/314][b]PBZ-Framework-Menu[/b][/url] (GitHub build also available), then press [b]F8[/b] in game. The [b]PBZ Photo Mode[/b] section has the full settings pages: behaviour, hide toggles, freeze, camera / movement, gamepad, depth of field, [b]keyboard hotkeys (click-to-capture, including mouse buttons)[/b], look effects and advanced colour grading, plus a status page and language page. Everything applies live and is written back to [code]PBZPhotoModeCpp.settings.json[/code].
+[b]Mods Menu 149[/b] — install SLEEP's [url=https://www.nexusmods.com/phantombladezero/mods/149][b]Mods Menu - In-Game Mod Settings[/b][/url] and its optional [b]UE4SS Bridge[/b] download. The game's Settings panel then gets a [b]PBZ Photo Mode[/b] section with 68 basic rows: 41 behaviour / hide / freeze / camera / depth-of-field switch / gamepad settings and, at the end, 27 keyboard hotkey choice rows. It covers the basic options only; look effects, colour grading and detailed depth-of-field values are set in PBZFM or the JSON. Changes apply within seconds and are written back to the same JSON.
 [list]
-[*][b]Settings[/b] — rebind every key with press-capture, toggle behaviour / hide / freeze-enhancement options, and tune camera, movement, gamepad, look, colour-grading and depth-of-field parameters. Float sliders preview live while you drag them and are written to [code]config.ini[/code] when you release (the file stays the single source of truth — edit it by hand and reload it from the menu); every slider has a reset button, and the five look effects have individual on/off switches.
-[*][b]Look presets[/b] — in the look group: save the current look to a numbered preset file, apply any preset from a dropdown, delete with a two-click confirmation. Preset files ([code]look_preset_<n>.ini[/code]) live next to config.ini and never overwrite each other.
-[*][b]Status[/b] — photo-mode state (OFF / LIVE / FROZEN), position readouts, keybind cheat sheet, FOV slider and quick buttons (enter / exit, freeze, reset view, reload config).
-[*][b]Language[/b] — English / 简体中文 / 日本語 / 한국어 out of the box. Texts live in [code]languages/*.json[/code] inside the mod folder: edit a translation or add a new language file and the menu hot-reloads it within seconds.
+[*][b]Editable in either menu[/b] — pause on entry, input blocking, wheel FOV, ultrawide framing, camera takeover, gamepad, freeze mode, all hide toggles, freeze enhancements, camera / movement speeds, depth-of-field master switch and gamepad tuning.
+[*][b]Editable in Mods Menu (choice list)[/b] — 27 keyboard hotkeys, each a choice of 64 common key names including MOUSE_LEFT / RIGHT / MIDDLE / X1 / X2. Keys outside that list need PBZFM or the JSON.
+[*][b]Editable only in PBZFM (or settings.json)[/b] — arbitrary keyboard/mouse key capture, gamepad combos, look effects, colour grading and detailed depth-of-field values. Mods Menu intentionally covers only the basic settings; these advanced/effect values are not in its descriptor. Look/colour values are session-only and reset when entering/leaving photo mode.
+[*][b]Without either menu[/b] — the mod stays pure hotkeys with zero menu dependency.
 [/list]
-The menu uses the styled widgets (pill switches, in-track sliders, styled dropdowns) of PBZ-Framework-Menu 0.7.0 or newer; older framework versions still work but fall back to plain widgets.
-When upgrading, overwrite the whole PBZPhotoModeCpp mod folder — copying only the DLL leaves the menu text showing raw keys, because the dictionaries are loaded from [code]languages/[/code].
 
 [b]Requirements[/b]
 [list]
 [*][b]Phantom Blade Zero[/b] (Steam version, UE 5.7)
 [*][url=https://www.nexusmods.com/phantombladezero/mods/13][b]UE4SS — Phantom Blade Zero build[/b][/url]. This mod was built and tested against [b]v3.0.1-1183-gcdbc0b66[/b]; use the matching UE4SS build, as other versions may not be ABI-compatible.
-[*][url=https://www.nexusmods.com/phantombladezero/mods/314][b]PBZ-Framework-Menu[/b][/url] [i](optional)[/i] — free in-game menu framework; adds the settings menu described above. 0.7.0+ recommended for the styled controls (older versions work with plain fallback widgets).
+[*][url=https://www.nexusmods.com/phantombladezero/mods/149][b]Mods Menu - In-Game Mod Settings[/b][/url] + its [b]UE4SS Bridge[/b] [i](optional)[/i] — adds the PBZ Photo Mode section in the game Settings; see above.
+[*][url=https://github.com/lin-414/PBZ-Framework-Menu][b]PBZ-Framework-Menu[/b][/url] [i](optional, recommended)[/i] — F8 overlay menu with the full settings set, including click-to-capture keybinds.
 [/list]
 
 [b]Installation[/b]
 [b]Option A — with the mod manager (recommended)[/b]
 [list=1]
 [*]Install [url=https://www.nexusmods.com/phantombladezero/mods/2][b]Phantom Blade Mod Manager[/b][/url] from Nexus Mods and set it up following its own instructions.
-[*]Use it to install this mod from [b]PBZPhotoModeCpp_2.1.1-cpp.zip[/b] (Files tab) — the manager also installs the required UE4SS Phantom Blade Zero build for you.
+[*]Use it to install this mod from [b]PBZPhotoModeCpp_2.2.0.zip[/b] (Files tab) — the manager also installs the required UE4SS Phantom Blade Zero build for you.
 [*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller).
 [/list]
 [b]Option B — manual[/b]
 [list=1]
 [*]Install the Phantom Blade Zero build of UE4SS into your game root folder (you should see dwmapi.dll and an ue4ss folder next to the game executable).
-[*]Download [b]PBZPhotoModeCpp_2.1.1-cpp.zip[/b] from the Files tab and extract it into the game root folder.
-[*]Check that the resulting structure is: [code]ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll[/code] plus config.ini, enabled.txt and the languages/ folder in the same mod folder.
+[*]Download [b]PBZPhotoModeCpp_2.2.0.zip[/b] from the Files tab and extract it into the game root folder.
+[*]Check that the resulting structure is: [code]ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll[/code] plus PBZPhotoModeCpp.modsmenu.json, enabled.txt and the languages/ folder; PBZPhotoModeCpp.settings.json is generated on first launch.
 [*]Launch the game and press [b]F2[/b] (or press both stick clicks — L3 + R3 — on a controller).
 [/list]
 
 [b]Configuration[/b]
-All settings live in [code]ue4ss/Mods/PBZPhotoModeCpp/config.ini[/code]; the file is generated with an inline comment above every option, so it doubles as the reference. Edit it in any text editor, then re-enter photo mode or reload it from the in-game menu. Invalid values are clamped or ignored with a warning in UE4SS.log. You can tune movement speed and the boost / slow multipliers; look sensitivity, pitch limit and invert; FOV default, range, step and wheel behaviour; roll, pitch, yaw and vertical speeds; the vertical-key behaviour; the free-look modifier and whether it must be held; input blocking; freeze mode, auto-pause and cinematic handling; dialogue-interface freezing; audio pause and the engine-wide mute fallback; each freeze enhancement (camera shake, wind, material parameters, cloth, skeletal animation, motion blur, frame generation); the frame-hold safety timeout; HUD, health bar, lock-on marker, subtitle, interaction prompt and character visibility; ultrawide unlock; the camera backend; all keyboard, mouse and gamepad bindings including button combos; the five look values plus their individual on/off switches; the colour-grading trio (gain / gamma / offset); chromatic aberration; and the whole [code][dof][/code] section — master switch, focal distance (cm), F-stop, sensor width, focus step, aperture step, and a forensic bokeh-gate switch left off by default.
-Upgrades are handled automatically: 2.1.0 entries appear with defaults on first launch, and keys retired by older versions are reported once in the log and cleaned from [code]config.ini[/code].
+All settings live in [code]ue4ss/Mods/PBZPhotoModeCpp/PBZPhotoModeCpp.settings.json[/code]; the file is generated on first launch with every key and its current value. Edit it in any text editor, then re-enter photo mode or reload it from the in-game menu. Invalid values are clamped or ignored with a warning in UE4SS.log. You can tune movement speed and the boost / slow multipliers; look sensitivity, pitch limit and invert; FOV default, range, step and wheel behaviour; roll, pitch, yaw and vertical speeds; the vertical-key behaviour; the free-look modifier and whether it must be held; input blocking; freeze mode, auto-pause and cinematic handling; dialogue-interface freezing; audio pause and the engine-wide mute fallback; each freeze enhancement (camera shake, wind, material parameters, cloth, skeletal animation, motion blur, frame generation); the frame-hold safety timeout; HUD, health bar, lock-on marker, subtitle, interaction prompt and character visibility; ultrawide unlock; the camera backend; all keyboard, mouse and gamepad bindings including button combos; the five look values plus their individual on/off switches; the colour-grading trio (gain / gamma / offset); chromatic aberration; and the whole [code][dof][/code] section — master switch, focal distance (cm), F-stop, sensor width, focus step, aperture step, and a forensic bokeh-gate switch left off by default.
+Upgrades are handled automatically: 2.1.0 entries appear with defaults on first launch, and keys retired by older versions are reported once in the log and cleaned from [code]PBZPhotoModeCpp.settings.json[/code].
 
 [b]Troubleshooting[/b]
 [list]
 [*][b]Nothing happens on F2:[/b] open [code]ue4ss/UE4SS.log[/code] and search for [code][PBZPhotoMode][/code]. Check that the mod folder name matches and that enabled.txt is in the mod root.
-[*][b]Camera does not rotate:[/b] hold Alt while moving the mouse, or disable the free-look modifier requirement in config.ini. The mod writes input diagnostics to UE4SS.log once per second — check the raw/engine mouse lines there.
+[*][b]Camera does not rotate:[/b] hold Alt while moving the mouse, or disable the free-look modifier requirement in PBZPhotoModeCpp.settings.json. The mod writes input diagnostics to UE4SS.log once per second — check the raw/engine mouse lines there.
 [*][b]The mod does not load:[/b] make sure you are using the Phantom Blade Zero UE4SS build listed above. The DLL imports UE4SS symbols and is not compatible with arbitrary UE4SS versions.
 [*][b]Game input stuck after exiting:[/b] press F2 again to toggle out, or restart the game. Please report it with the relevant UE4SS.log lines.
-[*][b]Where is the menu?[/b] There is none by default — the mod is pure hotkeys unless you install the optional PBZ-Framework-Menu (menu key F8); a status/keybind panel is also available in the UE4SS console.
+[*][b]Where is the menu?[/b] There is none by default — the mod is pure hotkeys unless you install SLEEP's Mods Menu 149 + UE4SS Bridge (game Settings → Mods Menu); a status/keybind panel is also available in the UE4SS console.
 [*][b]Menu shows raw label IDs instead of text:[/b] the [code]languages/[/code] folder is missing — reinstall the whole mod folder (see Installation).
-[*][b]Subtitles or the interaction prompt stay hidden:[/b] this can happen after using an older build that wrote the setting off — install 2.0.0 or newer, which runs a one-time repair that turns both back on. If you intentionally play with subtitles off, disable that repair in config.ini and delete [code]ui_settings_repair_done.flag[/code].
+[*][b]Subtitles or the interaction prompt stay hidden:[/b] this can happen after using an older build that wrote the setting off — install 2.0.0 or newer, which runs a one-time repair that turns both back on. If you intentionally play with subtitles off, disable that repair in PBZPhotoModeCpp.settings.json and delete [code]ui_settings_repair_done.flag[/code].
 [*][b]Gamepad not detected, or gamepad hotkeys don't trigger:[/b] disable [b]Steam Input[/b] for the game (Steam library → right-click → Properties → Controller → untick Enable Steam Input) — with Steam Input on, the game's XInput usually sees no controller at all, and even when it does, the mod's gamepad hotkeys (L3 + R3, A/B FOV, D-pad tilt / turn, stick-click speed shift…) may fail to trigger; this is especially common with DS4Windows / GameSir and other virtual-gamepad remappers. UE4SS.log shows whether XInput loaded and logs a line whenever a controller connects or disconnects.
 [*][b]F7 frame hold does not come back:[/b] press F7 again, or wait for the safety timeout (60 seconds by default). While the frame is held the camera stops responding — that is expected; compose first, hold, screenshot, release.
 [/list]
@@ -155,7 +155,7 @@ Upgrades are handled automatically: 2.1.0 entries appear with defaults on first 
 
 **PBZ Photo Mode（C++）— 影之刃零摄影模式**
 
-给《影之刃零》加一个真正的自由摄影相机：按 F2（或手柄 L3+R3）进入摄影模式，时间自动冻结，相机脱离角色，可以自由飞到场景任意位置构图。按住 Alt + 鼠标转视角，WASD 平移，鼠标左/右键升降，Q/E 滚转，Z 一键摆平地平线，方向键俯仰/转向，滚轮与小键盘调 FOV，F 冻结时间，F7 把画面定格成绝对静止的一帧；G 开关引擎景深、`,`/`.` 对焦、`[`/`]` 光圈；暗角/饱和/对比/泛光/冷暖五项画面效果、调色·进阶三件、色差与风格预设随手调。可选安装 PBZ-Framework-Menu 后按 F8 在游戏内菜单直接改设置。原生 UE4SS C++ Mod，不改游戏文件、不动存档。
+给《影之刃零》加一个真正的自由摄影相机：按 F2（或手柄 L3+R3）进入摄影模式，时间自动冻结，相机脱离角色，可以自由飞到场景任意位置构图。按住 Alt + 鼠标转视角，WASD 平移，鼠标左/右键升降，Q/E 滚转，Z 一键摆平地平线，方向键俯仰/转向，滚轮与小键盘调 FOV，F 冻结时间，F7 把画面定格成绝对静止的一帧；G 开关引擎景深、`,`/`.` 对焦、`[`/`]` 光圈；暗角/饱和/对比/泛光/冷暖五项画面效果、调色·进阶三件、色差与风格预设随手调。推荐安装 PBZ-Framework-Menu（PBZFM，F8）后用全量设置页调键位（捕获式，支持鼠标键）、画面效果与调色；也可选 SLEEP 的 Mods Menu 149 + UE4SS Bridge 在游戏设置里调 68 项（41 个基础设置 + 末尾 27 个键位 choice，Mods Menu 只覆盖基础选项；画面效果、调色与景深详细参数请用 PBZFM 或 settings.json）。两者都读写 PBZPhotoModeCpp.settings.json。原生 UE4SS C++ Mod，不改游戏文件、不动存档。
 
 **主要功能**
 
@@ -174,9 +174,10 @@ Upgrades are handled automatically: 2.1.0 entries appear with defaults on first 
 - **风格预设**：菜单里把当前风格（9 项参数 + 5 个开关）存成编号预设文件，下拉即套用；删除带两击确认，编号只增不回收、绝不互相覆盖
 - **超宽屏**：进入解锁 16:9 画幅限制，21:9 / 32:9 铺满，退出还原
 - **输入隔离**：摄影模式下游戏收不到移动/攻击输入，按住鼠标挪相机不会挥刀
-- **可选游戏内菜单**：装 PBZ-Framework-Menu 后按 F8 打开「PBZ Photo Mode」——捕获式改键、行为/隐藏/冻结增强开关、相机/移动/手柄/画面/调色/景深参数；滑条拖动实时预览、松手落盘，风格预设保存/套用/删除全在菜单里完成（框架 0.7.0+ 为药丸开关/自绘滑条/风格化下拉的新皮肤，旧版框架自动回退朴素控件）；另有运行状态页。不装则纯快捷键、零依赖
-- **菜单四语言**：简体中文 / English / 日本語 / 한국어，词典是模组目录里的 JSON，改译文或加新语言几秒热生效
-- **全部可配**：键位、速度、灵敏度、FOV 范围、冻结方式、隐藏项、画面效果五项及独立开关、调色三件、色差、整段 [dof]（总开关/对焦距离/光圈/传感器/步进/取证开关）都在 config.ini 里改，非法值会被夹紧或忽略并在日志里提示
+- **PBZFM（推荐，可选）**：装 [PBZ-Framework-Menu](https://www.nexusmods.com/phantombladezero/mods/314) 后按 F8 打开全量设置页，键位（捕获式，支持鼠标键）、画面效果、调色、景深、状态页与语言页都能改；适合想把所有选项集中在一个菜单里调的用户。
+- **Mods Menu 149（可选，基础设置）**：装 SLEEP 的 Mods Menu 149 + UE4SS Bridge 后，游戏设置里会出现 68 项（41 个基础设置 + 末尾 27 个键位 choice，每个 64 个常用键名）；它只覆盖基础选项，画面效果、调色与景深详细参数请用 PBZFM 或 settings.json。两者都写回 PBZPhotoModeCpp.settings.json，装哪个都行、都不装则纯快捷键零依赖。手柄组合键仍建议直接编辑 JSON
+- **控制台四语言**：简体中文 / English / 日本語 / 한국어（UE4SS 控制台诊断面板），词典是模组目录里的 JSON，改译文或加新语言几秒热生效
+- **全部可配**：键位、速度、灵敏度、FOV 范围、冻结方式、隐藏项、画面效果五项及独立开关、调色三件、色差、整段 [dof]（总开关/对焦距离/光圈/传感器/步进/取证开关）都在 PBZPhotoModeCpp.settings.json 里改，非法值会被夹紧或忽略并在日志里提示
 
 **操作（默认）**
 
@@ -195,21 +196,21 @@ Upgrades are handled automatically: 2.1.0 entries appear with defaults on first 
 | R | 回到进入时的位置、朝向与 FOV |
 | F | 冻结 / 恢复时间 |
 | F7 | 画面定格 / 恢复 |
-| G | 景深开关（默认关，见 config.ini [dof] 段） |
+| G | 景深开关（默认关，见 PBZPhotoModeCpp.settings.json [dof] 段） |
 | , / . | 对焦拉近 / 拉远（按住连发；Shift 粗调 / Ctrl 微调） |
 | [ / ] | 开大 / 收小光圈（F 值减小 / 增大） |
 
-**手柄（默认）**：L3+R3 进出；左摇杆移动、右摇杆视角；RT/LT 升降；LB/RB 滚转，LB+RB 同按摆平；L3/R3 加速/减速（R3 同时降低视角速度）；A/B 调 FOV；十字键上/下俯仰、左/右转向；X 冻结；Y 重置；LB+BACK / LB+START 对焦拉近/拉远，RB+BACK / RB+START 开大/收小光圈（与滚转共用肩键，组合期间会连带滚转，介意可在 config.ini 改键）；景深总开关手柄键存在但默认解绑。键位都在 config.ini 的手柄段里改，Xbox / PS 叫法都认，`NONE` 解绑。
+**手柄（默认）**：L3+R3 进出；左摇杆移动、右摇杆视角；RT/LT 升降；LB/RB 滚转，LB+RB 同按摆平；L3/R3 加速/减速（R3 同时降低视角速度）；A/B 调 FOV；十字键上/下俯仰、左/右转向；X 冻结；Y 重置；LB+BACK / LB+START 对焦拉近/拉远，RB+BACK / RB+START 开大/收小光圈（与滚转共用肩键，组合期间会连带滚转，介意可在 PBZPhotoModeCpp.settings.json 改键）；景深总开关手柄键存在但默认解绑。键位都在 PBZPhotoModeCpp.settings.json 的手柄段里改，Xbox / PS 叫法都认，`NONE` 解绑。
 
 **注意**：Steam 里要把本作的「使用 Steam 输入」关掉（库 → 右键游戏 → 属性 → 控制器），否则游戏可能看不到手柄，手柄快捷键也可能不触发。
 
 **安装**
 
-- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_2.1.1-cpp.zip` 完成安装（所需 UE4SS 也会由它一并装好）。
-- 方法二（手动）：解压 `PBZPhotoModeCpp_2.1.1-cpp.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构（同级还有 config.ini、enabled.txt 与 languages/），进游戏按 F2（或手柄 L3+R3）。
-- 升级安装请**整个模组目录覆盖**：只拷 DLL 会缺 `languages/` 词典，菜单文案会显示成键名。升级全自动兼容：2.1.0 的新配置项首启按默认值出现，旧版本废弃的键会打一次日志并从 config.ini 清理。
+- 方法一（推荐）：安装 [Phantom Blade Mod Manager](https://www.nexusmods.com/phantombladezero/mods/2)（N 网），按其说明配置后，用它加载 `PBZPhotoModeCpp_2.2.0.zip` 完成安装（所需 UE4SS 也会由它一并装好）。
+- 方法二（手动）：解压 `PBZPhotoModeCpp_2.2.0.zip` 到游戏根目录，形成 `ue4ss/Mods/PBZPhotoModeCpp/dlls/PBZPhotoModeCpp.dll` 结构（同级还有 PBZPhotoModeCpp.modsmenu.json、enabled.txt 与 languages/；PBZPhotoModeCpp.settings.json 首次启动生成），进游戏按 F2（或手柄 L3+R3）。
+- 升级安装请**整个模组目录覆盖**：只拷 DLL 会缺 `languages/` 词典，菜单文案会显示成键名。升级全自动兼容：2.1.0 的新配置项首启按默认值出现，旧版本废弃的键会打一次日志并从 PBZPhotoModeCpp.settings.json 清理。
 
-**前置要求**：需要[《影之刃零》专用 UE4SS](https://www.nexusmods.com/phantombladezero/mods/13)（Kintaro 的 OFFICIAL UE4SS for PBZ 包；开发验证版本为 v3.0.1-1183-gcdbc0b66），不同 UE4SS 版本的 ABI 可能不兼容。可选：[PBZ-Framework-Menu](https://www.nexusmods.com/phantombladezero/mods/314)（游戏内设置菜单框架；0.7.0+ 为新皮肤控件，旧版自动回退朴素控件）。
+**前置要求**：需要[《影之刃零》专用 UE4SS](https://www.nexusmods.com/phantombladezero/mods/13)（Kintaro 的 OFFICIAL UE4SS for PBZ 包；开发验证版本为 v3.0.1-1183-gcdbc0b66），不同 UE4SS 版本的 ABI 可能不兼容。可选：[PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（推荐，F8 全量设置页）；[Mods Menu - In-Game Mod Settings](https://www.nexusmods.com/phantombladezero/mods/149) + 其 UE4SS Bridge 下载（游戏内基础设置）。
 
 **已知限制**
 

@@ -11,9 +11,8 @@
 #include "pbzfm_client_lang.h"
 
 // 本面板只读诊断：状态行 / 位姿 / 键位速查 / 冻结与恢复 / Reload / 退出。
-// 可写设置的唯一入口是 PBZFM 页（src/pbzfm_client.cpp 自绘页）。这里曾有同一批 11 个
-// 设置项的第二份可写实现，且提交语义不同（本地立刻 set_config，PBZFM 页走排队写盘 +
-// submit_config），已删除——避免同一项在两个界面行为不同（审查报告 R-B-03）。
+// 可写设置入口：PBZFM 菜单（F8，全量设置含键位捕获）或游戏设置里的 Mods Menu 149
+// （PBZPhotoModeCpp.config.json / UE4SS Bridge，68 项设置）。
 namespace pbzpm {
 
 void render_photo_mode_tab(PhotoMode& mode, Config& cfg, const KeyMap& keys, bool& request_reload_config,

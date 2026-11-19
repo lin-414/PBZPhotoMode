@@ -4,7 +4,7 @@
 
 | 项目 | 状态 |
 | --- | --- |
-| 版本 | v2.0.4-cpp（2026-11-06，含画面效果独立开关 / 滑块重置 / 进入摄影模式恢复默认参数，以及退出后视角输入锁残留修复） |
+| 版本 | v2.2.5（2026-11-12，**修「鼠标停在数值滑条上弹 ImGui 红框『Programmer error: 2 visible items with conflicting ID!』」**（框架 v4 自绘滑条在同一 ID 上重复提交可悬停项触发的调试高亮 → 客户端只关这条调试提示、留一行日志，滑条功能不变）；上版 **2.2.4** 修「调节 FOV 后再动色差，FOV 跳回默认值」：独立相机后端补上 FOV 每帧重申通道（与接管同一个写点：组件 `Lens.FieldOfView`/`FieldOfView` 双载体 + 原生 setter + 本帧 POV），`spawn_camera` 按 `pose.fov` 立即写入，另有 `FOV 被改写` 回读诊断。上版 **2.2.3 修「饱和度调节没有效果」**：饱和/对比随「调色家族」进相机 POV 每帧重申通道——体积里写好了会被相机组件/POV 那条链（DOF 组件通道 memcpy + weight=1，排在体积之后）压回去；**并新增进入相机模式时景深等后处理默认关闭**（`reset_session_defaults` = [look] 全家 + 景深总开关）。核心层 7,707 项全绿；DLL 2,378,752 字节、sha256 前 16 `445372b2f93674e5`） |
 | 核心层测试 | 当前断言总数见 [test_count.txt](test_count.txt)，全部通过 |
 | 实机验证 | F 键冻结、HUD 隐藏、进入自动暂停、动作冻结稳定已验证；**1.0.36 语音静音双保险（ID 暂停 38/38 + 音量兜底 38/38，解冻成对恢复）实机通过**；**1.0.66 移动视角卡顿修复实机通过（2026-11-02）：全日志无「时间偏移」，Wwise 整引擎 Suspend/Wakeup 成对出现**；**1.0.75 收口批次：接管当前相机、HUD 恢复重构实机通过**；超宽屏/DInput 手柄/字幕压制各项待回归 |
 
@@ -12,7 +12,8 @@
 
 ```
 src/core/      纯逻辑，不碰引擎 —— 已完成
-  config        配置解析（含容错、范围夹紧、默认配置生成）
+  config        配置结构 / 旧 INI 迁移（只读导入）
+  config_json   PBZPhotoModeCpp.settings.json 全量 JSON 配置读写
   vk            键名 -> 虚拟键码（F1..F12 / ADD / SUBTRACT / OEM_PLUS / 修饰键…，含 MOUSE_LEFT/RIGHT/MIDDLE/X1/X2）
   input_logic   按键/鼠标 -> Intent（含 Alt 门控、滚轮累积、按下沿、对焦/光圈步进）
   gamepad       XInput / DInput 手柄映射与组合键
@@ -31,7 +32,10 @@ src/engine/    引擎适配层 —— 已完成，随 DLL 在实机运行
                 audio（Wwise）· diagnostics（诊断日志）· process_freeze（F7 定格：挂起游戏引擎线程/时间补偿）
 
 src/mod_app    CppUserModBase 子类：配置加载、输入绑定、每帧 tick
-src/ui_tab     UE4SS 控制台诊断面板（滑块/按钮，纯展示 + 回传命令；游戏内无菜单，纯快捷键操作）
+src/ui_tab     UE4SS 控制台诊断面板（状态/位姿/键位速查 + 冻结/退出/重载按钮）
+src/pbzfm_client      PBZFM 客户端：自绘全量设置页（含键位捕获）、状态页、语言页、后台写盘
+src/mods_menu_client  Mods Menu 149（SLEEP）UE4SS Bridge 客户端：config.json 镜像 + events 轮询
+src/core/mods_menu    Mods Menu 字段映射与扁平 JSON（纯核心）
 ```
 
 ### 立刻可以验证的部分
@@ -59,7 +63,7 @@ tools\build_tests.bat
 | 冻结时间 | `F`（`key_freeze`；进入时按 `auto_pause_time` 自动冻结） |
 | 画面定格（内置冻结渲染帧） | `F7`（`key_frame_freeze`；再按恢复；定格期间相机不响应输入，安全阀默认 60 秒；定格期间 N 卡 `Alt+F1` / Steam `F12` 等依赖游戏 Present 的截屏键静默失效，见下） |
 
-所有键位都能在 `config.ini` 里改（`[keys]` 键盘 / `[gamepad]` 手柄组合键），没有写死的按键。鼠标移动、滚轮与手柄摇杆属于模拟轴：摇杆/鼠标位移不可改键，滚轮可用 `wheel_fov` 关闭或反向。
+所有键位都能在 `PBZPhotoModeCpp.settings.json` 里改（键盘键名 / 手柄组合键字段沿用原 `[keys]` / `[gamepad]` 的命名），没有写死的按键。鼠标移动、滚轮与手柄摇杆属于模拟轴：摇杆/鼠标位移不可改键，滚轮可用 `wheel_fov` 关闭或反向。
 
 > **定格期间怎么截图**：用系统级捕获——`Win+PrintScreen`（存 `图片\屏幕截图`）或 Xbox Game Bar `Win+Alt+PrtScr`，走 DWM 合成器、不依赖游戏出帧，定格期间可用。NVIDIA App `Alt+F1` / Steam `F12` 这类截屏键必须等到游戏下一次 `Present` 才能抓帧，F7 挂起渲染线程后永远没有新帧，会静默失败。根因存档与已评估暂缓的「模组定格截屏键」备选设计见 [CHANGELOG.md](CHANGELOG.md)。
 
@@ -120,10 +124,10 @@ cvar 与组件设置都写得进去，但强行使能后渲染 worker 必踩零�
 - **默认开启（`true`）**：不 spawn 独立相机、不切 `ViewTarget`，每帧在 `GameViewportClient::Tick` 之后（游戏 `UpdateCameraManager` 重算完 `CameraCache.POV`、`RedrawViewports` 之前）覆写 `APlayerCameraManager.CameraCache.POV` 的位置/朝向/FOV。写点若晚于渲染（`EngineTickPost` 在 `RedrawViewports` 之后）就会表现为“镜头不动”，1.0.75 的回归即此。
 - 只写“每帧由相机管理器重算”的 POV 缓存，不写游戏相机组件，因此不存在持久污染；退出时先还原接管相机的后处理/景深，再停止每帧写 POV，游戏相机从下一帧起恢复自身逻辑。
 - **失败自动回退**：进入时读不到 `CameraCache`/POV 布局、或写入后回读不一致，会当场回退到独立相机（spawn + `SetViewTargetWithBlend`）；运行中连续 **15 帧**回读 POV 与目标位姿不一致，判定接管未生效并自动回退，日志 `已自动回退到独立相机（spawn + SetViewTargetWithBlend）`。
-- **游戏内就能换后端（不用重进）**：PBZFM 菜单里的「接管当前相机」可即时在两条后端之间切换——
+- **游戏内就能换后端（不用重进）**：Mods Menu 里的「接管当前相机」可即时在两条后端之间切换——
   关掉会当场拆掉接管、spawn 独立相机并把视角切过去；打开会当场还原视角、销毁独立相机、改为接管 POV。
   任何一步失败都会自动回滚到原来的后端（不会出现「点了开关没相机可用」），并打一条 Warn。
-  同一项也可写进 `config.ini` 的 `[camera] takeover_current_camera`（`false` = 始终独立相机）。
+  同一项也可写进 `PBZPhotoModeCpp.settings.json` 的 `takeover_current_camera`（`false` = 始终独立相机）。
 - **两条后端怎么选**：接管的优点是**侵入最小**（不 spawn Actor、不切 ViewTarget，退出时无需还原任何东西，
   过场中进出也不会打断演出镜头）；独立相机的优点是**有真实焦距联动**（按 `Filmback.SensorWidth` 把 FOV 换算成
   `CurrentFocalLength`，长焦是真实光学压缩而不是单纯 FOV 裁剪）。要长焦压缩感用独立相机，要最不打扰游戏用接管。
@@ -157,11 +161,11 @@ cvar 与组件设置都写得进去，但强行使能后渲染 worker 必踩零�
 
 ## 配置文件
 
-`config.ini`（示例见 `config.ini.example`，由 `tools/gen_config.bat` 从代码默认值生成，**勿手改**）。写错不会崩：非法值保留默认、并在日志里给一条 warning；数值越界会 clamp 到边界。
+`PBZPhotoModeCpp.settings.json`（扁平 JSON，首次运行从旧 `config.ini` 自动迁移；旧 `config.ini.example` 仅作为字段参考/生成器输入，不再随包分发）。写错不会崩：非法值保留默认、并在日志里给一条 warning；数值越界会 clamp 到边界。字段名沿用原 `[camera]` / `[dof]` / `[look]` 等段名，只是 JSON 中不再有 section。
 
 - **`[camera]`**：`fov_default = 90` / `fov_min = 15` / `fov_max = 150` / `fov_step = 2`、`ultrawide_unlock = true`、`takeover_current_camera = true`（默认接管当前相机；`false` 固定走独立相机）。
 - **`[dof]`**：`dof_enabled`（默认 false）、`dof_focal_distance`（cm，默认 300）、`dof_fstop`（默认 2.8）、`dof_sensor_width`（mm，默认 36）、`dof_focus_step`（cm，最小步进语义）、`dof_aperture_step`、`dof_bokeh_gate`（取证开关，默认 false，见上文「实机终局」）。启用任一项（含 [look] 的色差）会自动切独立相机后端；NLP 过场渲染档随 `dof_enabled` 自动请求/释放（原 `dof_nlp_enable` 键已删，旧 ini 里残留会被一次性「已弃用」提示忽略）。
-- **`[look]` 调色·进阶 3 键**：`color_gain` / `color_gamma` / `color_offset`——与饱和/对比同一 ColorGrading LUT 每通道家族，走后处理体积通道；**默认值=中性=不覆盖该项**（1/1/0），离开中性才生效，每次进入摄影模式恢复默认。旧 config 残留的判死十键（highlights/film_slope/white_temp/bloom_threshold 等）与锐化/超采样两键按弃用键告警一次后忽略。
+- **`[look]` 调色·进阶 3 键**：`color_gain` / `color_gamma` / `color_offset`——与饱和/对比同一 ColorGrading LUT 每通道家族，走后处理体积通道；**默认值=中性=不覆盖该项**（1/1/0），离开中性才生效，每次进入和退出摄影模式恢复默认。旧 config 残留的判死十键（highlights/film_slope/white_temp/bloom_threshold 等）与锐化/超采样两键按弃用键告警一次后忽略。
 - **`[keys]` 的可配项**：`key_toggle/freeze/frame_freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/vertical_up/vertical_down/move_forward/move_back/move_left/move_right/boost/slow/free_look/dof_toggle/focus_near/focus_far/aperture_open/aperture_close`——**没有写死的键盘键**。
 - **`[control]` 的滚轮**：`wheel_fov = true`（滚轮调 FOV）、`wheel_fov_invert = false`（向上缩小 / 向下放大，true 反向）。
 - **`[gamepad]` 的可配项**：`pad_toggle/freeze/reset/roll_reset/fov_up/fov_down/pitch_up/pitch_down/yaw_left/yaw_right/roll_left/roll_right/boost/slow/vertical_up/vertical_down/focus_near/focus_far/aperture_open/aperture_close/dof_toggle`；组合键用 `+` 连接，`NONE` 解绑。
@@ -178,19 +182,34 @@ cvar 与组件设置都写得进去，但强行使能后渲染 worker 必踩零�
 
 具体步骤见 `docs/BUILD.md`，API 核对清单见 `docs/P1_CHECKLIST.md`。
 
-## 游戏内设置菜单（PBZ-Framework-Menu，可选）
+## 游戏内设置菜单（两个可选前端，同一份 JSON）
 
-1.0.42 起本模组是 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（游戏内 ImGui 菜单框架，DirectComposition 覆盖窗实现，不碰游戏交换链、不影响 FSR3 帧生成）的**第一个客户端模组**。两个模组各自解压进 `ue4ss\Mods\`（enabled.txt 启用，互不改 mods.txt）后：
+### PBZ-Framework-Menu（PBZFM，可选，全量菜单）
 
-- 游戏内按 PBZFM 的呼出键（默认 `F8`）打开菜单，侧栏出现「**PBZ Photo Mode**」分区（1.0.43 起两页均由本模组自绘，ImGui 版本与框架 1.92.1 对齐）
-- **「设置 · Settings」页**：首行「语言」下拉——**跟随 PBZFM 菜单** / 中文 / English / 日本語 / 한국어 / 外部词典，当帧生效并写回 `config.ini` 的 `[ui] menu_language`；旁边「重新载入词典」按钮；其余为键盘键位（菜单内捕获式改键）、行为开关（进入时暂停时间 / 冻结方式 / 屏蔽输入 / 超宽屏解锁 / 手柄支持）、隐藏开关（角色 / HUD / 交互提示 / 敌人血条 / 字幕）、冻结增强（Wwise 整引擎挂起 / 逐语音兜底 / 剧情暂停 / 相机震动 / 风源 / MPC / 布料模拟 / 诊断日志）、「画面效果」组页的**风格预设**（「保存预设」按钮 + 下拉框**选中即套用** + 「删除预设」按钮**两击确认**：快照存 `<mod>/look_preset_<编号>.ini`，编号自动递增不覆盖、删除后编号不回收）与五项滑条（独立开关）、「调色·进阶」三件滑条（中性值=不覆盖）、相机与移动参数、手柄参数——改动**实时生效并写回 `config.ini`**
-- **「状态 · Status」页**：OFF / LIVE / FROZEN 状态、位置与朝向读数、键位速查；FOV 滑条（实时变焦）与「进入/退出摄影模式」「冻结/恢复时间」「重置视角」「重新载入 config.ini」按钮
-- **多语言**：内置 zh-CN / en-US / ja-JP / ko-KR；**外部词典**放 `PBZPhotoModeCpp\languages\<id>.json`——UTF-8 扁平 JSON，key=中文原文、value=译文，可选 `__display` 当显示名；同名覆盖内置、新文件名即新语言，游戏内热重载（点按钮或等 2 秒）。翻译缺失的条目回落中文。韩文渲染用自建「雅黑 + Malgun Gothic」合并字体，不受框架启动字体限制
-- 手柄组合键绑定（多按钮同按）在菜单里表达不了，仍写在 `config.ini` 的 `[gamepad]` 节
+安装 [PBZ-Framework-Menu](https://github.com/lin-414/PBZ-Framework-Menu)（PBZFM，建议 0.7.0+ / SDK API v4）后，游戏中按 **F8** 打开覆盖菜单，侧栏「PBZ Photo Mode」下是可写的全量设置页：
 
-**值的流向**：`config.ini` 是唯一真源。模组启动时用 config.ini 现值播种菜单；菜单里的改动写回 config.ini 并实时应用；手动改过 config.ini 后点菜单里的「重新载入 config.ini」，菜单显示值会跟着文件走。卸载 PBZFM 后模组照常工作（纯快捷键，日志提示「未检测到 PBZFM 菜单框架」）。
+- **分组页**：行为 / 隐藏 / 冻结 / 相机与移动 / 手柄 / 景深 / 快捷键（键盘）/ 画面效果 / 调色·进阶；数值滑条支持拖动实时预览、松手落盘，行尾有「重置」。
+- **快捷键（键盘）**：捕获式改键，支持键盘键与鼠标键（`MOUSE_LEFT/RIGHT/MIDDLE/X1/X2`），改完立即生效。
+- **状态页**：OFF/LIVE/FROZEN、位姿、FOV、当前键位速查，以及进入/退出/冻结/恢复/重置视角/重载配置按钮。
+- **语言页**：zh-CN / en-US / ja-JP / ko-KR / 外部词典热切换。
 
-实现：`src/pbzfm_client.*`（运行时 GetProcAddress 接入 PBZFM.dll，零链接依赖）+ `src/pbzfm_schema_map.*`（菜单 ↔ Config 字段映射表，随核心层单测）。菜单回调在框架线程只提交数据，所有引擎交互回到引擎 Tick 线程执行。
+PBZFM 是独立的可选模组，不随本包分发。它的页面只是遥控器：改动经后台写盘队列写回 `PBZPhotoModeCpp.settings.json`，重启或卸载 PBZFM 后设置保留。
+
+PBZFM 的 v4 自绘滑条（`PBZFM_SliderFloatEx`）会在同一个 ID 上重复提交可悬停项，ImGui 1.91.2+ 的「ID 冲突高亮」因此在鼠标停到数值滑条上时弹出 `Programmer error: 2 visible items with conflicting ID!` 红框并给该行描红边。那是**框架侧的调试提示**、不影响滑条功能。本模组绑定框架 ImGui 上下文时只关掉这两个调试开关（`ConfigDebugHighlightIdConflicts` / `…ShowItemPicker`）并留一行日志；旧框架走回退路径（原生滑条，ID 唯一）时不关。正确修法在框架侧（给叠加项打 `ImGuiItemFlags_AllowDuplicateId`），已列为上游建议。
+### Mods Menu 149（SLEEP，可选，68 项）
+
+安装 SLEEP 的 [Mods Menu - In-Game Mod Settings](https://www.nexusmods.com/phantombladezero/mods/149)（v0.9.x）以及它的可选下载 **Mods Menu - UE4SS Bridge**（v0.3.1+）后，游戏自带的设置菜单里会多出「PBZ Photo Mode」分区，用于在游玩中调整**行为 / 隐藏 / 冻结 / 相机与移动 / 景深总开关 / 手柄**共 41 项基础开关与数值；最后一组「快捷键（键盘）」另有 **27 个键位 choice 行**（每行 64 个常用键名，含鼠标键），可直接改键并写回同一份 `settings.json`。没有安装 Mods Menu 或 Bridge 时，本模组完全静默，原快捷键模式不受影响。景深详细参数与画面效果/调色不在 Mods Menu：摄影模式内打不开游戏设置菜单，这些取景参数请用 PBZFM（F8）或直接编辑 `settings.json`。
+
+### 配置文件
+
+- 全量配置、唯一真源：`PBZPhotoModeCpp.settings.json`（首次运行从旧 `config.ini` 自动迁移；旧文件保留为 `config.ini.migrated`）
+- Mods Menu 菜单子集：`PBZPhotoModeCpp.config.json`（由本模组/Bridge 维护）
+- Mods Menu 保存事件：`PBZModsMenuBridge/events-PBZPhotoModeCpp.txt`（本模组每 250ms 轮询 `Changed=`，`End=1` 才读）
+- PBZFM 或 Mods Menu 改动 → 本模组应用并写回 `settings.json`；另一前端与 `config.json` 子集同步刷新。写回失败时按 mtime/内容比较，下次启动自动补回。
+
+设计边界：Mods Menu 只保留 2.2.0 的 41 项基础设置 + 27 个键位 choice（共 68 项），景深详细参数与画面效果/调色不进入菜单。**画面效果/调色是会话级参数**：进入和退出摄影模式都会恢复默认（`reset_look_defaults`），需要保存风格组合请用 PBZFM「保存预设」（`look_preset_<编号>.ini`）。Mods Menu 的键位 choice 只提供 64 个常用键名（列表外的键请用 PBZFM 快捷键页或直接编辑 `settings.json`）。手柄组合键（`LS+RS`、`LB+RB`、`LT/RT` 等）格式特殊，PBZFM 与 Mods Menu 都不提供捕获，直接编辑 `settings.json` 的 `pad_*` 字段。100 项描述符上限内装不下完整 138 个配置字段，其余高级/诊断项请编辑 `settings.json`。详细接入说明与字段清单见 [MODS_MENU_149.md](MODS_MENU_149.md)。
+
+实现：`src/pbzfm_client.*`（PBZFM 自绘页、键位捕获、后台写盘；只 DLL 构建）+ `src/mods_menu_client.*`（Bridge 检测、菜单子集 config.json 同步、events 轮询；只 DLL 构建）+ `src/core/config_json.*`（全量 JSON 配置读写）+ `src/core/mods_menu.*`（扁平 JSON/字段映射；随核心层单测）。
 
 ## 路线图
 
@@ -217,6 +236,12 @@ cvar 与组件设置都写得进去，但强行使能后渲染 worker 必踩零�
 - 每秒一行「输入诊断 ... | 管理器视角=... 我们的相机=... 组件FOV=... ViewTarget=...」
 
 ## 最近的版本
+
+- **2.2.6**（2026-11-12）：**修「FOV 超过 90° 无效 / 调好 FOV 再动色差·开景深又跳回默认」同一根因：独立相机（CineCameraActor）FOV 走焦距通道，`LensSettings.MinFocalLength` 被景深骨架钉在 12mm，`SetCurrentFocalLength` 按它夹紧（SensorWidth 23.8mm 时 12mm 焦距 = 89.5°，日志实锤 `目标=129.2 → 组件FOV=89.42 焦距=12.00mm`）。修复：写焦距前用 `ensure_lens_focal_range()` 按需放宽 `MinFocalLength/MaxFocalLength`（只放宽不收紧），并把景深骨架 `MinFocalLength` 12mm→1mm；首启诊断补 `焦距限位=[min,max]mm`。核心层 7,707 项全绿；DLL 2,379,776 字节、sha256 前 16 `39afd0fb5081048a`；已同步到游戏 Mods 目录。**
+- **2.2.5**（2026-11-12）：**修「鼠标停在数值滑条上弹 ImGui『Programmer error: 2 visible items with conflicting ID!』红框」**——该提示由框架 v4 自绘滑条 `PBZFM_SliderFloatEx` 在同一 ID 上重复提交可悬停项触发（ImGui 1.92.1 在 `ItemHoverable()` 里对「本帧同 ID 提交次数」计数，只对鼠标悬停的 ID 生效；1.91.2 的 #8030 就是为「同一 ID 叠加多个 ButtonBehavior」加的），属框架侧调试噪声、不影响滑条功能；本 mod 侧的三个 ID 全唯一（可见标签 / `##toggle_<key>` / `重置##reset_<key>`），框架每帧也只调一次页面回调。修复：绑定框架 ImGui 上下文后，若框架提供自绘滑条就关掉 `ConfigDebugHighlightIdConflicts`（含 ItemPicker）并留一行日志，旧框架回退路径（原生滑条）不关。核心层 **7,707 项全绿**；DLL **2,378,752 字节**、sha256 前 16 `445372b2f93674e5`；`PBZPhotoModeCpp_2.2.5.zip`（含 2.2.4 的 FOV 修复）。
+- **2.2.4**（2026-11-12）：**修「调节 FOV 后再调整色差参数会把 FOV 重置为默认值」**——日志显示「动色差」在本作里必然触发一次后端切换：色差走「门控 + CineCamera 组件通道」，而组件通道的前提是独立相机，接管模式会被就地回退（20:15:34 `接管当前相机未生效…已自动回退到独立相机` → `景深/胶片：已切换到独立相机后端`）。根因是两条后端的 FOV 写点不对称：接管通道每帧在 `GameViewportClient` Tick 之后写 `CameraCache.POV`（FOV 就在那份 POV 里）所以稳；**独立相机只在切换那一帧写一次组件属性**，之后组件通道的镜头 setter（`SetLensSettings`/`SetFocusSettings`，色差与景深共用）或引擎按「焦距 + Filmback」重建派生状态都会把 FOV 改回默认。同源缺陷：`spawn_camera()` 根本不写 FOV。修复：新增 `reassert_camera_fov_now()`（与接管同一个写点每帧重申：组件 `Lens.FieldOfView` + `FieldOfView` 双载体、优先原生 `SetFieldOfView`/`SetCurrentFocalLength`、**并在 ViewTarget 是我们相机时写本帧 POV**）+ `spawn_camera` 按 `pose.fov` 立即写入 + 回读诊断（首启 `FOV 通道（独立相机）：…`；被改写时 `FOV 被改写：目标=… → 组件FOV=… 焦距=…`）。核心层 **7,707 项全绿**（新增 `test_fov_survives_backend_switch`）；DLL **2,378,240 字节**、sha256 前 16 `6F90F3C884BD1B36`；`PBZPhotoModeCpp_2.2.4.zip`。
+- **2.2.3**（2026-11-12）：**修「画面后处理饱和度调节没有效果」**——日志实锤「写进去了、引擎不画」（饱和 0.22~1.94 全程 `下发` + `回读 …(覆盖1)`、颜色分级强度=1，画面零变化；同族增益/伽马 11-08 实测生效，排除写入路径与 LUT）。根因：DOF 组件通道把管理器 POV 的整份 `FPostProcessSettings` memcpy 进相机组件并把 `PostProcessBlendWeight` 拉满 1.0（UE 合成顺序里排在体积之后），游戏自己 override 的调色字段每帧盖回体积；暗角/泛光 11-07 就因同一机制进了 POV 重申通道，**饱和/对比是唯一没进去的两项**。修复：`apply_look_to_camera_pov` 扩成「调色家族」通道（饱和/对比/增益/伽马/黑位 + `ColorGradingIntensity=1` 每帧重申、残留闩锁、失活只撤覆盖标志）+ 一次性 POV 覆盖标志诊断（下一轮日志里饱和/对比的 `覆盖1/覆盖0` 就是判据）。**同版：每次进入相机模式景深等后处理默认关闭**——`dof_enabled` 是会话级开关却不在 `reset_look_defaults` 里，G 键/PBZFM 打开的景深会带进下一场（日志 19:40:35 进入即 `DOF=1`）→ 新增 `reset_session_defaults`（[look] 全家 + 景深总开关），`PhotoMode::enter` / 进入路径 / 退出路径全走它（景深参数本身不重置）。核心层 **7,692 项全绿**；DLL **2,375,680 字节**、sha256 前 16 `cba601a9dcbc8f88`；`PBZPhotoModeCpp_2.2.3.zip`。
+
 
 - **锐化/超采样整线判死移除**（2026-11-08，工作区，用户终审）：三轮实机收口——锐化写入通道无效（GetFloat 恒 0）；超采样写入有效（290% verified、tag 顶住 66.7 基线、写回原值零失败）但画面无可见增益（DRS/上采样管线不消费该值）。通道学费留档 `core/tuning.h`（写一次靠 tag 顶住 / Unset 对模组 tag 确定性无效 → 释放=写回原值 / 动态分辨率基线非常量）。两键登记 Deprecated。核心层 **6,900 项**全绿。
 - **超采样卡顿修复 + 锐化判死**（2026-11-08，工作区，版本号发布时定）：实机拖动超采样滑条后异常卡顿判明——画面基线 66.7 是游戏动态分辨率，初版「每帧回读+漂移重写」= 每帧全场景渲染目标重分配（亚 1 帧）。修正：引擎改「写一次靠 tag 顶住」（DOF 闸门同模型）、core 失败退避 0.5s、超采样拖动预览旁路（松手才写）、告警节流；**锐化 r.Tonemapper.Sharpness 写入通道无效判死**（tonemapper 家族第 4 项，取证在 tuning.h，滑条保留供游戏更新后重启取证）。核心层 **7,159 项**全绿。

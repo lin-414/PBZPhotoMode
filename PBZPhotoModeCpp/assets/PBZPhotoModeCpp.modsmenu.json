@@ -1,0 +1,7989 @@
+{
+  "title": {
+    "en": "PBZ Photo Mode",
+    "zh-Hans": "影之刃零摄影模式"
+  },
+  "description": {
+    "en": "Free-camera photo mode for Phantom Blade Zero. Enter with F2, freeze time, hide the HUD and tune camera movement here. The last section offers keyboard hotkey choices; depth-of-field details, look and colour settings are edited in settings.json or the optional PBZ-Framework-Menu (F8).",
+    "zh-Hans": "《影之刃零》自由摄影模式。按 F2 进入，可冻结时间、隐藏 HUD，并在这里调整相机与移动参数。最后一组可直接选择键盘键位；景深详细参数、画面效果、调色与手柄组合键请编辑 PBZPhotoModeCpp.settings.json，或使用可选的 PBZ-Framework-Menu（F8）菜单。"
+  },
+  "version": "2.2.0",
+  "settings": [
+    {
+      "type": "heading",
+      "label": {
+        "en": "Behavior",
+        "zh-Hans": "行为"
+      }
+    },
+    {
+      "key": "auto_pause_time",
+      "type": "toggle",
+      "label": {
+        "en": "Pause time on entry",
+        "zh-Hans": "进入时暂停时间"
+      },
+      "default": true,
+      "help": {
+        "en": "On: time pauses automatically when photo mode starts, so characters and effects hold still.",
+        "zh-Hans": "开启：进入摄影模式时自动暂停时间，角色和特效保持不动。"
+      }
+    },
+    {
+      "key": "block_game_input",
+      "type": "toggle",
+      "label": {
+        "en": "Block game input",
+        "zh-Hans": "屏蔽游戏输入"
+      },
+      "default": true,
+      "help": {
+        "en": "On: the game receives no movement or attack input while photo mode is active.",
+        "zh-Hans": "开启：摄影模式期间游戏收不到移动和攻击输入。"
+      }
+    },
+    {
+      "key": "wheel_fov",
+      "type": "toggle",
+      "label": {
+        "en": "Mouse wheel changes FOV",
+        "zh-Hans": "滚轮调视野"
+      },
+      "default": true,
+      "help": {
+        "en": "On: the mouse wheel changes the field of view.",
+        "zh-Hans": "开启：鼠标滚轮调整视野。"
+      }
+    },
+    {
+      "key": "wheel_fov_invert",
+      "type": "toggle",
+      "label": {
+        "en": "Invert wheel direction",
+        "zh-Hans": "反转滚轮方向"
+      },
+      "default": false,
+      "help": {
+        "en": "On: scrolling up widens the view instead of narrowing it.",
+        "zh-Hans": "开启：向上滚动放大视野，而不是拉近。"
+      }
+    },
+    {
+      "key": "ultrawide_unlock",
+      "type": "toggle",
+      "label": {
+        "en": "Ultrawide framing",
+        "zh-Hans": "超宽屏画幅"
+      },
+      "default": true,
+      "help": {
+        "en": "On: lifts the 16:9 framing restriction while photo mode is active, for 21:9 and 32:9 screens.",
+        "zh-Hans": "开启：摄影模式期间解除 16:9 画幅限制，适配 21:9 / 32:9 屏幕。"
+      }
+    },
+    {
+      "key": "takeover_current_camera",
+      "type": "toggle",
+      "label": {
+        "en": "Take over current camera",
+        "zh-Hans": "接管当前相机"
+      },
+      "default": true,
+      "help": {
+        "en": "On: reuses the game camera each frame so the view does not jump on entry; falls back to a separate camera if takeover fails.",
+        "zh-Hans": "开启：每帧接管游戏相机，进入时视角不跳变；接管失败会自动回退独立相机。"
+      }
+    },
+    {
+      "key": "pad_enabled",
+      "type": "toggle",
+      "label": {
+        "en": "Gamepad support",
+        "zh-Hans": "手柄支持"
+      },
+      "default": true,
+      "help": {
+        "en": "On: poll the gamepad and enable the gamepad bindings.",
+        "zh-Hans": "开启：轮询手柄并启用手柄按键。"
+      }
+    },
+    {
+      "key": "freeze_mode",
+      "type": "choice",
+      "label": {
+        "en": "Freeze mode",
+        "zh-Hans": "冻结方式"
+      },
+      "default": "pause",
+      "options": [
+        {
+          "value": "dilation",
+          "label": {
+            "en": "Slow motion",
+            "zh-Hans": "慢动作"
+          }
+        },
+        {
+          "value": "pause",
+          "label": {
+            "en": "True pause",
+            "zh-Hans": "真暂停"
+          }
+        }
+      ],
+      "help": {
+        "en": "True pause stops enemies, NPCs and effects; slow motion is the fallback.",
+        "zh-Hans": "真暂停会停住敌人、NPC 和特效；慢动作是备用方式。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Hiding",
+        "zh-Hans": "隐藏"
+      }
+    },
+    {
+      "key": "hide_player",
+      "type": "toggle",
+      "label": {
+        "en": "Hide player",
+        "zh-Hans": "隐藏角色"
+      },
+      "default": false,
+      "help": {
+        "en": "On: hide the player character while photo mode is active.",
+        "zh-Hans": "开启：摄影模式期间隐藏玩家角色。"
+      }
+    },
+    {
+      "key": "hide_game_hud",
+      "type": "toggle",
+      "label": {
+        "en": "Hide HUD",
+        "zh-Hans": "隐藏 HUD"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hide health bars, quick slots and quest prompts.",
+        "zh-Hans": "开启：隐藏血条、快捷栏和任务提示。"
+      }
+    },
+    {
+      "key": "hide_interact_prompt",
+      "type": "toggle",
+      "label": {
+        "en": "Hide interact prompt",
+        "zh-Hans": "隐藏交互提示"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hide the E-button icon next to interactable objects.",
+        "zh-Hans": "开启：隐藏可互动物体旁的 E 键图标。"
+      }
+    },
+    {
+      "key": "hide_enemy_health_bars",
+      "type": "toggle",
+      "label": {
+        "en": "Hide enemy health bars",
+        "zh-Hans": "隐藏敌人血条"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hide enemy health bars above enemies.",
+        "zh-Hans": "开启：隐藏敌人头顶的血条。"
+      }
+    },
+    {
+      "key": "hide_lockon_marker",
+      "type": "toggle",
+      "label": {
+        "en": "Hide lock-on marker",
+        "zh-Hans": "隐藏锁定标记"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hide the white lock-on marker and the locked target's health bar.",
+        "zh-Hans": "开启：隐藏锁定白点和被锁定目标的血条。"
+      }
+    },
+    {
+      "key": "hide_subtitles",
+      "type": "toggle",
+      "label": {
+        "en": "Hide subtitles",
+        "zh-Hans": "隐藏字幕"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hide dialogue subtitles while photo mode is active.",
+        "zh-Hans": "开启：摄影模式期间隐藏对话字幕。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Freeze",
+        "zh-Hans": "冻结"
+      }
+    },
+    {
+      "key": "freeze_sequences",
+      "type": "toggle",
+      "label": {
+        "en": "Pause cutscenes",
+        "zh-Hans": "暂停过场"
+      },
+      "default": true,
+      "help": {
+        "en": "On: pause sequencer cutscenes together with the world when frozen.",
+        "zh-Hans": "开启：冻结时一并暂停 Sequencer 过场。"
+      }
+    },
+    {
+      "key": "freeze_dialogue_flow",
+      "type": "toggle",
+      "label": {
+        "en": "Pause dialogue flow",
+        "zh-Hans": "暂停对话流程"
+      },
+      "default": true,
+      "help": {
+        "en": "On: stop the dialogue Flow widget while frozen, so a line does not advance.",
+        "zh-Hans": "开启：冻结期间停住对话 Flow，台词不会继续推进。"
+      }
+    },
+    {
+      "key": "stop_wwise_on_freeze",
+      "type": "toggle",
+      "label": {
+        "en": "Pause dialogue audio",
+        "zh-Hans": "暂停对话语音"
+      },
+      "default": true,
+      "help": {
+        "en": "On: pause Wwise voices one by one when frozen, keeping the current line's position.",
+        "zh-Hans": "开启：冻结时逐条暂停 Wwise 语音，保留当前句位置。"
+      }
+    },
+    {
+      "key": "wwise_engine_suspend",
+      "type": "toggle",
+      "label": {
+        "en": "Suspend whole audio engine",
+        "zh-Hans": "整引擎静音兜底"
+      },
+      "default": true,
+      "help": {
+        "en": "On: mute the whole Wwise engine only when no per-voice IDs were captured.",
+        "zh-Hans": "开启：只有没截获到逐语音 ID 时，才整引擎静音兜底。"
+      }
+    },
+    {
+      "key": "stop_camera_shakes_on_freeze",
+      "type": "toggle",
+      "label": {
+        "en": "Stop camera shake",
+        "zh-Hans": "停止镜头抖动"
+      },
+      "default": true,
+      "help": {
+        "en": "On: cancel camera shakes and modifiers while frozen, for a perfectly still frame.",
+        "zh-Hans": "开启：冻结时取消镜头抖动和修饰器，画面完全静止。"
+      }
+    },
+    {
+      "key": "freeze_wind",
+      "type": "toggle",
+      "label": {
+        "en": "Freeze wind",
+        "zh-Hans": "冻结风"
+      },
+      "default": true,
+      "help": {
+        "en": "On: zero wind strength so cloth and foliage stop swaying while frozen.",
+        "zh-Hans": "开启：冻结时把风力归零，布料和植被停止摆动。"
+      }
+    },
+    {
+      "key": "freeze_mpc",
+      "type": "toggle",
+      "label": {
+        "en": "Hold material parameters",
+        "zh-Hans": "钉住材质参数"
+      },
+      "default": true,
+      "help": {
+        "en": "On: hold material parameter collections at their frozen snapshot.",
+        "zh-Hans": "开启：冻结期间钉住材质参数集合的快照值。"
+      }
+    },
+    {
+      "key": "freeze_cloth",
+      "type": "toggle",
+      "label": {
+        "en": "Suspend cloth simulation",
+        "zh-Hans": "挂起布料模拟"
+      },
+      "default": true,
+      "help": {
+        "en": "On: suspend character and enemy cloth simulation, keeping the last pose.",
+        "zh-Hans": "开启：挂起角色和敌人的布料模拟，保留最后姿态。"
+      }
+    },
+    {
+      "key": "freeze_skeletal_animation",
+      "type": "toggle",
+      "label": {
+        "en": "Pause skeletal animation",
+        "zh-Hans": "暂停骨骼动画"
+      },
+      "default": true,
+      "help": {
+        "en": "On: pause skeletal animation so capes and hair do not keep moving while frozen.",
+        "zh-Hans": "开启：暂停骨骼动画，冻结期间披风和头发不会继续动。"
+      }
+    },
+    {
+      "key": "freeze_motion_blur_off",
+      "type": "toggle",
+      "label": {
+        "en": "Disable motion blur while frozen",
+        "zh-Hans": "冻结时关动态模糊"
+      },
+      "default": true,
+      "help": {
+        "en": "On: turn motion blur off while frozen to remove residual smearing.",
+        "zh-Hans": "开启：冻结时关闭动态模糊，消除残留拖影。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Camera and movement",
+        "zh-Hans": "相机与移动"
+      }
+    },
+    {
+      "key": "fov_default",
+      "type": "number",
+      "label": {
+        "en": "Default FOV",
+        "zh-Hans": "默认视野"
+      },
+      "default": 90,
+      "min": 1,
+      "max": 179,
+      "step": 1,
+      "help": {
+        "en": "Field of view used when photo mode starts.",
+        "zh-Hans": "进入摄影模式时的视野角度。"
+      }
+    },
+    {
+      "key": "fov_step",
+      "type": "number",
+      "label": {
+        "en": "FOV step",
+        "zh-Hans": "视野步进"
+      },
+      "default": 2,
+      "min": 0.5,
+      "max": 10,
+      "step": 0.5,
+      "help": {
+        "en": "Step used by the numpad plus/minus keys.",
+        "zh-Hans": "小键盘 +/- 调整视野时的步进。"
+      }
+    },
+    {
+      "key": "move_speed",
+      "type": "number",
+      "label": {
+        "en": "Move speed",
+        "zh-Hans": "移动速度"
+      },
+      "default": 400,
+      "min": 50,
+      "max": 2000,
+      "step": 10,
+      "help": {
+        "en": "Camera translation speed in units per second.",
+        "zh-Hans": "相机平移速度（单位/秒）。"
+      }
+    },
+    {
+      "key": "boost_mult",
+      "type": "number",
+      "label": {
+        "en": "Boost multiplier",
+        "zh-Hans": "加速倍率"
+      },
+      "default": 4,
+      "min": 1,
+      "max": 10,
+      "step": 0.5,
+      "help": {
+        "en": "Multiplier while the boost key is held.",
+        "zh-Hans": "按住加速键时的倍率。"
+      }
+    },
+    {
+      "key": "slow_mult",
+      "type": "number",
+      "label": {
+        "en": "Slow multiplier",
+        "zh-Hans": "减速倍率"
+      },
+      "default": 0.3,
+      "min": 0.05,
+      "max": 1,
+      "step": 0.05,
+      "help": {
+        "en": "Multiplier while the slow key is held.",
+        "zh-Hans": "按住减速键时的倍率。"
+      }
+    },
+    {
+      "key": "slow_look_mult",
+      "type": "number",
+      "label": {
+        "en": "Slow look multiplier",
+        "zh-Hans": "减速视角倍率"
+      },
+      "default": 0.1,
+      "min": 0.01,
+      "max": 1,
+      "step": 0.01,
+      "help": {
+        "en": "Look sensitivity multiplier while the slow key is held.",
+        "zh-Hans": "按住减速键时视角灵敏度的倍率。"
+      }
+    },
+    {
+      "key": "look_sensitivity",
+      "type": "number",
+      "label": {
+        "en": "Look sensitivity",
+        "zh-Hans": "视角灵敏度"
+      },
+      "default": 0.1,
+      "min": 0.01,
+      "max": 1,
+      "step": 0.01,
+      "help": {
+        "en": "Degrees of camera rotation per mouse unit.",
+        "zh-Hans": "每单位鼠标位移对应的视角旋转角度。"
+      }
+    },
+    {
+      "key": "pitch_limit",
+      "type": "number",
+      "label": {
+        "en": "Pitch limit",
+        "zh-Hans": "俯仰限制"
+      },
+      "default": 89,
+      "min": 10,
+      "max": 89,
+      "step": 1,
+      "help": {
+        "en": "Maximum up/down tilt in degrees.",
+        "zh-Hans": "上下俯仰的最大角度。"
+      }
+    },
+    {
+      "key": "vertical_speed",
+      "type": "number",
+      "label": {
+        "en": "Vertical speed",
+        "zh-Hans": "升降速度"
+      },
+      "default": 200,
+      "min": 10,
+      "max": 1000,
+      "step": 10,
+      "help": {
+        "en": "Speed of the rise/descend keys.",
+        "zh-Hans": "升降键的平移速度。"
+      }
+    },
+    {
+      "key": "roll_speed",
+      "type": "number",
+      "label": {
+        "en": "Roll speed",
+        "zh-Hans": "滚转速度"
+      },
+      "default": 60,
+      "min": 5,
+      "max": 360,
+      "step": 5,
+      "help": {
+        "en": "Roll speed in degrees per second.",
+        "zh-Hans": "滚转速度（度/秒）。"
+      }
+    },
+    {
+      "key": "pitch_speed",
+      "type": "number",
+      "label": {
+        "en": "Arrow pitch speed",
+        "zh-Hans": "方向键俯仰速度"
+      },
+      "default": 30,
+      "min": 5,
+      "max": 180,
+      "step": 5,
+      "help": {
+        "en": "Tilt speed of the arrow keys and D-pad.",
+        "zh-Hans": "方向键与十字键的俯仰速度。"
+      }
+    },
+    {
+      "key": "yaw_speed",
+      "type": "number",
+      "label": {
+        "en": "Arrow turn speed",
+        "zh-Hans": "方向键转向速度"
+      },
+      "default": 90,
+      "min": 5,
+      "max": 270,
+      "step": 5,
+      "help": {
+        "en": "Turn speed of the arrow keys and D-pad.",
+        "zh-Hans": "方向键与十字键的转向速度。"
+      }
+    },
+    {
+      "key": "mouse_vertical_mode",
+      "type": "choice",
+      "label": {
+        "en": "Mouse vertical mode",
+        "zh-Hans": "鼠标竖向模式"
+      },
+      "default": "translate",
+      "options": [
+        {
+          "value": "translate",
+          "label": {
+            "en": "Move up/down",
+            "zh-Hans": "上下平移"
+          }
+        },
+        {
+          "value": "look",
+          "label": {
+            "en": "Tilt (look)",
+            "zh-Hans": "俯仰（视角）"
+          }
+        }
+      ],
+      "help": {
+        "en": "What the vertical mouse keys do: translate the camera or tilt it.",
+        "zh-Hans": "鼠标升降键的行为：上下平移相机，或俯仰视角。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Depth of field",
+        "zh-Hans": "景深"
+      }
+    },
+    {
+      "key": "dof_enabled",
+      "type": "toggle",
+      "label": {
+        "en": "Enable depth of field",
+        "zh-Hans": "启用景深"
+      },
+      "default": false,
+      "help": {
+        "en": "On: enable engine depth of field. Focus distance, F-stop and sensor width are set in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "开启：启用引擎景深。对焦距离、光圈和传感器宽度在 PBZPhotoModeCpp.settings.json 里设置。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Gamepad",
+        "zh-Hans": "手柄"
+      }
+    },
+    {
+      "key": "pad_look_speed",
+      "type": "number",
+      "label": {
+        "en": "Gamepad look speed",
+        "zh-Hans": "手柄视角速度"
+      },
+      "default": 60,
+      "min": 10,
+      "max": 720,
+      "step": 5,
+      "help": {
+        "en": "Right-stick turn speed at full deflection, in degrees per second.",
+        "zh-Hans": "右摇杆满行程的转速（度/秒）。"
+      }
+    },
+    {
+      "key": "pad_move_scale",
+      "type": "number",
+      "label": {
+        "en": "Gamepad move scale",
+        "zh-Hans": "手柄移动比例"
+      },
+      "default": 1,
+      "min": 0.1,
+      "max": 2,
+      "step": 0.05,
+      "help": {
+        "en": "Left-stick movement as a fraction of the camera move speed.",
+        "zh-Hans": "左摇杆移动占相机移动速度的比例。"
+      }
+    },
+    {
+      "key": "pad_deadzone",
+      "type": "number",
+      "label": {
+        "en": "Gamepad deadzone",
+        "zh-Hans": "手柄死区"
+      },
+      "default": 0.15,
+      "min": 0,
+      "max": 0.5,
+      "step": 0.01,
+      "help": {
+        "en": "Stick deadzone, 0 to 0.5.",
+        "zh-Hans": "摇杆死区，0 到 0.5。"
+      }
+    },
+    {
+      "type": "heading",
+      "label": {
+        "en": "Keyboard hotkeys",
+        "zh-Hans": "快捷键（键盘）"
+      }
+    },
+    {
+      "key": "key_toggle",
+      "type": "choice",
+      "label": {
+        "en": "Enter/exit photo mode",
+        "zh-Hans": "进入/退出摄影模式"
+      },
+      "default": "F2",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_toggle in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_toggle。"
+      }
+    },
+    {
+      "key": "key_freeze",
+      "type": "choice",
+      "label": {
+        "en": "Freeze/resume time",
+        "zh-Hans": "冻结/恢复时间"
+      },
+      "default": "F",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_freeze in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_freeze。"
+      }
+    },
+    {
+      "key": "key_frame_freeze",
+      "type": "choice",
+      "label": {
+        "en": "Frame freeze/resume",
+        "zh-Hans": "画面定格/恢复"
+      },
+      "default": "F7",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_frame_freeze in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_frame_freeze。"
+      }
+    },
+    {
+      "key": "key_reset",
+      "type": "choice",
+      "label": {
+        "en": "Reset view (back to entry pose)",
+        "zh-Hans": "重置视角（回到进入时）"
+      },
+      "default": "R",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_reset in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_reset。"
+      }
+    },
+    {
+      "key": "key_roll_reset",
+      "type": "choice",
+      "label": {
+        "en": "Zero roll (level horizon)",
+        "zh-Hans": "滚转归零（水平校正）"
+      },
+      "default": "Z",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_roll_reset in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_roll_reset。"
+      }
+    },
+    {
+      "key": "key_fov_up",
+      "type": "choice",
+      "label": {
+        "en": "FOV up",
+        "zh-Hans": "FOV 增大"
+      },
+      "default": "ADD",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_fov_up in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_fov_up。"
+      }
+    },
+    {
+      "key": "key_fov_down",
+      "type": "choice",
+      "label": {
+        "en": "FOV down",
+        "zh-Hans": "FOV 缩小"
+      },
+      "default": "SUBTRACT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_fov_down in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_fov_down。"
+      }
+    },
+    {
+      "key": "key_pitch_up",
+      "type": "choice",
+      "label": {
+        "en": "Pitch up (hold)",
+        "zh-Hans": "俯仰：仰视（按住）"
+      },
+      "default": "UP",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_pitch_up in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_pitch_up。"
+      }
+    },
+    {
+      "key": "key_pitch_down",
+      "type": "choice",
+      "label": {
+        "en": "Pitch down (hold)",
+        "zh-Hans": "俯仰：俯视（按住）"
+      },
+      "default": "DOWN",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_pitch_down in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_pitch_down。"
+      }
+    },
+    {
+      "key": "key_yaw_left",
+      "type": "choice",
+      "label": {
+        "en": "Yaw: turn left (hold)",
+        "zh-Hans": "偏航：左转（按住）"
+      },
+      "default": "LEFT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_yaw_left in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_yaw_left。"
+      }
+    },
+    {
+      "key": "key_yaw_right",
+      "type": "choice",
+      "label": {
+        "en": "Yaw: turn right (hold)",
+        "zh-Hans": "偏航：右转（按住）"
+      },
+      "default": "RIGHT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_yaw_right in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_yaw_right。"
+      }
+    },
+    {
+      "key": "key_roll_left",
+      "type": "choice",
+      "label": {
+        "en": "Roll: counter-clockwise (hold)",
+        "zh-Hans": "滚转：逆时针（按住）"
+      },
+      "default": "Q",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_roll_left in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_roll_left。"
+      }
+    },
+    {
+      "key": "key_roll_right",
+      "type": "choice",
+      "label": {
+        "en": "Roll: clockwise (hold)",
+        "zh-Hans": "滚转：顺时针（按住）"
+      },
+      "default": "E",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_roll_right in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_roll_right。"
+      }
+    },
+    {
+      "key": "key_vertical_up",
+      "type": "choice",
+      "label": {
+        "en": "Vertical up (hold)",
+        "zh-Hans": "升降：上（按住）"
+      },
+      "default": "MOUSE_LEFT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_vertical_up in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_vertical_up。"
+      }
+    },
+    {
+      "key": "key_vertical_down",
+      "type": "choice",
+      "label": {
+        "en": "Vertical down (hold)",
+        "zh-Hans": "升降：下（按住）"
+      },
+      "default": "MOUSE_RIGHT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_vertical_down in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_vertical_down。"
+      }
+    },
+    {
+      "key": "key_move_forward",
+      "type": "choice",
+      "label": {
+        "en": "Move forward (hold)",
+        "zh-Hans": "前进（按住）"
+      },
+      "default": "W",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_move_forward in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_move_forward。"
+      }
+    },
+    {
+      "key": "key_move_back",
+      "type": "choice",
+      "label": {
+        "en": "Move back (hold)",
+        "zh-Hans": "后退（按住）"
+      },
+      "default": "S",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_move_back in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_move_back。"
+      }
+    },
+    {
+      "key": "key_move_left",
+      "type": "choice",
+      "label": {
+        "en": "Strafe left (hold)",
+        "zh-Hans": "左移（按住）"
+      },
+      "default": "A",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_move_left in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_move_left。"
+      }
+    },
+    {
+      "key": "key_move_right",
+      "type": "choice",
+      "label": {
+        "en": "Strafe right (hold)",
+        "zh-Hans": "右移（按住）"
+      },
+      "default": "D",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_move_right in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_move_right。"
+      }
+    },
+    {
+      "key": "key_boost",
+      "type": "choice",
+      "label": {
+        "en": "Boost (hold)",
+        "zh-Hans": "加速（按住）"
+      },
+      "default": "SHIFT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_boost in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_boost。"
+      }
+    },
+    {
+      "key": "key_slow",
+      "type": "choice",
+      "label": {
+        "en": "Slow (hold)",
+        "zh-Hans": "减速（按住）"
+      },
+      "default": "CONTROL",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_slow in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_slow。"
+      }
+    },
+    {
+      "key": "key_free_look",
+      "type": "choice",
+      "label": {
+        "en": "Free-look modifier (hold)",
+        "zh-Hans": "自由转视角门控（按住）"
+      },
+      "default": "ALT",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_free_look in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_free_look。"
+      }
+    },
+    {
+      "key": "key_dof_toggle",
+      "type": "choice",
+      "label": {
+        "en": "Depth of field on/off",
+        "zh-Hans": "景深开/关"
+      },
+      "default": "G",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_dof_toggle in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_dof_toggle。"
+      }
+    },
+    {
+      "key": "key_focus_near",
+      "type": "choice",
+      "label": {
+        "en": "Focus nearer (hold to repeat)",
+        "zh-Hans": "对焦拉近（按住连发）"
+      },
+      "default": "COMMA",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_focus_near in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_focus_near。"
+      }
+    },
+    {
+      "key": "key_focus_far",
+      "type": "choice",
+      "label": {
+        "en": "Focus farther (hold to repeat)",
+        "zh-Hans": "对焦拉远（按住连发）"
+      },
+      "default": "PERIOD",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_focus_far in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_focus_far。"
+      }
+    },
+    {
+      "key": "key_aperture_open",
+      "type": "choice",
+      "label": {
+        "en": "Open aperture (blurrier)",
+        "zh-Hans": "开大光圈（更虚化）"
+      },
+      "default": "OEM_4",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_aperture_open in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_aperture_open。"
+      }
+    },
+    {
+      "key": "key_aperture_close",
+      "type": "choice",
+      "label": {
+        "en": "Close aperture (sharper)",
+        "zh-Hans": "收小光圈（更实）"
+      },
+      "default": "OEM_6",
+      "options": [
+        {
+          "value": "A",
+          "label": "A"
+        },
+        {
+          "value": "B",
+          "label": "B"
+        },
+        {
+          "value": "C",
+          "label": "C"
+        },
+        {
+          "value": "D",
+          "label": "D"
+        },
+        {
+          "value": "E",
+          "label": "E"
+        },
+        {
+          "value": "F",
+          "label": "F"
+        },
+        {
+          "value": "G",
+          "label": "G"
+        },
+        {
+          "value": "H",
+          "label": "H"
+        },
+        {
+          "value": "I",
+          "label": "I"
+        },
+        {
+          "value": "J",
+          "label": "J"
+        },
+        {
+          "value": "K",
+          "label": "K"
+        },
+        {
+          "value": "L",
+          "label": "L"
+        },
+        {
+          "value": "M",
+          "label": "M"
+        },
+        {
+          "value": "N",
+          "label": "N"
+        },
+        {
+          "value": "O",
+          "label": "O"
+        },
+        {
+          "value": "P",
+          "label": "P"
+        },
+        {
+          "value": "Q",
+          "label": "Q"
+        },
+        {
+          "value": "R",
+          "label": "R"
+        },
+        {
+          "value": "S",
+          "label": "S"
+        },
+        {
+          "value": "T",
+          "label": "T"
+        },
+        {
+          "value": "U",
+          "label": "U"
+        },
+        {
+          "value": "V",
+          "label": "V"
+        },
+        {
+          "value": "W",
+          "label": "W"
+        },
+        {
+          "value": "X",
+          "label": "X"
+        },
+        {
+          "value": "Y",
+          "label": "Y"
+        },
+        {
+          "value": "Z",
+          "label": "Z"
+        },
+        {
+          "value": "0",
+          "label": "0"
+        },
+        {
+          "value": "1",
+          "label": "1"
+        },
+        {
+          "value": "2",
+          "label": "2"
+        },
+        {
+          "value": "3",
+          "label": "3"
+        },
+        {
+          "value": "F1",
+          "label": "F1"
+        },
+        {
+          "value": "F2",
+          "label": "F2"
+        },
+        {
+          "value": "F3",
+          "label": "F3"
+        },
+        {
+          "value": "F4",
+          "label": "F4"
+        },
+        {
+          "value": "F5",
+          "label": "F5"
+        },
+        {
+          "value": "F6",
+          "label": "F6"
+        },
+        {
+          "value": "F7",
+          "label": "F7"
+        },
+        {
+          "value": "F8",
+          "label": "F8"
+        },
+        {
+          "value": "F9",
+          "label": "F9"
+        },
+        {
+          "value": "F12",
+          "label": "F12"
+        },
+        {
+          "value": "UP",
+          "label": "Up arrow"
+        },
+        {
+          "value": "DOWN",
+          "label": "Down arrow"
+        },
+        {
+          "value": "LEFT",
+          "label": "Left arrow"
+        },
+        {
+          "value": "RIGHT",
+          "label": "Right arrow"
+        },
+        {
+          "value": "MOUSE_LEFT",
+          "label": "Mouse Left"
+        },
+        {
+          "value": "MOUSE_RIGHT",
+          "label": "Mouse Right"
+        },
+        {
+          "value": "MOUSE_MIDDLE",
+          "label": "Mouse Middle"
+        },
+        {
+          "value": "MOUSE_X1",
+          "label": "Mouse X1"
+        },
+        {
+          "value": "MOUSE_X2",
+          "label": "Mouse X2"
+        },
+        {
+          "value": "SHIFT",
+          "label": "Shift"
+        },
+        {
+          "value": "CONTROL",
+          "label": "Ctrl"
+        },
+        {
+          "value": "ALT",
+          "label": "Alt"
+        },
+        {
+          "value": "PAGE_UP",
+          "label": "Page Up"
+        },
+        {
+          "value": "PAGE_DOWN",
+          "label": "Page Down"
+        },
+        {
+          "value": "HOME",
+          "label": "Home"
+        },
+        {
+          "value": "END",
+          "label": "End"
+        },
+        {
+          "value": "INSERT",
+          "label": "Insert"
+        },
+        {
+          "value": "DELETE",
+          "label": "Delete"
+        },
+        {
+          "value": "ADD",
+          "label": "Numpad +"
+        },
+        {
+          "value": "SUBTRACT",
+          "label": "Numpad -"
+        },
+        {
+          "value": "COMMA",
+          "label": ","
+        },
+        {
+          "value": "PERIOD",
+          "label": "."
+        },
+        {
+          "value": "OEM_4",
+          "label": "["
+        },
+        {
+          "value": "OEM_6",
+          "label": "]"
+        }
+      ],
+      "help": {
+        "en": "Choose the key for this action. The list has 64 common keys; for any other key (or a mouse side button), edit key_aperture_close in PBZPhotoModeCpp.settings.json.",
+        "zh-Hans": "选择该操作使用的按键。列表提供 64 个常用键；其它键（或鼠标侧键）请编辑 PBZPhotoModeCpp.settings.json 的 key_aperture_close。"
+      }
+    }
+  ]
+}

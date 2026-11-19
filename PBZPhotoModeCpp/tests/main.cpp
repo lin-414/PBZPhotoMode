@@ -16,6 +16,7 @@
 #include "core/hook_registry.h"
 #include "core/i18n_logic.h"
 #include "core/input_logic.h"
+#include "core/lang_follow.h"
 #include "core/look_preset.h"
 #include "core/math3.h"
 #include "core/photo_mode.h"
@@ -34,6 +35,8 @@ using namespace pbzpm_test;
 void run_mod_runtime_tests();
 void run_input_pure_tests();
 void run_pbzfm_validation_tests();
+void run_mods_menu_tests();
+void run_config_json_tests();
 
 // ---------------------------------------------------------------- 键名映射
 
@@ -1516,6 +1519,94 @@ void test_photo_mode_takeover_input() {
         fe.reset_calls();
         mode.tick(forward, 0.016);
         CHECK(fe.has("apply_pose"));
+        mode.leave();
+    }
+}
+
+void test_pose_angle_sliders() {
+    section("PBZFM 取景角度滑条：归一/夹紧/绝对角写入/与鼠标增量共存");
+    using namespace pbzpm;
+    using pbzpm::test::FakeEngine;
+
+    // 纯函数：pitch 夹到 ±pitch_limit，yaw/roll 归一到 [-180, 180)，非法轴原样返回
+    CHECK_NEAR(normalize_pose_angle(0, -120.0, 89.0), -89.0, 1e-9);
+    CHECK_NEAR(normalize_pose_angle(0, 120.0, 89.0), 89.0, 1e-9);
+    CHECK_NEAR(normalize_pose_angle(1, 190.0), -170.0, 1e-9);
+    CHECK_NEAR(normalize_pose_angle(2, -190.0), 170.0, 1e-9);
+    CHECK_NEAR(normalize_pose_angle(1, -89.0), -89.0, 1e-9);
+    CHECK_NEAR(normalize_pose_angle(9, 42.0), 42.0, 1e-9);
+
+    // 未激活：滑条不可用（写入被拒、读取失败），姿态不动
+    {
+        FakeEngine fe;
+        Config cfg;
+        PhotoMode mode(fe, cfg);
+        CHECK(!mode.set_pose_angle(0, -30.0));
+        double deg = 123.0;
+        CHECK(!mode.pose_angle(0, &deg));
+        CHECK(mode.enter());
+        mode.leave();
+        CHECK(!mode.set_pose_angle(1, 40.0));  // 退出后也不再接受
+    }
+
+    // 激活：滑条绝对角立即落到姿态，并随下一帧写进相机
+    {
+        FakeEngine fe;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+
+        CHECK(mode.set_pose_angle(0, -30.0));
+        double deg = 0.0;
+        CHECK(mode.pose_angle(0, &deg));
+        CHECK_NEAR(deg, -30.0, 1e-9);
+        mode.tick(Intent{}, 0.016);
+        CHECK_NEAR(fe.last_pose.rot.pitch, -30.0, 1e-9);  // 已真正写到相机
+
+        // 越界由滑条同一套归一逻辑夹紧：pitch 不能翻过 pitch_limit
+        CHECK(mode.set_pose_angle(0, -200.0));
+        CHECK(mode.pose_angle(0, &deg));
+        CHECK_NEAR(deg, -cfg.pitch_limit, 1e-9);
+        CHECK(mode.set_pose_angle(0, 200.0));
+        CHECK(mode.pose_angle(0, &deg));
+        CHECK_NEAR(deg, cfg.pitch_limit, 1e-9);
+
+        // yaw/roll 归一：190 度显示为 -170 度
+        CHECK(mode.set_pose_angle(1, 190.0));
+        CHECK(mode.pose_angle(1, &deg));
+        CHECK_NEAR(deg, -170.0, 1e-9);
+        CHECK(mode.set_pose_angle(2, -185.0));
+        CHECK(mode.pose_angle(2, &deg));
+        CHECK_NEAR(deg, 175.0, 1e-9);
+
+        // 与鼠标增量共存：滑条设到 40 后，鼠标继续转，角度继续累加（不会被滑条拉回 40）
+        CHECK(mode.set_pose_angle(1, 40.0));
+        CHECK(mode.pose_angle(1, &deg));
+        CHECK_NEAR(deg, 40.0, 1e-9);
+        const double yaw_before = mode.pose().rot.yaw;
+        Intent look;
+        look.look_dx = 20.0;
+        mode.tick(look, 0.016);
+        CHECK(mode.pose().rot.yaw != yaw_before);
+        double yaw_after = 0.0;
+        CHECK(mode.pose_angle(1, &yaw_after));
+        CHECK_NEAR(yaw_after, normalize_pose_angle(1, mode.pose().rot.yaw), 1e-9);
+        mode.leave();
+    }
+
+    // 接管模式同样生效：绝对角要出现在写出的 POV 上
+    {
+        FakeEngine fe;
+        fe.takeover_supported = true;
+        Config cfg;
+        cfg.auto_pause_time = false;
+        PhotoMode mode(fe, cfg);
+        CHECK(mode.enter());
+        CHECK(mode.takeover_active());
+        CHECK(mode.set_pose_angle(2, 15.0));
+        mode.tick(Intent{}, 0.016);
+        CHECK_NEAR(fe.last_pose.rot.roll, 15.0, 1e-9);
         mode.leave();
     }
 }
@@ -4415,12 +4506,56 @@ void test_world_snapshot() {
     CHECK_INT((int)identity.generation(), 0);
     CHECK(!identity.observe(nullptr, nullptr));  // 卸载窗口期
     CHECK_INT((int)identity.generation(), 0);
-    CHECK(identity.observe(wb, nullptr));  // UWorld 变化 → 换代
+
+    // 换代收尾（2.2.1 修复）：UWorld 变化时 WorldSettings 基线还是上一代的，几十到几百
+    // 毫秒后第一次读到新 settings 只是补齐基线，不得触发第二次换代——2.2.0 在这里把
+    // 冻结刚登记的布料/骨骼记账清空（实机 2026-11-09 21:09 拉条回归根因）。
+    bool catchup = true;
+    CHECK(identity.observe(wb, nullptr));  // UWorld 变化 → 换代（settings 基线留旧值）
     CHECK_INT((int)identity.generation(), 1);
-    CHECK(identity.observe(wb, sb));  // WorldSettings 变化 → 换代
+    CHECK(!identity.observe(wb, sb, &catchup));  // settings 追平 → 收尾，不算换代
+    CHECK(catchup);
+    CHECK_INT((int)identity.generation(), 1);
+    catchup = true;
+    CHECK(!identity.observe(wb, sb, &catchup));  // 再观测同一代：无事件
+    CHECK(!catchup);
+    CHECK_INT((int)identity.generation(), 1);
+
+    // 追平之后再变 settings（世界未变）：仍按换代保护（分区流送/设置对象重建）
+    int settings_c = 0;
+    CHECK(identity.observe(wb, (const void*)&settings_c));  // settings 变化 → 换代
     CHECK_INT((int)identity.generation(), 2);
-    identity.invalidate();
+
+    // 换代时 settings 同时到位（引擎状态稳定后 dump）：一次 observe 报换代，无收尾
+    int world_c = 0;
+    catchup = true;
+    CHECK(identity.observe((const void*)&world_c, (const void*)&settings_c, &catchup));  // 两者都变 → 换代
     CHECK_INT((int)identity.generation(), 3);
+    CHECK(!catchup);
+    catchup = false;
+    CHECK(!identity.observe((const void*)&world_c, (const void*)&settings_c, &catchup));  // 无事件
+    CHECK(!catchup);
+
+    // 世界换代后 settings 读到空（窗口期）再追平：仍是收尾
+    int world_d = 0;
+    int settings_d = 0;
+    catchup = false;
+    CHECK(identity.observe((const void*)&world_d, nullptr));  // 世界换、settings 未读到
+    CHECK_INT((int)identity.generation(), 4);
+    CHECK(!identity.observe((const void*)&world_d, (const void*)&settings_d, &catchup));
+    CHECK(catchup);
+    CHECK_INT((int)identity.generation(), 4);
+
+    // 世界换代时若 settings 基线与旧世界相同对象（同指针复用，罕见）：世界变化优先，收尾闩锁置位
+    catchup = false;
+    CHECK(identity.observe((const void*)&world_c, nullptr));  // 世界回到旧指针（重启/复用场景）
+    CHECK_INT((int)identity.generation(), 5);
+    CHECK(!identity.observe((const void*)&world_c, (const void*)&settings_c, &catchup));  // 收尾
+    CHECK(catchup);
+    CHECK_INT((int)identity.generation(), 5);
+
+    identity.invalidate();
+    CHECK_INT((int)identity.generation(), 6);
 
     // 时间字段位图：读失败就不写
     TimeSettingsSnapshot time;
@@ -4661,6 +4796,45 @@ void test_retry_backoff() {
     }
 }
 
+// ---------------------------------------------------------------- 菜单语言跟随（H-6）
+
+// PBZFM.ini 解析 + 生效语言决策：切语言后菜单是否跟得上，取决于这两个纯函数。
+void test_menu_language_follow() {
+    section("菜单语言跟随（PBZFM.ini + settings.json）");
+    using namespace pbzpm;
+
+    // [framework] 段的 language（框架实际写法）
+    CHECK_STR(parse_pbzfm_language("[framework]\nlanguage = en-US\n[other]\nlanguage = ko-KR\n"), "en-US");
+    // CRLF + 缩进 + 成对引号
+    CHECK_STR(parse_pbzfm_language("[framework]\r\n  language   =   \"zh-CN\"  \r\n"), "zh-CN");
+    // 注释行不能被当成键
+    CHECK_STR(parse_pbzfm_language("; language = ja-JP\n# language = ko-KR\n[framework]\nlanguage = en-US\n"),
+              "en-US");
+    // [framework] 段在文件后面：不能被前面的 language 抢走
+    CHECK_STR(parse_pbzfm_language("[graphics]\nquality = 2\nlanguage = ko-KR\n[framework]\nlanguage = ja-JP\n"),
+              "ja-JP");
+    // 没有 [framework] 段（手写/旧版）：退回第一个 language
+    CHECK_STR(parse_pbzfm_language("[graphics]\nlanguage = ko-KR\n[framework_old]\nlanguage = ja-JP\n"), "ko-KR");
+    CHECK_STR(parse_pbzfm_language(""), "");
+    CHECK_STR(parse_pbzfm_language("[framework]\nlanguage = \n"), "");
+    CHECK_STR(parse_pbzfm_language("[framework]\nversion = 3\n"), "");
+
+    const std::vector<std::string> ids{"en-US", "zh-CN", "ja-JP", "ko-KR"};
+
+    // 显式选择优先：玩家在本模组语言页选了韩语，就不能被 PBZFM 的英文顶掉
+    CHECK_STR(decide_menu_language("ko-KR", "en-US", ids, "zh-CN"), "ko-KR");
+    // auto / 空 → 跟随 PBZFM
+    CHECK_STR(decide_menu_language("auto", "en-US", ids, "zh-CN"), "en-US");
+    CHECK_STR(decide_menu_language("", "ja-JP", ids, "zh-CN"), "ja-JP");
+    // 显式选择的词典被删了（未知 id）→ 退回跟随 PBZFM，而不是留在不存在的语言
+    CHECK_STR(decide_menu_language("it-IT", "en-US", ids, "zh-CN"), "en-US");
+    // PBZFM 写了个本模组没有的 id → 兜底
+    CHECK_STR(decide_menu_language("auto", "it-IT", ids, "zh-CN"), "zh-CN");
+    // 什么都没读到 → 空串（调用方保持现状；绝不能返回 0 号语言，否则语言会被重置）
+    CHECK_STR(decide_menu_language("auto", "", ids, ""), "");
+    CHECK_STR(decide_menu_language("auto", "en-US", {}, "zh-CN"), "");
+}
+
 // ---------------------------------------------------------------- 钩子记账（H-5）
 
 // 纯记账结构：幂等判定、成功/失败/部分成功、待注销快照、注销结果回写。
@@ -4841,6 +5015,40 @@ void test_look_preset_slots() {
     CHECK_NEAR(guard.vignette, 2.0, eps);  // 失败时 out 不动
 }
 
+// 会话级默认：reset_session_defaults = [look] 全家（含色差/调色·进阶）+ 景深总开关。
+// 用户要求「每次进入相机模式时，景深等画面后处理功能都要默认关闭」——dof_enabled 是会话级
+// 开关（G 键 / PBZFM 都能改），reset_look_defaults 只管 [look]，景深会带着上一场的开启状态进场。
+void test_reset_session_defaults() {
+    section("reset_session_defaults：进入摄影模式时的会话级默认");
+    using namespace pbzpm;
+
+    Config cfg;
+    cfg.vignette = 2.0;
+    cfg.saturation = 0.4;
+    cfg.saturation_enabled = false;
+    cfg.chromatic_aberration = 3.0;
+    cfg.color_gain = 1.7;
+    cfg.dof_enabled = true;
+    CHECK(reset_session_defaults(cfg));
+    CHECK_NEAR(cfg.vignette, 0.0, 1e-9);
+    CHECK_NEAR(cfg.saturation, 1.0, 1e-9);
+    CHECK(cfg.saturation_enabled);
+    CHECK_NEAR(cfg.chromatic_aberration, 0.0, 1e-9);
+    CHECK_NEAR(cfg.color_gain, tuning::kColorGainDefault, 1e-9);
+    CHECK(!cfg.dof_enabled);
+    // 幂等：已是默认再调返回 false（调用方据此决定要不要写盘/刷菜单）
+    CHECK(!reset_session_defaults(cfg));
+    // 只差景深一项也要算「有变化」，否则景深关不掉、菜单显示还会停在旧值
+    cfg.dof_enabled = true;
+    CHECK(reset_session_defaults(cfg));
+    CHECK(!cfg.dof_enabled);
+    // reset_look_defaults 保持原语义：不碰景深（[look] 退出路径与既有测试依赖这点）
+    Config look_only;
+    look_only.dof_enabled = true;
+    CHECK(!reset_look_defaults(look_only));
+    CHECK(look_only.dof_enabled);
+}
+
 int main() {
     std::printf("PBZ Photo Mode (C++) 核心层测试\n");
 
@@ -4849,6 +5057,7 @@ int main() {
     test_config_warnings_and_clamps();
     test_config_revived_dof_keys();
     test_config_color_pro_keys();
+    test_reset_session_defaults();
     test_config_schema_and_sections();
     test_config_default_text_roundtrip();
     test_math();
@@ -4858,6 +5067,7 @@ int main() {
     test_photo_mode_look_defaults_on_enter();
     test_photo_mode_failures_rollback();
     test_photo_mode_takeover_input();
+    test_pose_angle_sliders();
     test_photo_mode_tick();
     test_photo_mode_freeze();
     test_photo_mode_auto_pause();
@@ -4891,11 +5101,14 @@ int main() {
     test_config_atomic_write();
     test_i18n_pure_logic();
     test_i18n_snapshot_concurrency();
+    test_menu_language_follow();
     test_retry_backoff();
     test_hook_registry();
     run_mod_runtime_tests();
     run_input_pure_tests();
     run_pbzfm_validation_tests();
+    run_mods_menu_tests();
+    run_config_json_tests();
 
     std::printf("\n----------------------------------------\n");
     // 机器可读行：tools\update_test_count.ps1 只解析这一行（不依赖中文编码）

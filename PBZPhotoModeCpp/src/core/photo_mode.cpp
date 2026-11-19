@@ -260,8 +260,10 @@ bool PhotoMode::enter() {
 
     // [look] 五项画面效果每次进入摄影模式都从默认参数开始：数值归中性值、五个开关归默认。
     // 这里改的是 PhotoMode 自己的配置副本；mod_app 在 enter 成功后会把同一份默认值写回
-    // cfg_ / config.ini 并刷新 PBZFM 菜单镜像，保证界面显示与引擎行为一致。
-    reset_look_defaults(cfg_);
+    // cfg_ / settings.json 并刷新 PBZFM 菜单镜像，保证界面显示与引擎行为一致。
+    // 景深总开关也归默认：每次进入相机模式都从「景深关闭」开始，上一场的 G 键/PBZFM 开启状态
+    // 不带进来（用户 2026-11-12 要求；dof 参数本身仍是用户配置，不重置）。
+    reset_session_defaults(cfg_);
     look_applied_valid_ = false;
 
     // 景深/胶片状态按次进入重置：门控在上面的补还原里已释放；[dof] 参数保留（用户配置），
@@ -639,6 +641,24 @@ bool PhotoMode::set_fov(double fov) {
             log(LogLevel::Warn, "应用 FOV 失败");
         }
     }
+    return true;
+}
+
+bool PhotoMode::set_pose_angle(int axis, double degrees) {
+    if (!active_ || axis < 0 || axis > 2) return false;
+    if (!std::isfinite(degrees)) return false;
+    const double value = normalize_pose_angle(axis, degrees, cfg_.pitch_limit);
+    double& target = axis == 0 ? pose_.rot.pitch : (axis == 1 ? pose_.rot.yaw : pose_.rot.roll);
+    if (std::abs(target - value) < 1e-9) return true;  // 值没变：仍然算成功（菜单拖动会重复提交同一角）
+    target = value;
+    pose_dirty_ = true;  // 由下一帧 apply_pose_if_dirty() 落到相机（菜单拖动期间约 16ms，肉眼即时）
+    return true;
+}
+
+bool PhotoMode::pose_angle(int axis, double* degrees) const {
+    if (!active_ || degrees == nullptr || axis < 0 || axis > 2) return false;
+    const double raw = axis == 0 ? pose_.rot.pitch : (axis == 1 ? pose_.rot.yaw : pose_.rot.roll);
+    *degrees = normalize_pose_angle(axis, raw, cfg_.pitch_limit);
     return true;
 }
 

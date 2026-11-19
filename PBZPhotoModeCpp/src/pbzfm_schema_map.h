@@ -1,10 +1,11 @@
 #pragma once
 
-// PBZFM（PBZ-Framework-Menu 菜单框架）的设置项映射表。
-// 这张表是「菜单 schema 条目 ↔ Config 字段」的唯一事实来源：
-//   - pbzfm_client.cpp 按它注册/播种/回读框架侧的 schema 条目；
-//   - 菜单改动按它写回 Config（再由 mod_app 落盘 config.ini 并实时应用）；
-//   - 核心层测试按它做往返校验，不需要框架 DLL 存在。
+// 配置字段表（历史文件名 pbzfm_schema_map）。
+// 这张表是「PBZFM 菜单 / Mods Menu 子集 / Config JSON 字段 ↔ Config 成员」的唯一事实来源：
+//   - pbzfm_client.cpp 按它注册/播种/回读 PBZFM 自绘页；
+//   - mods_menu.cpp 按它生成/应用菜单子集 JSON；
+//   - 范围/枚举/默认值与 config.cpp 解析共用同一套定义；
+//   - 核心层测试按它做往返校验。
 // 纯数据 + 纯函数：不含 Windows/UE4SS 依赖，随 pbzpm_core 一起编译与测试。
 #include <string>
 #include <vector>
@@ -43,6 +44,12 @@ struct PbzfmField {
     // Key：config 里的键名成员 + 键名解析失败时的回退 VK（来自 KeyMap）
     std::string Config::* key_name{nullptr};
     int (*key_fallback)(const KeyMap&){nullptr};
+    // 取景角度滑条（pitch/yaw/roll）：-1 = 普通配置字段；0/1/2 = 该轴的实时相机姿态。
+    // 带这个标记的 Float 字段不读写 Config，菜单直接从 Host 读实时角度、拖动直接写实时姿态，
+    // 这样鼠标/手柄转过之后滑条也是最新值，不会出现「滑条与鼠标各改一份、互相掰回去」。
+    int pose_axis{-1};
+    // 只在摄影模式激活时可用（未激活时客户端把滑块与重置按钮置灰）。
+    bool requires_photo_mode{false};
 };
 
 // 全部可进菜单的字段（顺序即菜单顺序；group 变化即换组）

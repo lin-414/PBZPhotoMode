@@ -238,7 +238,7 @@ PadState xinput_to_pad(const XINPUT_STATE& st) {
                                st.Gamepad.sThumbRY);
 }
 
-// 键位全部由 config.ini 决定（2.0.0-cpp-hotfix9 起连 WASD/Shift/Ctrl/Alt 也可改），
+// 键位全部由 settings.json 决定（2.0.0-cpp-hotfix9 起连 WASD/Shift/Ctrl/Alt 也可改），
 // 所以不再维护「需要轮询的键」白名单：白名单一旦漏项，键位会静默失效——1.0.x 的
 // key_aperture_open/close 默认 OEM_4/OEM_6（[ ]）就是例子，能解析、菜单也能捕获，
 // 但不在名单里，按了永远没有按下沿。这里直接轮询 1..255 全部虚拟键：

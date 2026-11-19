@@ -29,6 +29,12 @@ cl /nologo /std:c++20 /EHsc /W4 /permissive- /utf-8 /MD ^
    /Fe:build\gen_config.exe /Fo:build\ /Fd:build\ ^
    tools\gen_config.cpp ^
    src\core\config.cpp ^
+   src\core\gamepad.cpp ^
+   src\core\i18n_logic.cpp ^
+   src\core\input_logic.cpp ^
+   src\core\mods_menu.cpp ^
+   src\core\vk.cpp ^
+   src\pbzfm_schema_map.cpp ^
    /I. /Isrc
 if errorlevel 1 exit /b 1
 

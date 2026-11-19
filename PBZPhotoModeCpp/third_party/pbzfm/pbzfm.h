@@ -80,7 +80,7 @@
 #include <windows.h>
 
 #define PBZFM_ABI_VERSION 1   /* minimum API version this header requires  */
-#define PBZFM_API_VERSION 4   /* API version of the framework build        */
+#define PBZFM_API_VERSION 5   /* API version of the framework build        */
 
 /* Modifier bits for AddHotkeyEx / ConfigAddKeyCombo (v2). A chord fires only
  * when the held modifiers match exactly - holding an extra Shift does not
@@ -131,6 +131,13 @@ PBZFM_API int  PBZFM_IsMenuOpen(void);     /* 1 while the overlay menu is visibl
  * NULL on frameworks that predate it - always null-check. Intended for client
  * flows that must hand control back to the game, e.g. "click to focus" buttons. */
 PBZFM_API void PBZFM_CloseMenu(void);
+/* v5 optional: the framework's RESOLVED UI language tag, one of "zh-CN" /
+ * "en-US" / "ja-JP" / "ko-KR". Never "auto", never NULL, never empty (returns
+ * "en-US" before the framework has loaded a language). To follow the menu
+ * language, poll it once per frame and compare with your cached value - there
+ * is no change callback. Do not parse the framework's PBZFM.ini: "auto" makes
+ * the ini value differ from the language actually in use. */
+PBZFM_API const char* PBZFM_GetLanguage(void);
 
 /* ---- sections & pages --------------------------------------------------- */
 
@@ -360,6 +367,9 @@ struct PBZFM_Api {
     void (*CloseMenu)(void);
     /* ---- v4 additions (optional; NULL when the framework predates them) ---- */
     int  (*SliderFloatEx)(const char*, float*, float, float, const char*, int);
+    /* ---- v5 additions (optional; NULL when the framework predates them) ---- */
+    /* Resolved UI language tag; never "auto", never NULL. Poll per frame. */
+    const char* (*GetLanguage)(void);
 };
 
 #ifdef __cplusplus
@@ -443,6 +453,8 @@ static int PBZFM_LoadApi(struct PBZFM_Api* out) {
     PBZFM_GET_OPT(ConfigCreatePath, "PBZFM_ConfigCreatePath");
     PBZFM_GET_OPT(GetApiVersion, "PBZFM_GetApiVersion");
     PBZFM_GET_OPT(SliderFloatEx, "PBZFM_SliderFloatEx");
+    /* v5: optional - resolved UI language tag (per-frame polling by clients). */
+    PBZFM_GET_OPT(GetLanguage, "PBZFM_GetLanguage");
 #undef PBZFM_GET_OPT
 #undef PBZFM_GET
     if (out->GetAbiVersion() < PBZFM_ABI_VERSION) return 0;

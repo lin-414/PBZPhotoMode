@@ -15,7 +15,7 @@
 //     languages/*.json，见 pbzfm_client_lang.h）+ 全部设置项（键位捕获为
 //     客户端自实现，镜像框架输入层的 VkToImGuiKey 映射）；
 //   - 「状态 · Status」页：运行状态/位姿/键位速查 + 常用动作按钮。
-// 设置的提交路径：自绘页（框架渲染线程）改 mirror_ → 写回 config.ini +
+// 设置的提交路径：自绘页（框架渲染线程）改 mirror_ → 写回 settings.json +
 // submit_config → 引擎 Tick 线程应用（键位表重建 + 实时开关 + PhotoMode）；
 // 所有引擎交互都在引擎 Tick 执行，框架线程只提交数据。
 //
@@ -24,11 +24,13 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstddef>
 #include <cstdint>
 #include <map>
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include "core/config.h"
@@ -47,6 +49,16 @@
 #endif
 #include "pbzfm.h"  // third_party/pbzfm（CMake 提供包含目录）
 #include "pbzfm_client_lang.h"
+
+// ---- PBZFM SDK ABI 自检（API v5）----
+// GetLanguage 必须是 PBZFM_Api 的最后一个成员：框架若在它之后再追加字段而
+// 本地 SDK 头没同步，sizeof/offsetof 断言会当场编译失败，而不是运行期读垃圾指针。
+// 签名也一并锁住，防止两边对导出契约的理解漂移。
+static_assert(std::is_same_v<decltype(PBZFM_Api::GetLanguage), const char* (*)(void)>,
+              "PBZFM_Api::GetLanguage 签名与 SDK 契约不一致（应为 const char* (*)(void)）");
+static_assert(sizeof(PBZFM_Api) ==
+                  offsetof(PBZFM_Api, GetLanguage) + sizeof(PBZFM_Api::GetLanguage),
+              "PBZFM_Api::GetLanguage 必须是结构体最后一个成员（本地 pbzfm.h 未与框架同步？）");
 
 // imgui 的 ImFont 前置声明（全局作用域，与 imgui.h 是同一类型；完整定义在实现处包含）
 struct ImFont;
@@ -99,7 +111,7 @@ public:
     class Host {
     public:
         virtual ~Host() = default;
-        virtual std::string mod_dir() = 0;                  // mod 目录（config.ini / languages 路径）
+        virtual std::string mod_dir() = 0;                  // mod 目录（settings.json / languages 路径）
         virtual Config current_config() = 0;                // 线程安全取当前配置副本
         virtual void submit_config(const Config& cfg) = 0;  // 菜单改动 → 引擎 Tick 应用
         // 滑条拖动实时预览：把拖动中的草案推给引擎（引擎 Tick 应用，下一帧上屏），但宿主侧
@@ -108,6 +120,20 @@ public:
         virtual void submit_config_preview(const Config& cfg) { (void)cfg; }
         virtual void submit_command(const PbzfmCommand& cmd) = 0;
         virtual void log(LogLevel level, const std::string& msg) = 0;
+        // ---- 取景角度滑条（相机组 cam_pitch/cam_yaw/cam_roll）----
+        // 值不落在 Config 上：读实时姿态（鼠标/手柄转过之后滑条也跟得上），拖动直接写姿态。
+        // 默认实现 = 不可用：未接这两个入口的宿主（例如测试桩）会把它们当普通配置字段处理。
+        virtual bool photo_mode_active() const { return false; }
+        virtual bool pose_angle(int axis, double* degrees) const {
+            (void)axis;
+            (void)degrees;
+            return false;
+        }
+        virtual bool set_pose_angle(int axis, double degrees) {
+            (void)axis;
+            (void)degrees;
+            return false;
+        }
     };
 
     PbzfmClient() = default;
@@ -115,12 +141,17 @@ public:
     PbzfmClient(const PbzfmClient&) = delete;
     PbzfmClient& operator=(const PbzfmClient&) = delete;
 
+    // 绑定宿主（幂等，只记录 host_ 与写盘路径，不启动线程）。
+    // on_unreal_init() 必须在 reload_config() 之前调用它：reload_config 里的
+    // refresh_language() 要读 host_->mod_dir()；而 start() 要等 mode_/runtime_
+    // 建好之后才能起框架线程（页面首帧要拿完整快照）。
+    void attach_host(Host* host);
     // 启动发现线程（幂等）。host 生命周期必须覆盖 stop()。
     void start(Host* host);
     // 停止发现线程；之后的框架回调直接空转（mod 卸载前调用）
     void stop();
 
-    // config.ini 被外部改动（重新载入）后，把自绘页显示值同步成新配置
+    // settings.json 被外部改动（重新载入）后，把自绘页显示值同步成新配置
     void sync_from_config(const Config& cfg);
 
     // 引擎 Tick 每帧发布快照（诊断页读取）
@@ -128,6 +159,16 @@ public:
 
     // 词典实例：UE4SS 控制台诊断面板与自绘页共用同一份（外部 languages/*.json）
     PbzmI18n& lang() { return lang_; }
+
+    // 生效语言重算（settings.json 显式 id 优先，否则跟随 PBZFM）。
+    // 跟随来源优先取框架 v5 的 PBZFM_GetLanguage（每帧实时值）；框架较旧
+    // （该指针为 NULL）时降级读 Documents\PBZ\PBZFM\PBZFM.ini，按 mtime 判变化。
+    // 框架渲染线程（页面回调）与引擎 Tick 线程都会调用，内部互斥。
+    void refresh_language(bool rename_tree = true);
+    // 引擎 Tick 每帧调用：让语言跟随不依赖"本模组页面正在渲染"。
+    // 这也保证 PBZFM 里切完语言、人还停在框架自己的页面上时，侧栏标签与
+    // 控制台帮助文案当场跟着变，不需要退出再进菜单。
+    void tick_language();
 
     // 框架菜单当前是否可见（PBZFM_IsMenuOpen；框架未接入/旧版返回 false）。
     bool menu_open() const;
@@ -152,7 +193,8 @@ private:
     // ---- 自绘页（框架渲染线程） ----
     bool ensure_imgui();                 // SetCurrentContext + 后端指纹校验（一次）
     bool ensure_page_font();             // 自绘页专用合并字体（雅黑 + Malgun，韩文用）
-    void refresh_language();             // menu_language（auto=跟随 PBZFM.ini）→ lang_ 生效
+    void refresh_api_language();         // 取 PBZFM_GetLanguage（v5；旧框架指针为 NULL）
+    void refresh_ini_language();         // 旧框架降级：mtime 变了才重读 Documents 下的实例 ini
     void render_settings_page();                       // 0.4.x 回退整页
     void render_language_page();                       // 0.5.0+：设置分类页（语言切换 + 词典）
     void render_group_page(const char* group);
@@ -210,12 +252,22 @@ private:
     std::atomic<bool> menu_closed_tick_{false};
     int menu_event_id_{0};
 
-    // ---- 框架渲染线程独占状态（H-4：原先的函数内 static）----
-    // 线程归属：register_all 在注册线程调用一次 refresh_language（alive_ 发布前），
-    // 此后只有 PBZFM 框架渲染线程的页面回调读写这些字段；注册完成由 alive_ 的
-    // release/acquire 建立顺序，两条线程不会并发访问。
-    std::string pbzfm_ini_lang_;         // PBZFM.ini 的 [framework] language 缓存
-    double pbzfm_ini_next_check_{0.0};   // 下次允许重读 PBZFM.ini 的时间（steady 秒）
+    // ---- 语言跟随状态（H-6）----
+    // 线程归属：引擎 Tick、框架渲染线程、配置重载线程都会进 refresh_language，
+    // 统一由 lang_mutex_ 串行化；快照本身已由 PbzmI18n 内部保证读写安全。
+    std::mutex lang_mutex_;
+    // 跟随来源缓存：v5 为 PBZFM_GetLanguage 的实时值；旧框架为实例 ini 的 language
+    // （已解析成具体语言 id；文件里键缺失 = 跟随系统时也落成系统语言）。空=无来源。
+    std::string pbzfm_lang_;
+    // 诊断：当前跟随来源的可读描述（api(v5) / ini降级(path,key) / 空=无），
+    // 供启动后只打一次的 "[lang] 跟随来源 = ..." 日志使用。受 lang_mutex_ 保护。
+    std::string lang_source_;
+    bool lang_diag_logged_ = false;
+    std::int64_t pbzfm_ini_mtime_{-1};   // 上次成功读取时的 last_write_time ticks（-1=还没读过）
+    std::uint64_t pbzfm_ini_size_{0};    // 上次读取时的文件大小（mtime 精度不足时兜底）
+    bool pbzfm_ini_loaded_{false};       // 是否已有一次读取结果（含"文件不存在"）
+    double lang_changed_at_{0.0};        // 最近一次生效语言变化的时间（诊断用）
+    double rename_retry_at_{0.0};        // 树标签改名失败后的下次重试时间（steady 秒）
     bool key_capturing_{false};          // 改键捕获进行中
     const PbzfmField* key_capture_field_{nullptr};  // 捕获中的字段（指向静态字段表）
     double key_capture_started_{0.0};    // 捕获开始时间（steady 秒，用于 5 秒超时）

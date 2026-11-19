@@ -59,6 +59,13 @@ struct Config {
     double slow_look_mult{0.1};      // 按住减速键（默认 Ctrl；手柄 pad_slow，默认 RS）时鼠标/右摇杆视角速度的倍率，越小视角越精细
     double look_sensitivity{0.10};   // 每单位鼠标位移转多少度
     double pitch_limit{89.0};
+    // ---- 取景角度（PBZFM 菜单 [相机] 组三个滑条；只在摄影模式激活时可用）----
+    // 值是「绝对角度」（度）：拖动立即写进当前相机姿态，鼠标/手柄的增量式转向在此值上继续累加。
+    // 不写回 config.ini / settings.json：这是画面当前朝向，持久化会在下次进模式时把镜头硬掰到旧角度。
+    // 这三个字段只作为菜单 schema 的读写载体，真正的值始终来自 PhotoMode 的实时姿态。
+    double cam_pitch{0.0};  // 俯仰：±pitch_limit（默认 ±89）
+    double cam_yaw{0.0};    // 左右：[-180, 180)
+    double cam_roll{0.0};   // 旋转：[-180, 180)
     bool invert_y{false};
     bool free_look_requires_alt{true};
     bool block_game_input{true};
@@ -225,6 +232,12 @@ struct ConfigLoadResult {
 
 // 把 [look] 五项画面效果恢复为默认参数（数值 + 五个开关）。每次进入摄影模式时调用；
 // 返回是否真的发生了变化（调用方据此决定是否写回 config.ini / 刷新菜单镜像）。
+// 会话级默认：在 reset_look_defaults 之上再把景深总开关归默认（dof_enabled=false）。
+// 进入/退出摄影模式时调用——dof_enabled 是会话级开关（G 键 / PBZFM 菜单都能改），
+// 只归 [look] 会让上一场的景深开启状态带进下一场（用户要求每次进入相机模式都默认关闭）。
+bool reset_session_defaults(Config& cfg);
+
+// 把 [look] 五项画面效果恢复为默认参数（数值 + 五个开关）。
 bool reset_look_defaults(Config& cfg);
 
 // 解析 INI 文本。未知键 / 非法值只累积 warning，保留对应默认值。
@@ -237,8 +250,12 @@ ConfigLoadResult load_config_file(const std::string& path);
 std::string default_config_text();
 
 // 把任意一份配置序列化成与 default_config_text 完全相同格式的 INI 文本
-// （PBZFM 菜单写回 config.ini 用；所有字段都会输出，未改动的字段保持默认值）
+// （旧 config.ini 迁移/测试工具用；所有字段都会输出，未改动的字段保持默认值）
 std::string config_ini_text(const Config& cfg);
+
+// 配置键所属的 INI section（未知键返回 nullptr）。JSON 配置加载器用它把扁平 JSON
+// 还原成 parse_config 能吃的 INI 文本（复用同一套类型/范围/弃用键处理）。
+const char* config_section_for_key(const std::string& key);
 
 // 原子写出配置文件（UTF-8）：先写 <path>.tmp，成功后再 rename 覆盖目标，
 // 避免引擎线程读盘时读到半写的文件。失败时 error 非空则填原因；返回是否成功。

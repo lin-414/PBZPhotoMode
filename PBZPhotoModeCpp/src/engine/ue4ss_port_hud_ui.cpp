@@ -1096,7 +1096,7 @@ int Ue4ssPort::set_dialogue_flow_tick_paused(bool paused) {
 // 1.0.30 时代起，字幕/场景交互提示开关就曾被旧版写坏过（还原静默失败 + 游戏存盘，
 // 玩家只能进游戏设置手动开回来）。1.0.69 首次运行做一次修复：把两个开关强制打开、
 // 回读校验、立即存盘，成功后写 ui_settings_repair_done.flag 不再执行。
-// 只做一次；若你本来就关闭字幕，把 config.ini 的 repair_ui_settings_once 设为 false。
+// 只做一次；若你本来就关闭字幕，把 settings.json 的 repair_ui_settings_once 设为 false。
 bool Ue4ssPort::recover_ui_settings_once() {
     const std::filesystem::path marker = mod_dir_ / "ui_settings_repair_done.flag";
     std::error_code ec;
@@ -1153,7 +1153,7 @@ bool Ue4ssPort::recover_ui_settings_once() {
     marker_file << "repaired by " << PBZPM_VERSION_FULL << " (subtitles=on, scene_interact_prompt=on)\n";
     marker_file.close();
     log(LogLevel::Info, std::string("UI 设置修复完成：字幕开关与场景交互提示已打开并存盘（只执行一次；")
-                            + "若你本来关闭字幕，可在 config.ini 把 repair_ui_settings_once 设为 false 并删除 "
+                            + "若你本来关闭字幕，可在 settings.json 把 repair_ui_settings_once 设为 false 并删除 "
                             + "ui_settings_repair_done.flag）");
     return true;
 }

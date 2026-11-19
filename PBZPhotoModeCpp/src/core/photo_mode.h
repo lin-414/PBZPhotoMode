@@ -40,6 +40,12 @@ public:
     bool takeover_active() const { return takeover_active_; }
     // 夹紧到 [fov_min, fov_max]；返回是否真的改变了
     bool set_fov(double fov);
+    // PBZFM 相机组的取景角度滑条（0=pitch 1=yaw 2=roll，单位度）。
+    // 滑条给的是「绝对角度」：与鼠标/手柄的增量式视角共存——滑条把姿态设到该角，
+    // 之后鼠标继续在此值上累加（不会再被滑条拉回去，因为滑条显示的就是实时姿态）。
+    // 只在激活时生效；未激活返回 false，退出摄影模式不保留（下次 enter 重新取当前游戏视角）。
+    bool set_pose_angle(int axis, double degrees);
+    bool pose_angle(int axis, double* degrees) const;
     void toggle_freeze();
     // dilation 模式每帧重申：只在 frozen 且非 pause 时有动作（需要引擎 tick 后调用）
     void reassert_time_dilation_if_needed();
