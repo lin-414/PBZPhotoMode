@@ -53,12 +53,24 @@ void test_json_parser() {
     CHECK(parse_mods_menu_json(bom, values, &error));
     CHECK_INT(static_cast<int>(values.size()), 1);
 
-    // 失败路径：空文本 / 顶层不是对象 / 坏转义 / 未闭合
-    CHECK(!parse_mods_menu_json("", values, &error));
+    // 失败路径：顶层不是对象 / 坏转义 / 未闭合 / 非 JSON 数字
     CHECK(!parse_mods_menu_json("[]", values, &error));
     CHECK(!parse_mods_menu_json("{\"a\": \"\\q\"}", values, &error));
     CHECK(!parse_mods_menu_json("{\"a\": true", values, &error));
     CHECK(!parse_mods_menu_json("{\"a\": 1,}", values, &error));
+    CHECK(!parse_mods_menu_json("{\"a\": 1.}", values, &error));  // from_chars 全消费：拒绝非 JSON 的 "1."
+
+    // 空文件（0 字节流式拷贝按标准置 failbit，读层交上来的是 Ok 空文本）：
+    // 空 / 全空白 / 只有 BOM 一律按空对象成功——Bridge 写一半崩溃、用户手清空
+    // config.json / settings.json 时调用方把它当普通空值重新生成自愈，而不是
+    // 当解析失败永久卡死往返（与旧 config.ini「空文件=默认值」同口径）。
+    CHECK(parse_mods_menu_json("", values, &error));
+    CHECK_STR(error, "");
+    CHECK_INT(static_cast<int>(values.size()), 0);
+    CHECK(parse_mods_menu_json("  \r\n\t ", values, &error));
+    CHECK_INT(static_cast<int>(values.size()), 0);
+    CHECK(parse_mods_menu_json("\xEF\xBB\xBF", values, &error));
+    CHECK_INT(static_cast<int>(values.size()), 0);
 }
 
 void test_json_roundtrip() {
@@ -183,6 +195,42 @@ void test_config_json_roundtrip() {
     }
 }
 
+void test_key_name_preserved_outside_vk_table() {
+    section("Mods Menu 键位生成保留 vk 表外手改名");
+    // NUMPAD5 不在 vk 名表里（小键盘叫 NUM_FIVE；单字符兜底只认 A-Z/0-9）：
+    // MODS_MENU_149.md 指引玩家对表外键名直接手改 settings.json，生成/镜像侧必须
+    // 原样保留，不能经 KeyMap{} 兜底换成默认键（否则下次菜单保存会静默洗掉手改）。
+    Config cfg;
+    cfg.key_toggle = "NUMPAD5";
+    const std::string text = mods_menu_config_json(cfg);
+    ModsMenuValues parsed;
+    CHECK(parse_mods_menu_json(text, parsed, nullptr));
+    CHECK_STR(parsed["key_toggle"].text, "NUMPAD5");
+
+    // 合并侧同口径：现有文本里的值即使被重新生成也保持原名
+    const std::string merged = mods_menu_merge_config_json(text, cfg);
+    ModsMenuValues merged_values;
+    CHECK(parse_mods_menu_json(merged, merged_values, nullptr));
+    CHECK_STR(merged_values["key_toggle"].text, "NUMPAD5");
+
+    // 应用侧对未知名拒识+告警：cfg 保留默认键，不会被兜底值覆盖（防 settings.json 被洗）
+    Config target;
+    std::vector<std::string> warnings;
+    ModsMenuValues apply_values;
+    apply_values["key_toggle"] = parsed["key_toggle"];
+    CHECK_INT(mods_menu_apply_values(apply_values, target, &warnings), 0);
+    CHECK_STR(target.key_toggle, "F2");
+    CHECK_INT(static_cast<int>(warnings.size()), 1);
+
+    // 可解析的名字仍归一成规范名（Bridge 下拉才能对上选项）
+    Config canonical;
+    canonical.key_toggle = "f2";
+    const std::string canonical_text = mods_menu_config_json(canonical);
+    ModsMenuValues canonical_values;
+    CHECK(parse_mods_menu_json(canonical_text, canonical_values, nullptr));
+    CHECK_STR(canonical_values["key_toggle"].text, "F2");
+}
+
 void test_merge_preserves_unknown() {
     section("Mods Menu JSON 合并保留未知键");
     const std::string existing = R"({
@@ -207,6 +255,7 @@ void run_mods_menu_tests() {
     test_field_table_consistency();
     test_apply_values();
     test_key_choice_apply();
+    test_key_name_preserved_outside_vk_table();
     test_config_json_roundtrip();
     test_merge_preserves_unknown();
 }

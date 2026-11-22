@@ -1,3 +1,29 @@
+## 2.2.7：2.2.6 全量代码审查修复批次——JSON 配置管线三处会静默损害玩家配置的缺陷 + 三处健壮性（2026-11-22，工作区变更）
+
+**需求（用户 2026-11-22）**：对 2.2.6（47f0a81，含 Mods Menu 149 与全量 JSON 配置两条新线）做全量代码审查并按清单修复。审查方式：自审 FOV 双通道/mod_app 接线/PBZFM 客户端/世界换代闩锁 + 双路并行代理审 mods_menu/config_json/pbzfm 周边 + 描述符校验脚本。结论：**FOV 通道、世界换代追平闩锁、PBZFM 客户端（attach_host 修 2.2.1 崩溃、register_all 修 ABBA 死锁、GetLanguage 尾部追加+static_assert 锁 ABI）全部干净**；问题集中在新写的 JSON 配置管线，即本版全部修复内容。
+
+**P1 三处（都会静默损害玩家配置）**：
+
+1. **空文件被误判为读错误且无法自愈**：`stream << in.rdbuf()` 对 0 字节文件按标准置 failbit，空 `settings.json` 曾让 Mods Menu 整会话禁用（日志误报「读取失败」）、空 `config.json` 曾永久卡死轮询——Bridge 读空文件显示描述符默认值，用户首次保存菜单就会把 68 项默认值刷进 settings.json。修复：读层（`config_json.cpp`/`mods_menu_client.cpp`）显式判零长度按 Ok 交空文本；`parse_mods_menu_json` 咽喉点把空/全空白/仅 BOM 归一为空对象（与旧 config.ini「空文件=默认值」同口径），调用方照常重新生成自愈。
+2. **`parse_config_json` 缺 fov 交叉校验**：INI 路径有 `fov_max<=fov_min` 回退 15/150 + `fov_default` 夹紧，JSON 路径没有——手改 `{"fov_min":150,"fov_max":90}` 会逐项通过范围检查静默加载，下游 `std::clamp(v,150,90)` debug 断言崩、release FOV 钉死 150。修复：末尾补上与 INI 同款键间校验（JSON 现在是唯一配置源）。
+3. **vk 表外手改键名被静默洗回默认**：菜单子集生成/合并用 `pbzfm_read_field(*field, cfg, KeyMap{})` 读键位，vk 解析不了的名字（MODS_MENU_149.md 明文指引的手改路径）会落 KeyMap{} 默认键，下一次菜单保存经 `apply_config_from_mods_menu` 覆盖 settings.json。修复：新增 `mods_menu_value_from_config`（两个生成器共用，顺带去重 30 行），Key 字段解析失败时**原样回写手改名**、可解析名归一规范名；应用侧本来就拒识+告警，配置不再被覆盖。
+
+**P2 三处（健壮性）**：
+
+4. **`strtod` → `std::from_chars`**（mods_menu.cpp 数字解析两处）：宿主进程若被切到逗号小数 locale，`strtod("0.5")` 解成 0、整份 JSON 报废；from_chars 与全库约定（config.cpp parse_double）同口径。顺带在扫描器补 JSON 数字文法（`.5`/`1.` 拒绝——from_chars 按 strtod 语义其实接受 `1.`，光换函数不够）。
+5. **Enum 数值只收精确 0/1**：`{"freeze_mode":1e20}` 曾走 `static_cast<int>`（UB，实践中变 INT_MIN→pause）、0.5 曾被截断成 dilation；现在分数/越界告警并保留默认。Bool 同步收紧（`"hide_player":0.5` 曾静默变 true）。
+6. **临时文件路径走 ANSI 码页回转**：`path.string()+".tmp"` 在非 936 locale + 中文安装目录下会把宽字符变 `?`，临时文件落错位置；改原生 `path += ".tmp"`。
+
+**P3 三处（顺手清理）**：描述符 `version` 2.2.0→跟随发布（2.2.7）；`config.ini.example` 头部改「迁移样本」口径——**发现它是 `config_ini_text()` 的生成物，修的是生成器源头**并重跑 gen_config.bat（这也解释了示例文件版本号停在 2.2.0 的原因）；删除只写不读的 `fov_reassert_writes_` 死计数。
+
+**新增测试（含功能级）**：核心层 **7,707 → 7,773 项全绿**。新增：空文件端到端（真建 0 字节文件走 `load_config_json_file`）、fov 倒挂/夹紧、Bool/Enum 收紧、`NUMPAD5` 键名保留、`{"a":1.}` 拒绝、**config.ini→settings.json 迁移端到端**（load_config_file → save_config_json_file → load_config_json_file 全字段保真，原链条只在 UE4SS 门槛下的 mod_app 里、无覆盖）。
+
+**构建环境（不出包不生效）**：`_ref/ue4ss-src/UE4SS/CMakeLists.txt` 给 UE4SS 目标补链 `synchronization`——rustc 1.100（2026-11-09）std 在 MSVC 上以 dllimport 引用 WaitOnAddress 系同步原语，patternsleuth_bind 重编后 UE4SS.dll 链接缺该导入库（`__imp_WaitOnAddress` ×3）；11-12 能过纯属 cargo 缓存未重编。
+
+**发行**：`PBZPhotoModeCpp_2.2.7.zip`（1,007,885 字节，zip sha256 前 16 `981203b79d645c22`；不含 settings.json/config.json 等运行时文件）；DLL **2,378,240 字节**、sha256 前 16 `f2ca42cb9f42a5f2`（与 build-dll 逐字节一致）。
+
+**待实机复验**：① 手清空 settings.json（0 字节）进游戏：按默认值启动、日志无「配置文件读取失败」、Mods Menu 页可打开；② 手改 settings.json 把某键设为 `NUMPAD5` → 进游戏 → 在 Mods Menu 改其它项保存：`NUMPAD5` 不被洗回默认键；③ 旧 config.ini 迁移：自定义键位/数值保真、旧文件改名 `.migrated`；④ 2.2.6 全部复验项（FOV>90、动色差 FOV 不跳、调色家族有画面、取景滑条跟手）。
+
 ## 2.2.6：FOV 上限被卡在约 89°（CineCamera 焦距下限 12mm 夹紧）——「调好 FOV 再动色差/开景深跳回默认」与「FOV 超过 90 没反应」同源（2026-11-12，工作区变更）
 
 **需求（用户 2026-11-12，附实机照片与 `UE4SS.log` 21:45~21:49 单会话）**：① 调节 FOV 后再调整色差参数、或开启景深，FOV 会被重置为默认值；② 再调节 FOV 超过 90° 后画面不再变化。

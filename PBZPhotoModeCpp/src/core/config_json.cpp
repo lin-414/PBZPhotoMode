@@ -14,7 +14,16 @@ bool read_text_file(const std::string& path, std::string* out) {
     if (!in) return false;
     std::ostringstream stream;
     stream << in.rdbuf();
-    if (!stream) return false;
+    if (!stream) {
+        // 流式拷贝对 0 字节文件按标准置 failbit（插入零字符）：手清空的 settings.json
+        // 不是 I/O 错误。空文本按 Ok 交给 parse_config_json（空=全默认，与旧 config.ini
+        // 路径同口径）；非空文件走到这里才是真正的读错误。
+        std::error_code size_error;
+        if (!std::filesystem::exists(path, size_error) || size_error) return false;
+        if (std::filesystem::file_size(path, size_error) != 0 || size_error) return false;
+        out->clear();
+        return true;
+    }
     *out = stream.str();
     return true;
 }

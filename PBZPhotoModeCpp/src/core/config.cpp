@@ -688,9 +688,14 @@ ConfigLoadResult load_config_file(const std::string& path) {
 
 std::string config_ini_text(const Config& c) {
     std::ostringstream out;
+    // config.ini 自 2.2.0 起只是迁移样本：唯一配置文件是 PBZPhotoModeCpp.settings.json，
+    // config.ini 会被一次性读取迁移并改名 config.ini.migrated，之后编辑它无效。
     out << "; ================================================================\n"
-        << "; " << PBZPM_VERSION_FULL << " 配置文件（UTF-8，可留空使用默认值）\n"
-        << "; 改完存盘后按 F2 重进摄影模式即可生效（或重启游戏）\n"
+        << "; 旧版 config.ini 格式样本（仅供升级参考；自 2.2.0 起唯一配置文件是 PBZPhotoModeCpp.settings.json）\n"
+        << "; 首次运行会把本文件的内容自动迁移进 settings.json，并把 config.ini 改名为 config.ini.migrated。\n"
+        << "; 迁移完成后继续编辑 config.ini 无效——手改配置请编辑 PBZPhotoModeCpp.settings.json"
+        << "（改完按 F2 重载即可生效，或重启游戏）。\n"
+        << "; 本文件由 tools/gen_config.bat 从代码生成，不要手改。\n"
         << "; ================================================================\n\n"
         << "[keys]\n"
         << "; 进入/退出摄影模式\n"
@@ -1079,8 +1084,12 @@ ConfigLoadResult parse_config_json(const std::string& text, const char* source) 
                     parsed = value.boolean;
                     ok = true;
                 } else if (value.type == ModsMenuValueType::Number) {
-                    parsed = value.number != 0.0;
-                    ok = true;
+                    // 只收 0/1：INI 路径对 "0.5" 是告警+保留默认，JSON 路径不能更宽松
+                    //（外部工具把 bool 重序列化成小数时不该静默翻转语义）。
+                    if (value.number == 0.0 || value.number == 1.0) {
+                        parsed = value.number == 1.0;
+                        ok = true;
+                    }
                 } else if (value.type == ModsMenuValueType::String) {
                     ok = parse_bool(value.text, parsed);
                 }
@@ -1115,7 +1124,11 @@ ConfigLoadResult parse_config_json(const std::string& text, const char* source) 
                 std::string enum_value;
                 if (value.type == ModsMenuValueType::String) {
                     enum_value = value.text;
-                } else if (value.type == ModsMenuValueType::Number) {
+                } else if (value.type == ModsMenuValueType::Number &&
+                           (value.number == 0.0 || value.number == 1.0)) {
+                    // 数值契约只有 0/1（pause/dilation、look/translate）：分数与越界值直接走
+                    // 下面的「取值非法」告警——顺带避开 static_cast<int> 对超 int 范围
+                    // double 的 UB（"freeze_mode": 1e20 这类手改值）。
                     const int index = static_cast<int>(value.number);
                     if (key == "freeze_mode") enum_value = index != 0 ? "pause" : "dilation";
                     if (key == "mouse_vertical_mode") enum_value = index != 0 ? "look" : "translate";
@@ -1126,6 +1139,18 @@ ConfigLoadResult parse_config_json(const std::string& text, const char* source) 
                 break;
             }
         }
+    }
+    // 交叉校验（与 parse_config 的 INI 路径同款）：单字段 clamp 管不到键间约束。
+    // fov_min/fov_max 倒挂会让下游 std::clamp(v, lo, hi) 在 debug 断言崩、release 钉死，
+    // 而 JSON 是唯一的配置源，这里必须和 INI 一样兜住。
+    if (result.cfg.fov_max <= result.cfg.fov_min) {
+        result.warnings.push_back("fov_max 必须大于 fov_min，已回退默认 15/150");
+        result.cfg.fov_min = 15.0;
+        result.cfg.fov_max = 150.0;
+    }
+    if (result.cfg.fov_default < result.cfg.fov_min || result.cfg.fov_default > result.cfg.fov_max) {
+        result.warnings.push_back("fov_default 超出 [fov_min, fov_max]，已夹紧");
+        result.cfg.fov_default = std::clamp(result.cfg.fov_default, result.cfg.fov_min, result.cfg.fov_max);
     }
     return result;
 }

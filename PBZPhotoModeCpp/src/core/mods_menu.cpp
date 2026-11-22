@@ -4,12 +4,12 @@
 #include <charconv>
 #include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <locale>
 #include <sstream>
 #include <string_view>
+#include <system_error>
 
 #include "pbzfm_schema_map.h"
 
@@ -199,21 +199,29 @@ private:
     bool parse_number(double& out) {
         const std::size_t start = pos_;
         if (pos_ < text_.size() && text_[pos_] == '-') ++pos_;
+        // JSON 数字文法：整数部分至少一位（拒绝 ".5"），小数点后至少一位（拒绝 "1."
+        // ——这俩是 strtod/from_chars 兼容的宽容写法，但不是 JSON）。
+        const std::size_t int_start = pos_;
         while (pos_ < text_.size() && text_[pos_] >= '0' && text_[pos_] <= '9') ++pos_;
+        if (pos_ == int_start) return fail("数字缺失");
         if (pos_ < text_.size() && text_[pos_] == '.') {
             ++pos_;
+            const std::size_t frac_start = pos_;
             while (pos_ < text_.size() && text_[pos_] >= '0' && text_[pos_] <= '9') ++pos_;
+            if (pos_ == frac_start) return fail("小数点后缺数字");
         }
         if (pos_ < text_.size() && (text_[pos_] == 'e' || text_[pos_] == 'E')) {
             ++pos_;
             if (pos_ < text_.size() && (text_[pos_] == '+' || text_[pos_] == '-')) ++pos_;
             while (pos_ < text_.size() && text_[pos_] >= '0' && text_[pos_] <= '9') ++pos_;
         }
-        if (pos_ == start) return fail("数字缺失");
-        const std::string chunk = text_.substr(start, pos_ - start);
-        char* end = nullptr;
-        const double value = std::strtod(chunk.c_str(), &end);
-        if (end == nullptr || *end != '\0' || !std::isfinite(value)) return fail("数字格式错误");
+        // std::from_chars 与 locale 无关（全库约定，见 config.cpp parse_double）：
+        // strtod 在逗号小数点 locale 下会把 "0.5" 解析成 0，整个 JSON 随之报废。
+        double value = 0.0;
+        const char* const first = text_.data() + start;
+        const char* const last = text_.data() + pos_;
+        const std::from_chars_result res = std::from_chars(first, last, value);
+        if (res.ec != std::errc() || res.ptr != last || !std::isfinite(value)) return fail("数字格式错误");
         out = value;
         return true;
     }
@@ -327,6 +335,18 @@ std::string format_number(double value) {
     return stream.str();
 }
 
+// 字符串 → double，locale 无关（同 config.cpp parse_double 口径）：去首尾空白、要求完整消费。
+bool parse_double_token(const std::string& text, double& out) {
+    const std::size_t b = text.find_first_not_of(" \t\r\n");
+    if (b == std::string::npos) return false;
+    const std::size_t e = text.find_last_not_of(" \t\r\n");
+    double value = 0.0;
+    const std::from_chars_result res = std::from_chars(text.data() + b, text.data() + e + 1, value);
+    if (res.ec != std::errc() || res.ptr != text.data() + e + 1 || !std::isfinite(value)) return false;
+    out = value;
+    return true;
+}
+
 const PbzfmField* find_pbzfm_field(const std::string& key) {
     for (const PbzfmField& field : pbzfm_fields()) {
         if (field.key != nullptr && key == field.key) return &field;
@@ -368,9 +388,8 @@ bool value_to_double(const ModsMenuValue& value, ModsMenuSettingKind kind, const
                 return true;
             }
             if (value.type == ModsMenuValueType::String) {
-                char* end = nullptr;
-                const double parsed = std::strtod(value.text.c_str(), &end);
-                if (end != nullptr && *end == '\0' && !value.text.empty() && std::isfinite(parsed)) {
+                double parsed = 0.0;
+                if (parse_double_token(value.text, parsed)) {
                     out = parsed;
                     return true;
                 }
@@ -415,10 +434,60 @@ bool value_to_double(const ModsMenuValue& value, ModsMenuSettingKind kind, const
     return false;
 }
 
+// 菜单子集 JSON 的值生成（mods_menu_config_json / mods_menu_merge_config_json 共用）。
+// 键位字段直接保留 config 里的原始键名：vk 表外的手改名（docs/MODS_MENU_149.md 指引的
+// 手改路径）原样回写——绝不能经 pbzfm_read_field 的 KeyMap{} 兜底换成默认键，那会在
+// 下一次菜单保存时把手改热键静默洗回默认（应用侧对未知名是拒识+告警，配置不会被覆盖）。
+// 可解析的名字归一成规范名，Bridge 的下拉选项才能对上。
+ModsMenuValue mods_menu_value_from_config(const ModsMenuSettingSpec& spec, const PbzfmField& field,
+                                          const Config& cfg) {
+    ModsMenuValue item;
+    if (spec.kind == ModsMenuSettingKind::Key) {
+        item.type = ModsMenuValueType::String;
+        if (field.key_name != nullptr) {
+            const std::string raw = cfg.*field.key_name;
+            const int vk = vk_from_name(raw);
+            item.text = vk != 0 ? vk_to_name(vk) : raw;
+        }
+        return item;
+    }
+    const double value = pbzfm_read_field(field, cfg, KeyMap{});
+    if (spec.kind == ModsMenuSettingKind::Bool) {
+        item.type = ModsMenuValueType::Bool;
+        item.boolean = value != 0.0;
+    } else if (spec.kind == ModsMenuSettingKind::Choice) {
+        item.type = ModsMenuValueType::String;
+        if (std::string(spec.key) == "freeze_mode") {
+            item.text = value >= 1.0 ? "pause" : "dilation";
+        } else if (std::string(spec.key) == "mouse_vertical_mode") {
+            item.text = value >= 1.0 ? "look" : "translate";
+        } else {
+            item.text = value >= 1.0 ? "1" : "0";
+        }
+    } else {
+        item.type = ModsMenuValueType::Number;
+        item.number = value;
+    }
+    return item;
+}
+
 }  // namespace
 
 bool parse_mods_menu_json(const std::string& text, ModsMenuValues& out, std::string* error) {
     out.clear();
+    // 空/全空白文件（含只有 BOM 的）按空对象处理：流式拷贝对 0 字节文件会按标准置
+    // failbit，读层已把它当 Ok 交上来；这里再归一成空对象，让 start/write_config_json/
+    // poll 把「Bridge 写一半崩溃、用户手清空」当成普通空值重新生成自愈，而不是当作
+    // 解析失败永久卡死往返。与旧 config.ini 路径「空文件=默认值」同口径。
+    std::size_t probe = 0;
+    if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+        static_cast<unsigned char>(text[1]) == 0xBB && static_cast<unsigned char>(text[2]) == 0xBF) {
+        probe = 3;
+    }
+    if (text.find_first_not_of(" \t\r\n", probe) == std::string::npos) {
+        if (error != nullptr) error->clear();
+        return true;
+    }
     JsonReader reader(text);
     if (!reader.parse(out)) {
         if (error != nullptr) *error = reader.error();
@@ -598,28 +667,7 @@ std::string mods_menu_config_json(const Config& cfg) {
     for (const ModsMenuSettingSpec& spec : mods_menu_settings()) {
         const PbzfmField* field = find_pbzfm_field(spec.key);
         if (field == nullptr) continue;
-        const double value = pbzfm_read_field(*field, cfg, KeyMap{});
-        ModsMenuValue item;
-        if (spec.kind == ModsMenuSettingKind::Bool) {
-            item.type = ModsMenuValueType::Bool;
-            item.boolean = value != 0.0;
-        } else if (spec.kind == ModsMenuSettingKind::Choice) {
-            item.type = ModsMenuValueType::String;
-            if (std::string(spec.key) == "freeze_mode") {
-                item.text = value >= 1.0 ? "pause" : "dilation";
-            } else if (std::string(spec.key) == "mouse_vertical_mode") {
-                item.text = value >= 1.0 ? "look" : "translate";
-            } else {
-                item.text = value >= 1.0 ? "1" : "0";
-            }
-        } else if (spec.kind == ModsMenuSettingKind::Key) {
-            item.type = ModsMenuValueType::String;
-            item.text = vk_to_name(static_cast<int>(value));
-        } else {
-            item.type = ModsMenuValueType::Number;
-            item.number = value;
-        }
-        values[spec.key] = std::move(item);
+        values[spec.key] = mods_menu_value_from_config(spec, *field, cfg);
     }
     return write_mods_menu_json(values);
 }
@@ -633,28 +681,7 @@ std::string mods_menu_merge_config_json(const std::string& existing, const Confi
     for (const ModsMenuSettingSpec& spec : mods_menu_settings()) {
         const PbzfmField* field = find_pbzfm_field(spec.key);
         if (field == nullptr) continue;
-        const double value = pbzfm_read_field(*field, cfg, KeyMap{});
-        ModsMenuValue item;
-        if (spec.kind == ModsMenuSettingKind::Bool) {
-            item.type = ModsMenuValueType::Bool;
-            item.boolean = value != 0.0;
-        } else if (spec.kind == ModsMenuSettingKind::Choice) {
-            item.type = ModsMenuValueType::String;
-            if (std::string(spec.key) == "freeze_mode") {
-                item.text = value >= 1.0 ? "pause" : "dilation";
-            } else if (std::string(spec.key) == "mouse_vertical_mode") {
-                item.text = value >= 1.0 ? "look" : "translate";
-            } else {
-                item.text = value >= 1.0 ? "1" : "0";
-            }
-        } else if (spec.kind == ModsMenuSettingKind::Key) {
-            item.type = ModsMenuValueType::String;
-            item.text = vk_to_name(static_cast<int>(value));
-        } else {
-            item.type = ModsMenuValueType::Number;
-            item.number = value;
-        }
-        values[spec.key] = std::move(item);
+        values[spec.key] = mods_menu_value_from_config(spec, *field, cfg);
     }
     return write_mods_menu_json(values);
 }

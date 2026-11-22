@@ -7,7 +7,7 @@
     "en": "Free-camera photo mode for Phantom Blade Zero. Enter with F2, freeze time, hide the HUD and tune camera movement here. The last section offers keyboard hotkey choices; depth-of-field details, look and colour settings are edited in settings.json or the optional PBZ-Framework-Menu (F8).",
     "zh-Hans": "《影之刃零》自由摄影模式。按 F2 进入，可冻结时间、隐藏 HUD，并在这里调整相机与移动参数。最后一组可直接选择键盘键位；景深详细参数、画面效果、调色与手柄组合键请编辑 PBZPhotoModeCpp.settings.json，或使用可选的 PBZ-Framework-Menu（F8）菜单。"
   },
-  "version": "2.2.0",
+  "version": "2.2.7",
   "settings": [
     {
       "type": "heading",

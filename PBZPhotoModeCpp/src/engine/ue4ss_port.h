@@ -317,7 +317,6 @@ private:
     bool fov_channel_logged_{false};
     bool fov_divergence_logged_{false};
     int fov_divergence_seen_{0};
-    int fov_reassert_writes_{0};
     // ---- 自建的无界后处理体积（画面效果专用）----
     // 「画面效果」（暗角/饱和/对比/泛光/冷暖）写在这个体积的 Settings 上：
     // 本作 gameplay 视图里只有体积通道会被采纳。退出/关闭效果时销毁；世界换代时引擎已销毁它，只清指针。

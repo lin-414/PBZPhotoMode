@@ -810,7 +810,7 @@ void Ue4ssPort::reassert_camera_fov_now() {
             log(LogLevel::Warn, buf);
         }
     }
-    if (write_camera_fov(applied_fov_, true)) ++fov_reassert_writes_;
+    (void)write_camera_fov(applied_fov_, true);
 }
 
 bool Ue4ssPort::resolve_pov_view(PovView& out) {

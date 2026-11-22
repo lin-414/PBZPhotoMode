@@ -32,7 +32,16 @@ FileReadResult read_text_file_result(const std::filesystem::path& path, std::str
     if (!in) return FileReadResult::Error;
     std::ostringstream stream;
     stream << in.rdbuf();
-    if (!stream) return FileReadResult::Error;
+    if (!stream) {
+        // 流式拷贝对 0 字节文件按标准会置 failbit（插入零字符）——那不是 I/O 错误，而是
+        // 合法的空文件（Bridge 写一半崩溃、用户手清空）。按 Ok 交空文本，上层把空当 {}
+        // 重新生成自愈；真正的读错误（权限/被锁）仍然报 Error。
+        std::error_code size_error;
+        const bool is_empty = !size_error && std::filesystem::file_size(path, size_error) == 0;
+        if (!is_empty) return FileReadResult::Error;
+        out->clear();
+        return FileReadResult::Ok;
+    }
     *out = stream.str();
     return FileReadResult::Ok;
 }
@@ -42,7 +51,10 @@ bool read_text_file(const std::filesystem::path& path, std::string* out) {
 }
 
 bool write_text_file_atomic(const std::filesystem::path& path, const std::string& text, std::string* error) {
-    const std::filesystem::path tmp = path.string() + ".tmp";
+    // 原生 path 追加，不走 string() 的 ANSI 码页回转：非 936 locale + 中文安装目录下
+    // string() 会把宽字符变成 '?'，临时文件会落到错误路径。
+    std::filesystem::path tmp = path;
+    tmp += ".tmp";
     {
         std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) {
